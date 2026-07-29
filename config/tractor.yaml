@@ -1,0 +1,55 @@
+motor_gpio_node:
+  ros__parameters:
+    # Оставить true, пока GPIO не подключены через безопасную развязку.
+    dry_run: true
+    active_high: true
+
+    # Нумерация BCM, не физические номера контактов разъёма Raspberry Pi.
+    left_forward_pin: 17
+    left_reverse_pin: 27
+    right_forward_pin: 22
+    right_reverse_pin: 23
+
+    # Расстояние между продольными центрами гусениц.
+    track_width_m: 0.60
+
+    # Дискретный привод: слишком малые команды Nav2 считаются нулевыми.
+    wheel_command_deadband: 0.05
+
+    # Без новой команды обе гусеницы обязательно отключаются.
+    command_timeout_sec: 0.50
+
+    # Пауза между противоположными направлениями защищает контакторы/драйвер.
+    reverse_pause_sec: 0.35
+    control_rate_hz: 50.0
+
+hall_odometry_node:
+  ros__parameters:
+    dry_run: true
+
+    # Один импульсный сигнал на каждую сторону. Нумерация BCM.
+    left_hall_pin: 5
+    right_hall_pin: 6
+    hall_pull_up: true
+    left_hall_inverted: false
+    right_hall_inverted: false
+    bounce_time_sec: 0.002
+
+    # ВРЕМЕННЫЕ ЗНАЧЕНИЯ. Их обязательно заменить после измерений.
+    # Число фронтов сигнала Холла на один оборот вала двигателя.
+    pulses_per_motor_revolution: 6.0
+
+    # Обороты двигателя / обороты ведущей звезды.
+    # Если контроллер уже выдаёт импульсы после редуктора, поставить 1.0.
+    gear_ratio: 30.0
+
+    # Реальное перемещение гусеницы за один оборот ведущей звезды.
+    drive_sprocket_circumference_m: 0.40
+
+    # Должно совпадать с параметром узла управления.
+    track_width_m: 0.60
+
+    publish_rate_hz: 30.0
+    odom_frame: odom
+    base_frame: base_link
+    publish_tf: true
