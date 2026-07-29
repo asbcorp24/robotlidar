@@ -1,0 +1,24 @@
+[Unit]
+Description=RobotLidar offline web control panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@WORKSPACE@
+Environment=HOME=@HOME@
+Environment=PYTHONUNBUFFERED=1
+Environment=ROBOTLIDAR_WEB_HOST=0.0.0.0
+Environment=ROBOTLIDAR_WEB_PORT=8080
+Environment=ROBOTLIDAR_DATA_DIR=@HOME@/robotlidar_data
+Environment=ROBOTLIDAR_SERIAL_PORT=/dev/ttyUSB0
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source @WORKSPACE@/install/setup.bash && exec ros2 run robotlidar robotlidar_web'
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
