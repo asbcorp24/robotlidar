@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>robotlidar</name>
-  <version>0.2.0</version>
-  <description>Offline tracked tractor navigation for Raspberry Pi 4.</description>
+  <version>0.3.0</version>
+  <description>Offline tracked tractor navigation and web control for Raspberry Pi 4.</description>
 
   <maintainer email="asbcorp24@users.noreply.github.com">asbcorp24</maintainer>
   <license>MIT</license>
@@ -28,6 +28,9 @@
   <exec_depend>python3-gpiozero</exec_depend>
   <exec_depend>python3-smbus2</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-fastapi</exec_depend>
+  <exec_depend>python3-uvicorn</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
