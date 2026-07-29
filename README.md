@@ -1,167 +1,254 @@
 # RobotLidar
 
-Офлайн-система автономного управления гусеничным трактором на базе Raspberry Pi 4, ROS 2, 2D-лидара, MPU6050 и датчиков Холла приводов.
+Полностью офлайн-система автономного управления гусеничным трактором на базе:
 
-## Цель проекта
+- Raspberry Pi 4;
+- ROS 2 Jazzy;
+- RPLIDAR C1;
+- MPU6050;
+- датчиков Холла левого и правого приводов;
+- четырёх дискретных выходов управления гусеницами.
 
-1. Первый ручной проезд по площадке с построением карты и записью маршрута.
-2. Повторное автономное движение по сохранённой карте.
-3. Обнаружение и объезд новых препятствий.
-4. Возврат на непройденную часть исходного маршрута после объезда.
-5. Полностью локальная работа без интернета и облачных сервисов.
+## Текущее состояние
 
-## Что уже реализовано
+Реализовано:
 
-- ROS 2 Python-пакет `robotlidar`;
-- преобразование `/cmd_vel` в четыре дискретных GPIO-сигнала;
-- взаимная блокировка направлений «вперёд/назад» одной гусеницы;
-- обязательная пауза перед реверсом;
-- автоматический стоп при пропадании команд;
-- публикация фактически включённого направления гусениц;
-- подсчёт левого и правого импульсного сигнала Холла;
-- расчёт дифференциальной одометрии `/wheel/odom`;
-- публикация преобразования `odom -> base_link`;
-- режим `dry_run` для проверки без подключения силовой электроники.
+- преобразование `/cmd_vel` в команды левой и правой гусениц;
+- аппаратная взаимная блокировка программных направлений;
+- пауза перед реверсом и watchdog команд;
+- одометрия по импульсам Холла `/wheel/odom`;
+- публикация MPU6050 `/imu/data_raw`;
+- объединение Холлов и гироскопа через `robot_localization`;
+- итоговая одометрия `/odometry/filtered` и TF `odom -> base_link`;
+- драйвер RPLIDAR C1 через официальный `sllidar_ros2`;
+- SLAM Toolbox для первого построения карты;
+- запись маршрута в координатах карты;
+- Nav2 для локализации, объезда препятствий и движения через точки;
+- повтор маршрута через `NavigateThroughPoses`.
 
-## Зачем использовать Холлы контроллеров двигателя
+Интернет при эксплуатации не требуется. Все карты, маршруты и настройки
+хранятся на Raspberry Pi.
 
-Данные Холла очень полезны, если контроллеры выдают отдельный импульсный сигнал для левого и правого привода. По ним можно получить:
+> Код ещё не испытан на конкретном тракторе. Перед включением силовой части
+> необходимо измерить механику, проверить уровни сигналов Холла и оставить
+> `dry_run: true` до проверки всех ROS-топиков.
 
-- пройденный путь каждой гусеницы;
-- скорость левой и правой стороны;
-- линейную скорость трактора;
-- приблизительный поворот;
-- остановку или заклинивание привода при поданной команде.
-
-При одном импульсном канале на сторону направление берётся из фактически включённой команды привода. При двух каналах A/B направление можно будет определять независимо от команды — поддержку квадратурного режима добавим после уточнения выходов контроллера.
-
-Для точного пересчёта в метры нужны четыре значения:
-
-1. Число импульсов Холла на оборот двигателя или выходного вала.
-2. Передаточное отношение редуктора.
-3. Реальное перемещение гусеницы за оборот ведущей звезды.
-4. Расстояние между продольными центрами гусениц.
-
-MPU6050 не заменяет Холлы: он хорошо измеряет угловую скорость и наклон, но не даёт надёжного пройденного расстояния. В итоговой системе данные Холла и MPU6050 будут объединены, а лидар будет исправлять накопившуюся ошибку положения.
-
-## Схема данных
+## Поток данных
 
 ```text
-Nav2 / ручное управление
-          │
-          ▼
-      /cmd_vel
-          │
-          ▼
- motor_gpio_node ─────► четыре GPIO управления приводами
-          │
-          └──────────► /drive/direction = [левая, правая]
-                                      │
-Холл левой гусеницы ──────────────────┤
-Холл правой гусеницы ─────────────────┤
-                                      ▼
-                           hall_odometry_node
-                                      │
-                                      ├──► /wheel/odom
-                                      └──► odom -> base_link
+Холл слева ─┐
+             ├─> hall_odometry_node ─> /wheel/odom ─┐
+Холл справа ─┘                                       │
+                                                     ├─> EKF
+MPU6050 ───────> mpu6050_node ─────> /imu/data_raw ─┘
+                                                         │
+                                                         ├─> /odometry/filtered
+                                                         └─> odom -> base_link
 
-MPU6050 ─► /imu/data_raw ─┐
-/wheel/odom ──────────────┼─► robot_localization ─► /odometry/filtered
-Лидар ────────────────────┘
+RPLIDAR C1 ─> /scan ─> SLAM / AMCL / карты препятствий Nav2
+
+Nav2 ─> /cmd_vel ─> motor_gpio_node ─> GPIO гусениц
 ```
 
-## Структура проекта
+## Структура
 
 ```text
+config/
+  tractor.yaml       GPIO, Холлы, MPU6050 и маршруты
+  ekf.yaml           объединение Холлов и IMU
+  slam.yaml          построение карты
+  nav2.yaml          локализация, планирование и объезд
+
+launch/
+  tractor_base.launch.py
+  tractor_sensors.launch.py
+  rplidar_c1.launch.py
+  mapping.launch.py
+  navigation.launch.py
+
 robotlidar/
-├── config/
-│   └── tractor.yaml
-├── launch/
-│   └── tractor_base.launch.py
-├── resource/
-│   └── robotlidar
-├── robotlidar/
-│   ├── __init__.py
-│   ├── hall_odometry_node.py
-│   └── motor_gpio_node.py
-├── package.xml
-├── setup.cfg
-└── setup.py
+  motor_gpio_node.py
+  hall_odometry_node.py
+  mpu6050_node.py
+  route_recorder_node.py
+  route_player_node.py
 ```
 
-## Сборка на Raspberry Pi
+## Установка
 
-Репозиторий размещается в каталоге `src` рабочего пространства ROS 2:
+Рекомендуемая система: Ubuntu Server 24.04 ARM64 и ROS 2 Jazzy.
 
 ```bash
-mkdir -p ~/tractor_ws/src
-cd ~/tractor_ws/src
+sudo apt update
+sudo apt install -y \
+  ros-jazzy-navigation2 \
+  ros-jazzy-nav2-bringup \
+  ros-jazzy-slam-toolbox \
+  ros-jazzy-robot-localization \
+  python3-colcon-common-extensions \
+  python3-gpiozero \
+  python3-smbus2 \
+  python3-yaml \
+  i2c-tools
+
+mkdir -p ~/robotlidar_ws/src
+cd ~/robotlidar_ws/src
 git clone https://github.com/asbcorp24/robotlidar.git
-cd ~/tractor_ws
+git clone https://github.com/Slamtec/sllidar_ros2.git
+
+cd ~/robotlidar_ws
+source /opt/ros/jazzy/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
 ```
 
-## Запуск базовых узлов
+После установки и сборки интернет можно отключить. Желательно сохранить полный
+образ SSD или microSD.
+
+## Перед первым аппаратным запуском
+
+Открыть:
 
 ```bash
-ros2 launch robotlidar tractor_base.launch.py
+nano ~/robotlidar_ws/src/robotlidar/config/tractor.yaml
 ```
 
-Пока силовая часть не подключена и не проверена, в `config/tractor.yaml` должно оставаться:
+Обязательно уточнить:
+
+- GPIO управления;
+- активный уровень выходов;
+- GPIO Холлов;
+- число импульсов на оборот;
+- передаточное отношение;
+- перемещение гусеницы за оборот ведущей звезды;
+- расстояние между гусеницами;
+- положение и ориентацию MPU6050;
+- реальные габариты трактора в `config/nav2.yaml`.
+
+Только после проверки поменять:
 
 ```yaml
-dry_run: true
+motor_gpio_node:
+  ros__parameters:
+    dry_run: false
+
+hall_odometry_node:
+  ros__parameters:
+    dry_run: false
+
+mpu6050_node:
+  ros__parameters:
+    dry_run: false
 ```
 
-## Проверка управления без двигателей
+## Проверка MPU6050
 
-Команда движения вперёд:
+Включить I2C и проверить адрес:
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.3}, angular: {z: 0.0}}"
+sudo raspi-config
+i2cdetect -y 1
 ```
 
-Разворот налево на месте:
+Ожидаемый адрес: `68`.
+
+Запуск датчиков:
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.0}, angular: {z: 0.8}}"
+ros2 launch robotlidar tractor_sensors.launch.py
 ```
 
-Проверка опубликованного фактического направления:
+Проверка:
 
 ```bash
-ros2 topic echo /drive/direction
+ros2 topic hz /imu/data_raw
+ros2 topic echo /imu/data_raw --once
+ros2 topic hz /wheel/odom
+ros2 topic echo /odometry/filtered --once
+ros2 run tf2_ros tf2_echo odom base_link
 ```
 
-## Проверка одометрии без физических Холлов
-
-Сначала подать команду движения, затем имитировать импульсы:
+## Проверка RPLIDAR C1
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.3}, angular: {z: 0.0}}"
-
-ros2 topic pub --times 20 /hall/left_pulse std_msgs/msg/Empty "{}"
-ros2 topic pub --times 20 /hall/right_pulse std_msgs/msg/Empty "{}"
-
-ros2 topic echo /wheel/odom
+ros2 launch robotlidar rplidar_c1.launch.py serial_port:=/dev/ttyUSB0
+ros2 topic hz /scan
+ros2 topic echo /scan --once
 ```
 
-## Следующие этапы
+C1 использует 460800 бод. По умолчанию публикуется фрейм `laser`.
 
-- [x] безопасное дискретное управление двумя гусеницами;
-- [x] начальная одометрия по одному каналу Холла на сторону;
-- [ ] уточнение электрического типа выходов Холла и защита входов Raspberry Pi;
-- [ ] контроль заклинивания по отсутствию импульсов;
-- [ ] драйвер MPU6050 и калибровка гироскопа;
-- [ ] объединение Холлов и IMU через `robot_localization`;
-- [ ] подключение конкретной модели лидара;
-- [ ] SLAM и сохранение карты;
-- [ ] запись первого маршрута;
-- [ ] Nav2, объезд препятствий и возврат на маршрут.
+## Первый проезд: карта и маршрут
 
-> GPIO Raspberry Pi нельзя подключать непосредственно к двигателям, силовым реле, контактам с напряжением 5/12/24 В или неизвестным выходам контроллера. Нужна согласованная по уровню и желательно гальванически развязанная входная/выходная схема. Аппаратная аварийная остановка должна независимо снимать питание с приводов.
+Запустить:
+
+```bash
+ros2 launch robotlidar mapping.launch.py
+```
+
+Очистить старый маршрут и включить запись:
+
+```bash
+ros2 service call /route/clear std_srvs/srv/Trigger "{}"
+ros2 service call /route/start_recording std_srvs/srv/Trigger "{}"
+```
+
+После ручного проезда:
+
+```bash
+ros2 service call /route/stop_recording std_srvs/srv/Trigger "{}"
+
+mkdir -p ~/robotlidar_data/maps
+ros2 run nav2_map_server map_saver_cli \
+  -f ~/robotlidar_data/maps/cleaning_area
+```
+
+Маршрут сохраняется в:
+
+```text
+~/robotlidar_data/routes/cleaning_route.yaml
+```
+
+Карта сохраняется в:
+
+```text
+~/robotlidar_data/maps/cleaning_area.yaml
+~/robotlidar_data/maps/cleaning_area.pgm
+```
+
+## Автономный запуск
+
+```bash
+ros2 launch robotlidar navigation.launch.py \
+  map:=$HOME/robotlidar_data/maps/cleaning_area.yaml
+```
+
+После определения начальной позиции:
+
+```bash
+ros2 service call /route/play std_srvs/srv/Trigger "{}"
+```
+
+Остановка маршрута:
+
+```bash
+ros2 service call /route/cancel std_srvs/srv/Trigger "{}"
+```
+
+Nav2 сохраняет последовательность точек маршрута. При новом препятствии
+локальная карта добавляет его, планировщик строит объезд, после чего трактор
+продолжает движение к следующей непройденной точке.
+
+## Безопасность
+
+Программный GPIO-стоп не заменяет аппаратную безопасность. Обязательны:
+
+- аварийная кнопка, физически снимающая питание приводов;
+- контактор безопасности;
+- гальваническая развязка GPIO;
+- согласование уровней сигналов Холла;
+- аппаратный watchdog;
+- ручной режим с приоритетом над автоматическим;
+- испытание сначала с вывешенными гусеницами;
+- испытание на малой закрытой площадке без людей.
