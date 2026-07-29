@@ -5,7 +5,7 @@ package_name = 'robotlidar'
 
 setup(
     name=package_name,
-    version='0.1.0',
+    version='0.2.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -17,12 +17,18 @@ setup(
     zip_safe=True,
     maintainer='asbcorp24',
     maintainer_email='asbcorp24@users.noreply.github.com',
-    description='Offline tracked tractor control and Hall sensor odometry.',
+    description=(
+        'Offline tracked tractor control, Hall/MPU6050 odometry, '
+        'RPLIDAR C1, SLAM and Nav2 route replay.'
+    ),
     license='MIT',
     entry_points={
         'console_scripts': [
             'motor_gpio_node = robotlidar.motor_gpio_node:main',
             'hall_odometry_node = robotlidar.hall_odometry_node:main',
+            'mpu6050_node = robotlidar.mpu6050_node:main',
+            'route_recorder_node = robotlidar.route_recorder_node:main',
+            'route_player_node = robotlidar.route_player_node:main',
         ],
     },
 )
