@@ -7,7 +7,8 @@
 - RPLIDAR C1;
 - MPU6050;
 - датчиков Холла левого и правого приводов;
-- четырёх дискретных выходов управления гусеницами.
+- четырёх дискретных выходов управления гусеницами;
+- локальной веб-панели для управления, карт и автозапуска.
 
 ## Текущее состояние
 
@@ -24,7 +25,12 @@
 - SLAM Toolbox для первого построения карты;
 - запись маршрута в координатах карты;
 - Nav2 для локализации, объезда препятствий и движения через точки;
-- повтор маршрута через `NavigateThroughPoses`.
+- повтор маршрута через `NavigateThroughPoses`;
+- локальная FastAPI-панель на порту 8080;
+- ручное управление с телефона или ноутбука;
+- сохранение, просмотр, выбор и назначение основной карты;
+- запуск картографирования и автономного режима из браузера;
+- автозапуск веб-панели и выбранного рабочего режима через systemd.
 
 Интернет при эксплуатации не требуется. Все карты, маршруты и настройки
 хранятся на Raspberry Pi.
@@ -47,7 +53,9 @@ MPU6050 ───────> mpu6050_node ─────> /imu/data_raw ─�
 
 RPLIDAR C1 ─> /scan ─> SLAM / AMCL / карты препятствий Nav2
 
-Nav2 ─> /cmd_vel ─> motor_gpio_node ─> GPIO гусениц
+Телефон / ноутбук ─> FastAPI :8080 ─> /cmd_vel и ROS-сервисы
+
+Nav2 / веб-панель ─> /cmd_vel ─> motor_gpio_node ─> GPIO гусениц
 ```
 
 ## Структура
@@ -72,6 +80,16 @@ robotlidar/
   mpu6050_node.py
   route_recorder_node.py
   route_player_node.py
+  web_app.py
+
+web/static/
+  index.html
+  style.css
+  app.js
+
+scripts/
+  install_web_service.sh
+  uninstall_web_service.sh
 ```
 
 ## Установка
@@ -89,6 +107,9 @@ sudo apt install -y \
   python3-gpiozero \
   python3-smbus2 \
   python3-yaml \
+  python3-fastapi \
+  python3-uvicorn \
+  python3-pil \
   i2c-tools
 
 mkdir -p ~/robotlidar_ws/src
@@ -105,6 +126,38 @@ source install/setup.bash
 
 После установки и сборки интернет можно отключить. Желательно сохранить полный
 образ SSD или microSD.
+
+## Веб-панель и автозапуск
+
+Ручной тестовый запуск:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/robotlidar_ws/install/setup.bash
+ros2 run robotlidar robotlidar_web
+```
+
+Открыть в браузере:
+
+```text
+http://IP_RASPBERRY_PI:8080
+```
+
+Установка постоянного автозапуска:
+
+```bash
+cd ~/robotlidar_ws/src/robotlidar
+bash scripts/install_web_service.sh ~/robotlidar_ws
+```
+
+Проверка сервиса:
+
+```bash
+sudo systemctl status robotlidar-web.service
+journalctl -u robotlidar-web.service -f
+```
+
+Подробная инструкция: [WEB.md](WEB.md).
 
 ## Перед первым аппаратным запуском
 
@@ -181,6 +234,8 @@ C1 использует 460800 бод. По умолчанию публикуе�
 
 ## Первый проезд: карта и маршрут
 
+Можно выполнять через веб-панель либо командами.
+
 Запустить:
 
 ```bash
@@ -219,6 +274,10 @@ ros2 run nav2_map_server map_saver_cli \
 
 ## Автономный запуск
 
+Можно выбрать карту и запустить проезд из веб-панели.
+
+Командный запуск:
+
 ```bash
 ros2 launch robotlidar navigation.launch.py \
   map:=$HOME/robotlidar_data/maps/cleaning_area.yaml
@@ -242,7 +301,8 @@ Nav2 сохраняет последовательность точек марш
 
 ## Безопасность
 
-Программный GPIO-стоп не заменяет аппаратную безопасность. Обязательны:
+Программный GPIO-стоп и кнопка «СТОП» в браузере не заменяют аппаратную
+безопасность. Обязательны:
 
 - аварийная кнопка, физически снимающая питание приводов;
 - контактор безопасности;
