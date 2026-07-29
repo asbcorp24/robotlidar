@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>RobotLidar — управление трактором</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Локальная панель Raspberry Pi</div>
+      <h1>RobotLidar</h1>
+    </div>
+    <div class="connection" id="connectionBadge">Подключение…</div>
+  </header>
+
+  <main class="layout">
+    <section class="card status-card">
+      <div class="card-head">
+        <div>
+          <div class="eyebrow">Состояние</div>
+          <h2 id="modeTitle">Остановлено</h2>
+        </div>
+        <button class="danger" id="emergencyStop">СТОП</button>
+      </div>
+
+      <div class="sensor-grid">
+        <div class="sensor"><span class="dot" id="lidarDot"></span><b>Лидар</b><small id="lidarAge">—</small></div>
+        <div class="sensor"><span class="dot" id="imuDot"></span><b>MPU6050</b><small id="imuAge">—</small></div>
+        <div class="sensor"><span class="dot" id="hallDot"></span><b>Холлы</b><small id="hallAge">—</small></div>
+        <div class="sensor"><span class="dot" id="odomDot"></span><b>Одометрия</b><small id="odomAge">—</small></div>
+      </div>
+
+      <div class="telemetry">
+        <div><span>X</span><strong id="poseX">0.000</strong><small>м</small></div>
+        <div><span>Y</span><strong id="poseY">0.000</strong><small>м</small></div>
+        <div><span>Угол</span><strong id="poseYaw">0.0</strong><small>°</small></div>
+        <div><span>Маршрут</span><strong id="routeState">—</strong></div>
+      </div>
+    </section>
+
+    <section class="card drive-card">
+      <div class="card-head compact">
+        <div>
+          <div class="eyebrow">Ручной режим</div>
+          <h2>Управление гусеницами</h2>
+        </div>
+      </div>
+      <div class="notice">Кнопку нужно удерживать. При потере связи команда автоматически сбрасывается в «Стоп».</div>
+      <div class="drive-pad" aria-label="Управление движением">
+        <button class="drive-button forward" data-drive="forward">▲<span>Вперёд</span></button>
+        <button class="drive-button left" data-drive="left">◀<span>Влево</span></button>
+        <button class="drive-button stop" data-drive="stop">■<span>Стоп</span></button>
+        <button class="drive-button right" data-drive="right">▶<span>Вправо</span></button>
+        <button class="drive-button reverse" data-drive="reverse">▼<span>Назад</span></button>
+      </div>
+    </section>
+
+    <section class="card mode-card">
+      <div class="card-head compact">
+        <div>
+          <div class="eyebrow">Режим работы</div>
+          <h2>Карта и автономный проезд</h2>
+        </div>
+      </div>
+
+      <div class="mode-actions">
+        <button class="primary" id="startMapping">Начать картографирование</button>
+        <button class="secondary" id="startNavigation">Запустить выбранную карту</button>
+        <button class="ghost" id="stopMode">Остановить ROS-режим</button>
+      </div>
+
+      <div class="route-actions">
+        <h3>Маршрут первого проезда</h3>
+        <div class="button-row">
+          <button id="routeClear">Очистить</button>
+          <button id="routeStart">Начать запись</button>
+          <button id="routeStop">Остановить и сохранить</button>
+          <button id="routePlay">Запустить маршрут</button>
+          <button id="routeCancel">Отменить маршрут</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card maps-card">
+      <div class="card-head compact">
+        <div>
+          <div class="eyebrow">Хранилище</div>
+          <h2>Карты площадок</h2>
+        </div>
+        <button class="ghost small" id="refreshMaps">Обновить</button>
+      </div>
+
+      <div class="save-map">
+        <input id="newMapName" maxlength="64" placeholder="Например: склад_1">
+        <label class="check"><input type="checkbox" id="saveAsDefault" checked> Сделать основной</label>
+        <button class="primary" id="saveMap">Сохранить текущую карту</button>
+      </div>
+
+      <div id="mapsList" class="maps-list"></div>
+    </section>
+
+    <section class="card settings-card">
+      <div class="card-head compact">
+        <div>
+          <div class="eyebrow">Автозапуск</div>
+          <h2>Поведение после включения Raspberry Pi</h2>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label class="switch-line"><input type="checkbox" id="autoStart"> Автоматически запускать рабочий режим</label>
+        <select id="startupMode">
+          <option value="navigation">Автономный проезд по основной карте</option>
+          <option value="mapping">Картографирование</option>
+          <option value="stopped">Только веб-панель</option>
+        </select>
+        <button class="primary" id="saveSettings">Сохранить настройки</button>
+      </div>
+      <p class="muted">Сама веб-панель запускается системой автоматически. Эта настройка определяет, запускать ли вместе с ней ROS-навигацию.</p>
+    </section>
+
+    <section class="card logs-card">
+      <div class="card-head compact">
+        <div>
+          <div class="eyebrow">Диагностика</div>
+          <h2>Журнал запуска</h2>
+        </div>
+      </div>
+      <pre id="logs">Журнал пока пуст.</pre>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
