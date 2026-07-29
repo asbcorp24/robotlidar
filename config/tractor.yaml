@@ -4,7 +4,7 @@ motor_gpio_node:
     dry_run: true
     active_high: true
 
-    # Нумерация BCM, не физические номера контактов разъёма Raspberry Pi.
+    # Нумерация BCM, не физические номера контактов Raspberry Pi.
     left_forward_pin: 17
     left_reverse_pin: 27
     right_forward_pin: 22
@@ -12,22 +12,14 @@ motor_gpio_node:
 
     # Расстояние между продольными центрами гусениц.
     track_width_m: 0.60
-
-    # Дискретный привод: слишком малые команды Nav2 считаются нулевыми.
     wheel_command_deadband: 0.05
-
-    # Без новой команды обе гусеницы обязательно отключаются.
     command_timeout_sec: 0.50
-
-    # Пауза между противоположными направлениями защищает контакторы/драйвер.
     reverse_pause_sec: 0.35
     control_rate_hz: 50.0
 
 hall_odometry_node:
   ros__parameters:
     dry_run: true
-
-    # Один импульсный сигнал на каждую сторону. Нумерация BCM.
     left_hall_pin: 5
     right_hall_pin: 6
     hall_pull_up: true
@@ -35,21 +27,56 @@ hall_odometry_node:
     right_hall_inverted: false
     bounce_time_sec: 0.002
 
-    # ВРЕМЕННЫЕ ЗНАЧЕНИЯ. Их обязательно заменить после измерений.
-    # Число фронтов сигнала Холла на один оборот вала двигателя.
+    # ВРЕМЕННЫЕ ЗНАЧЕНИЯ — заменить после измерений.
     pulses_per_motor_revolution: 6.0
-
-    # Обороты двигателя / обороты ведущей звезды.
-    # Если контроллер уже выдаёт импульсы после редуктора, поставить 1.0.
     gear_ratio: 30.0
-
-    # Реальное перемещение гусеницы за один оборот ведущей звезды.
     drive_sprocket_circumference_m: 0.40
-
-    # Должно совпадать с параметром узла управления.
     track_width_m: 0.60
 
     publish_rate_hz: 30.0
     odom_frame: odom
     base_frame: base_link
-    publish_tf: true
+
+    # TF odom->base_link публикует robot_localization.
+    publish_tf: false
+
+mpu6050_node:
+  ros__parameters:
+    # Поставить false после подключения и проверки I2C.
+    dry_run: true
+    i2c_bus: 1
+    i2c_address: 104            # 0x68
+    frame_id: imu_link
+    publish_rate_hz: 50.0
+
+    # Во время калибровки трактор должен быть полностью неподвижен.
+    calibration_samples: 500
+    calibration_sample_delay_sec: 0.01
+
+    gyro_range_dps: 500
+    accel_range_g: 4
+    dlpf_cfg: 4
+
+    # Изменить знаки, если модуль физически установлен другой стороной.
+    axis_sign_x: 1.0
+    axis_sign_y: 1.0
+    axis_sign_z: 1.0
+
+    angular_velocity_variance: 0.0025
+    linear_acceleration_variance: 0.25
+
+route_recorder_node:
+  ros__parameters:
+    route_file: ~/robotlidar_data/routes/cleaning_route.yaml
+    map_frame: map
+    base_frame: base_link
+    sample_rate_hz: 5.0
+    minimum_distance_m: 0.30
+    minimum_heading_rad: 0.20
+    auto_save_on_stop: true
+
+route_player_node:
+  ros__parameters:
+    route_file: ~/robotlidar_data/routes/cleaning_route.yaml
+    action_name: navigate_through_poses
+    server_wait_timeout_sec: 3.0
