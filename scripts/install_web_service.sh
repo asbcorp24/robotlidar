@@ -26,6 +26,13 @@ fi
 sudo apt update
 sudo apt install -y python3-fastapi python3-uvicorn python3-pil
 
+# Разрешения на USB-лидар, I2C и GPIO. Отсутствующие группы пропускаются.
+for DEVICE_GROUP in dialout i2c gpio; do
+  if getent group "$DEVICE_GROUP" >/dev/null; then
+    sudo usermod -aG "$DEVICE_GROUP" "$USER_NAME"
+  fi
+done
+
 TEMP_FILE="$(mktemp)"
 sed \
   -e "s|@USER@|$USER_NAME|g" \
@@ -50,3 +57,4 @@ echo "RobotLidar Web установлен и запущен."
 echo "Статус: sudo systemctl status $SERVICE_NAME"
 echo "Журнал: journalctl -u $SERVICE_NAME -f"
 echo "Панель: http://<IP_RASPBERRY_PI>:8080"
+echo "После добавления пользователя в группы dialout/i2c/gpio может потребоваться перезагрузка."
