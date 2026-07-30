@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch drive GPIO, Hall odometry, MPU6050, EKF and RPLIDAR C1."""
+"""Launch drive GPIO, Hall odometry, MPU6050, EKF and LDROBOT STL-19P."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -19,7 +19,7 @@ def generate_launch_description() -> LaunchDescription:
         [package_share, 'config', 'ekf.yaml']
     )
     lidar_launch = PathJoinSubstitution(
-        [package_share, 'launch', 'rplidar_c1.launch.py']
+        [package_share, 'launch', 'ldrobot_stl19p.launch.py']
     )
 
     config = LaunchConfiguration('config')
@@ -27,6 +27,7 @@ def generate_launch_description() -> LaunchDescription:
     serial_port = LaunchConfiguration('serial_port')
     start_lidar = LaunchConfiguration('start_lidar')
     start_imu = LaunchConfiguration('start_imu')
+    laser_scan_dir = LaunchConfiguration('laser_scan_dir')
 
     actions = [
         DeclareLaunchArgument('config', default_value=default_config),
@@ -34,6 +35,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
         DeclareLaunchArgument('start_lidar', default_value='true'),
         DeclareLaunchArgument('start_imu', default_value='true'),
+        DeclareLaunchArgument(
+            'laser_scan_dir',
+            default_value='true',
+            description='STL-19P scan direction: true counterclockwise',
+        ),
 
         Node(
             package='robotlidar',
@@ -100,6 +106,7 @@ def generate_launch_description() -> LaunchDescription:
             launch_arguments={
                 'serial_port': serial_port,
                 'frame_id': 'laser',
+                'laser_scan_dir': laser_scan_dir,
             }.items(),
             condition=IfCondition(start_lidar),
         ),
