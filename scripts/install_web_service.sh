@@ -12,6 +12,16 @@ USER_NAME="${SUDO_USER:-$USER}"
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 USER_GROUP="$(id -gn "$USER_NAME")"
 
+if [[ -n "${ROBOTLIDAR_SERIAL_PORT:-}" ]]; then
+  SERIAL_PORT="$ROBOTLIDAR_SERIAL_PORT"
+elif [[ -e /dev/ldlidar ]]; then
+  SERIAL_PORT="/dev/ldlidar"
+elif [[ -e /dev/ttyUSB0 ]]; then
+  SERIAL_PORT="/dev/ttyUSB0"
+else
+  SERIAL_PORT="/dev/ldlidar"
+fi
+
 if [[ ! -f "$WORKSPACE/install/setup.bash" ]]; then
   echo "Не найден $WORKSPACE/install/setup.bash"
   echo "Сначала соберите workspace: colcon build --symlink-install"
@@ -39,6 +49,7 @@ sed \
   -e "s|@GROUP@|$USER_GROUP|g" \
   -e "s|@HOME@|$USER_HOME|g" \
   -e "s|@WORKSPACE@|$WORKSPACE|g" \
+  -e "s|@SERIAL_PORT@|$SERIAL_PORT|g" \
   "$TEMPLATE" > "$TEMP_FILE"
 
 sudo install -m 0644 "$TEMP_FILE" "$TARGET"
@@ -54,6 +65,7 @@ sudo systemctl enable --now "$SERVICE_NAME"
 
 echo
 echo "RobotLidar Web установлен и запущен."
+echo "Порт лидара: $SERIAL_PORT"
 echo "Статус: sudo systemctl status $SERVICE_NAME"
 echo "Журнал: journalctl -u $SERVICE_NAME -f"
 echo "Панель: http://<IP_RASPBERRY_PI>:8080"
