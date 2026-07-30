@@ -1,43 +1,39 @@
 # RobotLidar
 
-Полностью офлайн-система автономного управления гусеничным трактором на базе:
+Полностью офлайн-система автономного управления гусеничным трактором на базе Raspberry Pi 4 и ROS 2.
 
-- Raspberry Pi 4;
+## Аппаратная конфигурация
+
+- Raspberry Pi 4, 4 или 8 ГБ;
 - Ubuntu Server 24.04 ARM64;
 - ROS 2 Jazzy;
-- RPLIDAR C1;
+- лидар **LDROBOT STL-19P / D500**;
 - MPU6050;
-- датчиков Холла левого и правого приводов;
-- четырёх дискретных выходов управления гусеницами;
-- локальной веб-панели для управления, карт и автозапуска.
+- датчики Холла левого и правого приводов;
+- четыре дискретных выхода управления гусеницами;
+- локальная веб-панель управления.
 
 Рабочий код хранится в ветке `main`.
 
+> STL-19P использует протокол LD19. В ROS 2 проект запускает пакет `ldlidar_stl_ros2` с профилем `LDLiDAR_LD19`, скоростью порта `230400` бод и топиком `/scan`.
+
 ## Возможности
 
-- преобразование `/cmd_vel` в команды левой и правой гусениц;
-- блокировка противоположных направлений;
-- пауза перед реверсом;
-- автоматический стоп при пропадании команд;
-- одометрия по импульсам Холла `/wheel/odom`;
-- публикация MPU6050 `/imu/data_raw`;
-- объединение Холлов и гироскопа через `robot_localization`;
-- итоговая одометрия `/odometry/filtered`;
-- драйвер RPLIDAR C1;
+- ручное управление трактором из браузера;
+- управление вперёд, назад, влево и вправо;
+- программная остановка и watchdog команд;
 - построение карты через SLAM Toolbox;
 - запись первого ручного маршрута;
-- автономное движение через Nav2;
-- обнаружение и объезд новых препятствий;
-- продолжение движения по непройденной части маршрута;
-- локальная FastAPI-панель на порту `8080`;
-- ручное управление с телефона или ноутбука;
-- сохранение, просмотр и выбор карт;
+- сохранение нескольких карт;
+- выбор карты для текущего запуска;
 - назначение карты по умолчанию;
-- автозапуск веб-панели и выбранного рабочего режима через `systemd`.
-
-Интернет при эксплуатации не требуется. Карты, маршрут и настройки хранятся на Raspberry Pi.
-
-> До аппаратной проверки необходимо оставить `dry_run: true`. Веб-кнопка «СТОП» не заменяет физическую аварийную кнопку, силовой контактор и аппаратный watchdog.
+- автономное движение через Nav2;
+- обнаружение и объезд препятствий;
+- продолжение движения по непройденным точкам маршрута;
+- одометрия по датчикам Холла;
+- объединение Холлов и MPU6050 через `robot_localization`;
+- автоматический запуск веб-панели через `systemd`;
+- полностью локальная работа без интернета.
 
 ## Поток данных
 
@@ -51,9 +47,9 @@ MPU6050 ───────> mpu6050_node ─────> /imu/data_raw ─�
                                                          ├─> /odometry/filtered
                                                          └─> odom -> base_link
 
-RPLIDAR C1 ─> /scan ─> SLAM / AMCL / карты препятствий Nav2
+LDROBOT STL-19P ─> /scan ─> SLAM / AMCL / costmap Nav2
 
-Телефон / ноутбук ─> FastAPI :8080 ─> /cmd_vel и ROS-сервисы
+Телефон / ноутбук ─> FastAPI :8080 ─> ROS 2
 
 Nav2 / веб-панель ─> /cmd_vel ─> motor_gpio_node ─> GPIO гусениц
 ```
@@ -62,15 +58,15 @@ Nav2 / веб-панель ─> /cmd_vel ─> motor_gpio_node ─> GPIO гусе
 
 ```text
 config/
-  tractor.yaml       GPIO, Холлы, MPU6050 и маршруты
-  ekf.yaml           объединение Холлов и IMU
-  slam.yaml          построение карты
-  nav2.yaml          локализация, планирование и объезд
+  tractor.yaml              GPIO, Холлы, MPU6050 и маршруты
+  ekf.yaml                  объединение Холлов и IMU
+  slam.yaml                 построение карты
+  nav2.yaml                 локализация, планирование и объезд
 
 launch/
   tractor_base.launch.py
   tractor_sensors.launch.py
-  rplidar_c1.launch.py
+  ldrobot_stl19p.launch.py
   mapping.launch.py
   navigation.launch.py
 
@@ -92,30 +88,28 @@ scripts/
   uninstall_web_service.sh
 ```
 
-# Полная установка и сборка
+# 1. Установка операционной системы
 
-## 1. Установка операционной системы
-
-Рекомендуется:
+Рекомендуемая конфигурация:
 
 ```text
 Ubuntu Server 24.04 ARM64
 ROS 2 Jazzy
-Raspberry Pi 4, 4 или 8 ГБ ОЗУ
+Raspberry Pi 4
+SSD через USB 3.0
+Активное охлаждение
 ```
 
-Желательно использовать SSD через USB 3.0 и активное охлаждение.
+# 2. Установка ROS 2 Jazzy
 
-## 2. Установка ROS 2 Jazzy
-
-Сначала установите ROS 2 Jazzy по официальной инструкции для Ubuntu 24.04. После установки должна существовать команда:
+Установить ROS 2 Jazzy для Ubuntu 24.04. После установки проверить:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 ros2 --help
 ```
 
-## 3. Установка системных зависимостей
+# 3. Установка системных зависимостей
 
 ```bash
 sudo apt update
@@ -136,36 +130,30 @@ sudo apt install -y \
   ros-jazzy-robot-localization
 ```
 
-Если `rosdep` ещё не инициализирован:
+Инициализация `rosdep`, если она ещё не выполнялась:
 
 ```bash
 sudo rosdep init
 rosdep update
 ```
 
-Если команда `sudo rosdep init` сообщает, что файл уже существует, повторно выполнять её не нужно.
+Если `sudo rosdep init` сообщает, что файл уже существует, повторять команду не нужно.
 
-## 4. Создание рабочего пространства
+# 4. Создание рабочего пространства
 
 ```bash
 mkdir -p ~/robotlidar_ws/src
 cd ~/robotlidar_ws/src
 ```
 
-## 5. Загрузка проекта из main
+# 5. Загрузка проекта из main
 
 ```bash
 git clone --branch main \
   https://github.com/asbcorp24/robotlidar.git
 ```
 
-Загрузка официального ROS 2-драйвера Slamtec:
-
-```bash
-git clone https://github.com/Slamtec/sllidar_ros2.git
-```
-
-Проверка:
+Проверить ветку:
 
 ```bash
 cd ~/robotlidar_ws/src/robotlidar
@@ -178,7 +166,28 @@ git branch --show-current
 main
 ```
 
-## 6. Установка ROS-зависимостей
+# 6. Загрузка драйвера LDROBOT STL-19P
+
+STL-19P работает через профиль LD19 официального ROS 2-пакета LDROBOT:
+
+```bash
+cd ~/robotlidar_ws/src
+
+git clone \
+  https://github.com/ldrobotSensorTeam/ldlidar_stl_ros2.git
+```
+
+Рекомендуется использовать стабильный тег драйвера:
+
+```bash
+cd ~/robotlidar_ws/src/ldlidar_stl_ros2
+git fetch --tags
+git checkout v3.0.3
+```
+
+Если тег отсутствует в используемой копии репозитория, оставить ветку `master` и собирать текущую версию.
+
+# 7. Установка ROS-зависимостей
 
 ```bash
 cd ~/robotlidar_ws
@@ -186,31 +195,28 @@ source /opt/ros/jazzy/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-## 7. Компиляция проекта
-
-Полная сборка:
+# 8. Компиляция проекта
 
 ```bash
 cd ~/robotlidar_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
-После успешной сборки в конце должно быть сообщение без пакетов со статусом `Failed`.
-
-Подключение собранного рабочего пространства:
+После успешной сборки подключить workspace:
 
 ```bash
 source ~/robotlidar_ws/install/setup.bash
 ```
 
-Проверка, что пакет найден:
+Проверить пакеты:
 
 ```bash
 ros2 pkg prefix robotlidar
+ros2 pkg prefix ldlidar_stl_ros2
 ```
 
-Проверка доступных исполняемых файлов:
+Проверить исполняемые файлы проекта:
 
 ```bash
 ros2 pkg executables robotlidar
@@ -227,9 +233,7 @@ robotlidar route_player_node
 robotlidar robotlidar_web
 ```
 
-## 8. Автоматическое подключение ROS в терминале
-
-Чтобы не выполнять `source` после каждого входа:
+# 9. Автоматическое подключение ROS в терминале
 
 ```bash
 echo 'source /opt/ros/jazzy/setup.bash' >> ~/.bashrc
@@ -237,28 +241,138 @@ echo 'source ~/robotlidar_ws/install/setup.bash' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-# Настройка перед первым запуском
+# 10. Настройка доступа к устройствам
 
-Открыть главный файл параметров:
+Добавить пользователя в системные группы:
+
+```bash
+sudo usermod -aG dialout,i2c,gpio "$USER"
+```
+
+Перезагрузить Raspberry Pi:
+
+```bash
+sudo reboot
+```
+
+После перезагрузки проверить порт лидара:
+
+```bash
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+```
+
+Обычно USB-UART адаптер STL-19P определяется как:
+
+```text
+/dev/ttyUSB0
+```
+
+Не рекомендуется постоянно использовать `chmod 777`. Доступ должен выдаваться через группу `dialout` или отдельное правило `udev`.
+
+# 11. Проверка LDROBOT STL-19P
+
+## Запуск через launch проекта
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/robotlidar_ws/install/setup.bash
+
+ros2 launch robotlidar ldrobot_stl19p.launch.py \
+  serial_port:=/dev/ttyUSB0
+```
+
+В другом терминале:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/robotlidar_ws/install/setup.bash
+
+ros2 topic hz /scan
+ros2 topic echo /scan --once
+```
+
+## Проверка через официальный launch LDROBOT
+
+```bash
+ros2 launch ldlidar_stl_ros2 ld19.launch.py
+```
+
+У официального launch-файла порт обычно записан как `/dev/ttyUSB0`. При другом имени порта изменить `port_name` в launch-файле драйвера либо запускать launch проекта `robotlidar`, где порт передаётся аргументом.
+
+## Направление сканирования
+
+По умолчанию проект использует:
+
+```text
+laser_scan_dir:=true
+```
+
+Это соответствует направлению против часовой стрелки в драйвере LDROBOT.
+
+При зеркальной карте или обратном направлении углов запустить:
+
+```bash
+ros2 launch robotlidar ldrobot_stl19p.launch.py \
+  serial_port:=/dev/ttyUSB0 \
+  laser_scan_dir:=false
+```
+
+Параметр также можно передать общему запуску датчиков:
+
+```bash
+ros2 launch robotlidar tractor_sensors.launch.py \
+  laser_scan_dir:=false
+```
+
+# 12. Проверка MPU6050
+
+Включить I2C:
+
+```bash
+sudo raspi-config
+```
+
+Далее выбрать:
+
+```text
+Interface Options
+I2C
+Enable
+```
+
+Проверить адрес:
+
+```bash
+i2cdetect -y 1
+```
+
+Ожидаемый адрес MPU6050:
+
+```text
+68
+```
+
+# 13. Настройка параметров трактора
+
+Открыть:
 
 ```bash
 nano ~/robotlidar_ws/src/robotlidar/config/tractor.yaml
 ```
 
-Обязательно уточнить:
+Уточнить:
 
-- GPIO управления двигателями;
-- активный уровень управляющих сигналов;
+- GPIO управления левой и правой гусеницами;
+- активный уровень выходов;
 - GPIO сигналов Холла;
-- число импульсов Холла на оборот;
+- число импульсов на оборот;
 - передаточное отношение редуктора;
 - перемещение гусеницы за оборот ведущей звезды;
-- расстояние между продольными центрами гусениц;
-- положение и ориентацию MPU6050;
-- положение лидара относительно центра трактора;
-- реальные размеры корпуса и стоп-зоны в `config/nav2.yaml`.
+- расстояние между центрами гусениц;
+- ориентацию MPU6050;
+- фактические размеры корпуса.
 
-До проверки оставить:
+До проверки силовой части оставить:
 
 ```yaml
 motor_gpio_node:
@@ -274,107 +388,47 @@ mpu6050_node:
     dry_run: true
 ```
 
-# Проверка оборудования
-
-## MPU6050
-
-Включить I2C:
-
-```bash
-sudo raspi-config
-```
-
-Далее:
+Координаты установки лидара задаются в:
 
 ```text
-Interface Options
-I2C
-Enable
+launch/tractor_sensors.launch.py
 ```
 
-Проверить адрес:
-
-```bash
-i2cdetect -y 1
-```
-
-Ожидаемый адрес:
+Временные значения:
 
 ```text
-68
+x = 0.35 м
+y = 0.00 м
+z = 0.55 м
 ```
 
-## RPLIDAR C1
+Их необходимо заменить реальными расстояниями от `base_link` до центра STL-19P.
 
-Проверить USB-порт:
-
-```bash
-ls -l /dev/ttyUSB*
-```
-
-Обычно используется:
-
-```text
-/dev/ttyUSB0
-```
-
-Добавить пользователя в группы доступа:
-
-```bash
-sudo usermod -aG dialout,i2c,gpio "$USER"
-```
-
-После этого выполнить перезагрузку:
-
-```bash
-sudo reboot
-```
-
-# Ручной тестовый запуск
-
-После перезагрузки:
+# 14. Запуск датчиков и одометрии
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/robotlidar_ws/install/setup.bash
-```
 
-## Запуск только лидара
-
-```bash
-ros2 launch robotlidar rplidar_c1.launch.py \
+ros2 launch robotlidar tractor_sensors.launch.py \
   serial_port:=/dev/ttyUSB0
-```
-
-В другом терминале:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source ~/robotlidar_ws/install/setup.bash
-ros2 topic hz /scan
-ros2 topic echo /scan --once
-```
-
-## Запуск датчиков и одометрии
-
-```bash
-ros2 launch robotlidar tractor_sensors.launch.py
 ```
 
 Проверка:
 
 ```bash
+ros2 topic hz /scan
 ros2 topic hz /imu/data_raw
-ros2 topic echo /imu/data_raw --once
 ros2 topic hz /wheel/odom
-ros2 topic echo /wheel/odom --once
 ros2 topic echo /odometry/filtered --once
 ros2 run tf2_ros tf2_echo odom base_link
 ```
 
-## Ручной запуск веб-приложения
+# 15. Ручной запуск веб-приложения
 
 ```bash
+source /opt/ros/jazzy/setup.bash
+source ~/robotlidar_ws/install/setup.bash
 ros2 run robotlidar robotlidar_web
 ```
 
@@ -384,7 +438,7 @@ ros2 run robotlidar robotlidar_web
 hostname -I
 ```
 
-Открыть на телефоне или ноутбуке:
+Открыть с телефона или ноутбука:
 
 ```text
 http://IP_RASPBERRY_PI:8080
@@ -396,7 +450,7 @@ http://IP_RASPBERRY_PI:8080
 http://192.168.1.50:8080
 ```
 
-# Установка веб-приложения в автозапуск
+# 16. Установка веб-приложения в автозапуск
 
 После успешного ручного запуска:
 
@@ -405,91 +459,59 @@ cd ~/robotlidar_ws/src/robotlidar
 bash scripts/install_web_service.sh ~/robotlidar_ws
 ```
 
-Скрипт:
-
-- устанавливает зависимости веб-панели;
-- создаёт каталоги карт, маршрутов и настроек;
-- устанавливает `robotlidar-web.service`;
-- включает запуск веб-панели после включения Raspberry Pi;
-- сразу запускает сервис.
-
-Проверка:
+Проверить сервис:
 
 ```bash
 sudo systemctl status robotlidar-web.service
 ```
 
-Журнал:
+Посмотреть журнал:
 
 ```bash
 journalctl -u robotlidar-web.service -f
 ```
 
-Перезапуск:
+Перезапустить:
 
 ```bash
 sudo systemctl restart robotlidar-web.service
 ```
 
-Остановка:
+Остановить:
 
 ```bash
 sudo systemctl stop robotlidar-web.service
 ```
 
-Удаление автозапуска без удаления карт:
+Удалить автозапуск без удаления карт:
 
 ```bash
 cd ~/robotlidar_ws/src/robotlidar
 bash scripts/uninstall_web_service.sh
 ```
 
-# Работа через веб-панель
+# 17. Первый ручной проезд и создание карты
 
-## Первый ручной проезд
+Через веб-панель:
 
-1. Открыть веб-панель.
-2. Выбрать режим построения карты.
-3. Нажать запуск картографирования.
-4. Очистить старый маршрут.
-5. Начать запись маршрута.
-6. Управлять трактором кнопками направления.
-7. После прохождения всей рабочей зоны остановить запись.
-8. Ввести имя карты.
-9. Сохранить карту.
-10. Назначить её основной картой.
+1. Открыть панель.
+2. Запустить режим картографирования.
+3. Очистить старый маршрут.
+4. Начать запись маршрута.
+5. Проехать всю рабочую площадку.
+6. Остановить запись маршрута.
+7. Ввести имя карты.
+8. Сохранить карту.
+9. Назначить её основной картой.
 
-Карты сохраняются в:
-
-```text
-~/robotlidar_data/maps/
-```
-
-Маршрут сохраняется в:
-
-```text
-~/robotlidar_data/routes/cleaning_route.yaml
-```
-
-## Автономный проезд
-
-1. Открыть веб-панель.
-2. Выбрать сохранённую карту.
-3. Запустить автономный режим.
-4. Указать начальное положение трактора на карте, если оно не восстановилось автоматически.
-5. Нажать запуск маршрута.
-
-Nav2 использует лидар для обнаружения новых препятствий, строит объезд и затем продолжает движение к оставшимся точкам маршрута.
-
-# Командный режим без веб-панели
-
-## Построение карты
+Командный запуск:
 
 ```bash
-ros2 launch robotlidar mapping.launch.py
+ros2 launch robotlidar mapping.launch.py \
+  serial_port:=/dev/ttyUSB0
 ```
 
-Начать запись маршрута:
+Начать запись:
 
 ```bash
 ros2 service call /route/clear std_srvs/srv/Trigger "{}"
@@ -510,10 +532,24 @@ ros2 run nav2_map_server map_saver_cli \
   -f ~/robotlidar_data/maps/cleaning_area
 ```
 
-## Автономная навигация
+Карта:
+
+```text
+~/robotlidar_data/maps/cleaning_area.yaml
+~/robotlidar_data/maps/cleaning_area.pgm
+```
+
+Маршрут:
+
+```text
+~/robotlidar_data/routes/cleaning_route.yaml
+```
+
+# 18. Автономный запуск
 
 ```bash
 ros2 launch robotlidar navigation.launch.py \
+  serial_port:=/dev/ttyUSB0 \
   map:=$HOME/robotlidar_data/maps/cleaning_area.yaml
 ```
 
@@ -523,121 +559,101 @@ ros2 launch robotlidar navigation.launch.py \
 ros2 service call /route/play std_srvs/srv/Trigger "{}"
 ```
 
-Остановить маршрут:
+Отменить маршрут:
 
 ```bash
 ros2 service call /route/cancel std_srvs/srv/Trigger "{}"
 ```
 
-# Обновление проекта из main
-
-Остановить веб-сервис:
-
-```bash
-sudo systemctl stop robotlidar-web.service
-```
-
-Получить изменения:
+# 19. Обновление проекта из main
 
 ```bash
 cd ~/robotlidar_ws/src/robotlidar
 git checkout main
 git pull origin main
-```
 
-При необходимости обновить драйвер лидара:
-
-```bash
-cd ~/robotlidar_ws/src/sllidar_ros2
+cd ~/robotlidar_ws/src/ldlidar_stl_ros2
 git pull
-```
 
-Пересобрать:
-
-```bash
 cd ~/robotlidar_ws
 source /opt/ros/jazzy/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
+
+sudo systemctl restart robotlidar-web.service
 ```
 
-Запустить сервис:
+# 20. Диагностика STL-19P
+
+## Порт не найден
 
 ```bash
-sudo systemctl restart robotlidar-web.service
-sudo systemctl status robotlidar-web.service
+dmesg --follow
 ```
 
-# Диагностика
+Подключить лидар и посмотреть, какое устройство появилось.
 
-Проверка узлов:
+Также проверить:
+
+```bash
+lsusb
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+groups
+```
+
+В списке групп должна быть `dialout`.
+
+## Ошибка `ldlidar communication is abnormal`
+
+Проверить:
+
+- правильный путь к порту;
+- питание лидара;
+- USB-кабель;
+- USB-UART адаптер;
+- наличие данных на RX;
+- скорость `230400` бод;
+- запуск профиля `LDLiDAR_LD19`;
+- отсутствие второго процесса, открывшего тот же порт.
+
+Проверить процессы:
+
+```bash
+lsof /dev/ttyUSB0
+```
+
+## Нет топика `/scan`
 
 ```bash
 ros2 node list
-```
-
-Проверка топиков:
-
-```bash
 ros2 topic list
+ros2 topic info /scan
 ```
 
-Основные топики:
+## Карта отображается зеркально
 
-```text
-/scan
-/imu/data_raw
-/wheel/odom
-/odometry/filtered
-/cmd_vel
-```
-
-Проверка TF:
+Поменять направление сканирования:
 
 ```bash
-ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo base_link laser
-ros2 run tf2_ros tf2_echo base_link imu_link
+laser_scan_dir:=false
 ```
 
-Проверка сервиса:
+Также проверить физическую ориентацию лидара и трансформацию `base_link -> laser`.
 
-```bash
-systemctl is-active robotlidar-web.service
-journalctl -u robotlidar-web.service -n 100 --no-pager
-```
+# 21. Безопасность
 
-Если лидар не открывает порт:
+Программная кнопка «СТОП» не заменяет аппаратную безопасность.
 
-```bash
-ls -l /dev/ttyUSB0
-groups
-sudo usermod -aG dialout "$USER"
-sudo reboot
-```
+Обязательны:
 
-Если MPU6050 не найден:
-
-```bash
-i2cdetect -y 1
-groups
-sudo usermod -aG i2c "$USER"
-sudo reboot
-```
-
-# Безопасность
-
-Программный GPIO-стоп и кнопка «СТОП» в браузере не заменяют аппаратную безопасность. Обязательны:
-
-- физическая аварийная кнопка, снимающая питание приводов;
+- физическая аварийная кнопка;
 - силовой контактор безопасности;
 - гальваническая развязка GPIO;
-- согласование уровней сигналов Холла;
+- согласование уровней Холлов;
 - аппаратный watchdog;
 - ручной режим с аппаратным приоритетом;
 - испытание сначала с вывешенными гусеницами;
-- испытание на закрытой площадке без людей;
-- ограничение скорости при первых испытаниях.
+- испытание на закрытой площадке без людей.
 
-Дополнительные сведения о веб-панели находятся в [WEB.md](WEB.md), об офлайн-развёртывании — в [OFFLINE.md](OFFLINE.md).
+Интернет после установки и сборки можно отключить. Вся навигация, карты, маршруты и веб-панель работают локально на Raspberry Pi.
