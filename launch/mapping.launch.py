@@ -37,7 +37,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('ekf_config', default_value=default_ekf),
         DeclareLaunchArgument('slam_config', default_value=default_slam),
-        DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch),
