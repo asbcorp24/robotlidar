@@ -43,7 +43,7 @@ def generate_launch_description() -> LaunchDescription:
             default_value='',
             description='Absolute path to the saved map YAML',
         ),
-        DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch),
