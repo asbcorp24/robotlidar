@@ -5,6 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -53,10 +54,18 @@ def generate_launch_description() -> LaunchDescription:
                 'frame_id': frame_id,
                 'port_name': serial_port,
                 'port_baudrate': 230400,
-                'laser_scan_dir': laser_scan_dir,
-                'enable_angle_crop_func': enable_angle_crop,
-                'angle_crop_min': angle_crop_min,
-                'angle_crop_max': angle_crop_max,
+                'laser_scan_dir': ParameterValue(
+                    laser_scan_dir, value_type=bool
+                ),
+                'enable_angle_crop_func': ParameterValue(
+                    enable_angle_crop, value_type=bool
+                ),
+                'angle_crop_min': ParameterValue(
+                    angle_crop_min, value_type=float
+                ),
+                'angle_crop_max': ParameterValue(
+                    angle_crop_max, value_type=float
+                ),
             }],
             emulate_tty=True,
         ),
