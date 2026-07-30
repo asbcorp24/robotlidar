@@ -32,7 +32,7 @@ def generate_launch_description() -> LaunchDescription:
     actions = [
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('ekf_config', default_value=default_ekf),
-        DeclareLaunchArgument('serial_port', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
         DeclareLaunchArgument('start_lidar', default_value='true'),
         DeclareLaunchArgument('start_imu', default_value='true'),
         DeclareLaunchArgument(
