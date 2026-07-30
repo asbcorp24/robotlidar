@@ -18,8 +18,11 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument(
             'serial_port',
-            default_value='/dev/ttyUSB0',
-            description='Serial port of LDROBOT STL-19P',
+            default_value='/dev/ldlidar',
+            description=(
+                'LD_CONTROL_SPEED_BOARD_V1.0 serial device; '
+                'fallback may be /dev/ttyUSB0'
+            ),
         ),
         DeclareLaunchArgument(
             'frame_id',
