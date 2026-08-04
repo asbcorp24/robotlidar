@@ -2,21 +2,22 @@
 
 // ============================================================
 // RobotLidar ESP32-WROOM dual-track controller
-// Sources of commands:
-//   1. Microzone MC7 + MC8RE-V2 receiver (default/manual mode)
+//
+// Command sources:
+//   1. Microzone MC7 + MC8RE-V2 (manual/default mode)
 //   2. Raspberry Pi ROS 2 over USB Serial (autonomous mode)
 //
-// The MC7 is normally configured as BOAT with CH1/CH2 MIX enabled. In that
-// mode CH1 and CH2 are already the final left/right motor commands. ESP32 must
-// not mix them a second time.
-// Framework: Arduino, build system: PlatformIO
-// ============================================================
-// IMPORTANT:
-// - GPIO25/GPIO26 are true 8-bit DAC outputs (0..3.3 V nominal).
-// - MC8RE PWM outputs are 3.3 V, but its receiver supply is 4.5..6 V.
-// - Do not connect 5 V motor Hall signals directly to ESP32 GPIO.
-// - ENABLE/BRAKE/REVERSE must use suitable isolated interfaces.
-// - The controller ignition wire may carry battery voltage.
+// MC7 is normally configured as BOAT with CH1/CH2 MIX enabled.
+// Therefore CH1 and CH2 are already final left/right track commands.
+//
+// Discrete controller inputs:
+//   GPIO16 -> TLP240A -> Reverse LEFT
+//   GPIO17 -> TLP240A -> Reverse RIGHT
+//   GPIO18 -> TLP240A -> Low brake LEFT
+//   GPIO19 -> TLP240A -> Low brake RIGHT
+//
+// GPIO21 and GPIO22 are intentionally free. Controller Lock/Ignition is
+// switched only by a physical key/switch and the hardware emergency circuit.
 // ============================================================
 
 namespace Pins {
@@ -26,19 +27,16 @@ constexpr uint8_t LEFT_REVERSE = 16;
 constexpr uint8_t RIGHT_REVERSE = 17;
 constexpr uint8_t LEFT_BRAKE = 18;
 constexpr uint8_t RIGHT_BRAKE = 19;
-constexpr uint8_t LEFT_ENABLE = 21;
-constexpr uint8_t RIGHT_ENABLE = 22;
 
 constexpr uint8_t ESTOP_OK = 32;    // NC emergency loop to GND; LOW = healthy
-constexpr uint8_t LEFT_HALL = 34;   // input-only, external 5V -> 3.3V conditioning
-constexpr uint8_t RIGHT_HALL = 35;  // input-only, external 5V -> 3.3V conditioning
+constexpr uint8_t LEFT_HALL = 34;   // input-only; external 5 V -> 3.3 V circuit
+constexpr uint8_t RIGHT_HALL = 35;  // input-only; external 5 V -> 3.3 V circuit
 
-// MC8RE-V2 PWM signal inputs. Receiver ground and ESP32 ground must be common.
-// With MC7 BOAT CH1/CH2 MIX: CH1 is the left motor, CH2 is the right motor.
-constexpr uint8_t RC_CHANNEL_1 = 27;
-constexpr uint8_t RC_CHANNEL_2 = 33;
-constexpr uint8_t RC_MODE = 13;  // receiver CH5: manual / neutral / ROS
-constexpr uint8_t RC_ARM = 14;   // receiver CH6: drive permission
+// MC8RE-V2 PWM inputs. Receiver GND and ESP32 GND must be common.
+constexpr uint8_t RC_CHANNEL_1 = 27;  // BOAT MIX: left track
+constexpr uint8_t RC_CHANNEL_2 = 33;  // BOAT MIX: right track
+constexpr uint8_t RC_MODE = 13;       // CH5: RC / SAFE / ROS
+constexpr uint8_t RC_ARM = 14;        // CH6: permission
 
 constexpr uint8_t STATUS_LED = 2;
 }  // namespace Pins
@@ -48,11 +46,11 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t CONTROL_PERIOD_MS = 20;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100;
 constexpr uint32_t COMMAND_WATCHDOG_MS = 450;
-constexpr uint32_t RC_SIGNAL_TIMEOUT_US = 160000;  // about 11 MC8RE frames
+constexpr uint32_t RC_SIGNAL_TIMEOUT_US = 160000;
 constexpr uint32_t REVERSE_BRAKE_MS = 700;
 constexpr uint32_t REVERSE_SETTLE_MS = 300;
 
-// MC8RE PWM: nominal 1000..2000 us, 1500 us centre, 14 ms period.
+// Nominal receiver PWM: 1000..2000 us, 1500 us centre.
 constexpr uint16_t RC_MIN_VALID_US = 800;
 constexpr uint16_t RC_MAX_VALID_US = 2200;
 constexpr uint16_t RC_CENTER_US = 1500;
@@ -62,34 +60,25 @@ constexpr uint16_t RC_MODE_ROS_MIN_US = 1700;
 constexpr uint16_t RC_ARM_OFF_MAX_US = 1400;
 constexpr uint16_t RC_ARM_ON_MIN_US = 1600;
 
-// true: MC7 BOAT CH1/CH2 MIX is enabled and CH1/CH2 are final track commands.
-// false: transmitter mixing is disabled; ESP32 mixes steering and throttle.
+// true: MC7 performs CH1/CH2 mixing; false: ESP32 mixes steering/throttle.
 constexpr bool RC_PREMIXED_BY_TRANSMITTER = true;
-
-// Used in BOAT premixed mode. Change one flag if its track runs backwards.
 constexpr bool RC_LEFT_REVERSED = false;
 constexpr bool RC_RIGHT_REVERSED = false;
-
-// Used only when RC_PREMIXED_BY_TRANSMITTER is false.
 constexpr bool RC_THROTTLE_REVERSED = false;
 constexpr bool RC_STEERING_REVERSED = false;
 
-// In autonomous mode, the radio remains an independent physical permission.
-// The mode switch must select ROS and the ARM switch must remain ON.
+// In ROS mode the radio remains an independent safety permission.
 constexpr bool ROS_REQUIRES_RC_ARM = true;
 
-// Safe initial throttle limits. Increase only after measuring the real input.
-// ESP32 DAC count is approximately voltage / 3.3 * 255.
+// Safe initial throttle limits. Calibrate on the real controller.
 constexpr uint8_t DAC_DISARMED = 0;
 constexpr uint8_t DAC_IDLE = 77;       // approximately 1.00 V
-constexpr uint8_t DAC_MAX_TEST = 220;  // approximately 2.85 V, intentionally limited
-constexpr int16_t RAMP_STEP_PER_TICK = 12;  // command units per 20 ms
+constexpr uint8_t DAC_MAX_TEST = 220;  // approximately 2.85 V
+constexpr int16_t RAMP_STEP_PER_TICK = 12;
 constexpr bool HOLD_BRAKE_AT_ZERO = true;
 constexpr bool REVERSE_SUPPORTED = true;
 
-// Output polarities refer to the low-voltage interface board, not directly to
-// unknown high-voltage controller wires.
-constexpr bool ENABLE_ACTIVE_HIGH = true;
+// HIGH lights the TLP240A input LED and closes its output contact.
 constexpr bool BRAKE_ACTIVE_HIGH = true;
 constexpr bool REVERSE_ACTIVE_HIGH = true;
 }  // namespace Config
@@ -104,10 +93,9 @@ struct Track {
   uint8_t throttlePin;
   uint8_t reversePin;
   uint8_t brakePin;
-  uint8_t enablePin;
-  int16_t target = 0;      // -1000..1000
-  int16_t actual = 0;      // ramped command
-  int8_t appliedSign = 1;  // +1 forward, -1 reverse
+  int16_t target = 0;
+  int16_t actual = 0;
+  int8_t appliedSign = 1;
   enum class Phase : uint8_t { Normal, BrakeBeforeReverse, ReverseSettle };
   Phase phase = Phase::Normal;
   uint32_t deadlineMs = 0;
@@ -135,13 +123,11 @@ Track leftTrack{
     Pins::LEFT_THROTTLE_DAC,
     Pins::LEFT_REVERSE,
     Pins::LEFT_BRAKE,
-    Pins::LEFT_ENABLE,
 };
 Track rightTrack{
     Pins::RIGHT_THROTTLE_DAC,
     Pins::RIGHT_REVERSE,
     Pins::RIGHT_BRAKE,
-    Pins::RIGHT_ENABLE,
 };
 
 portMUX_TYPE hallMux = portMUX_INITIALIZER_UNLOCKED;
@@ -206,15 +192,12 @@ void IRAM_ATTR captureRcEdge(uint8_t pin, RcCapture& channel) {
 void IRAM_ATTR onRcChannel1() {
   captureRcEdge(Pins::RC_CHANNEL_1, rcChannel1);
 }
-
 void IRAM_ATTR onRcChannel2() {
   captureRcEdge(Pins::RC_CHANNEL_2, rcChannel2);
 }
-
 void IRAM_ATTR onRcMode() {
   captureRcEdge(Pins::RC_MODE, rcMode);
 }
-
 void IRAM_ATTR onRcArm() {
   captureRcEdge(Pins::RC_ARM, rcArm);
 }
@@ -227,13 +210,10 @@ void setBrake(const Track& track, bool active) {
   digitalWrite(track.brakePin, outputLevel(active, Config::BRAKE_ACTIVE_HIGH));
 }
 
-void setEnable(const Track& track, bool active) {
-  digitalWrite(track.enablePin, outputLevel(active, Config::ENABLE_ACTIVE_HIGH));
-}
-
 void setReverse(Track& track, bool reverse) {
   digitalWrite(track.reversePin, outputLevel(reverse, Config::REVERSE_ACTIVE_HIGH));
   track.appliedSign = reverse ? -1 : 1;
+
   portENTER_CRITICAL(&hallMux);
   if (&track == &leftTrack) {
     leftPulseSign = track.appliedSign;
@@ -283,21 +263,21 @@ bool estopOkay() {
   return digitalRead(Pins::ESTOP_OK) == LOW;
 }
 
-void applyTrackSafe(Track& track, bool disableController) {
+void applyTrackSafe(Track& track) {
   track.target = 0;
   track.actual = 0;
   track.phase = Track::Phase::Normal;
   writeThrottle(track, Config::DAC_DISARMED);
   setBrake(track, true);
-  if (disableController) setEnable(track, false);
 }
 
 void disarmSystem(const char* reason) {
   const bool wasArmed = armed;
   armed = false;
-  applyTrackSafe(leftTrack, true);
-  applyTrackSafe(rightTrack, true);
+  applyTrackSafe(leftTrack);
+  applyTrackSafe(rightTrack);
   digitalWrite(Pins::STATUS_LED, LOW);
+
   if (wasArmed || reason != nullptr) {
     Serial.print("EVT,DISARM,");
     Serial.println(reason != nullptr ? reason : "requested");
@@ -320,8 +300,6 @@ bool armSystem(const char* source) {
   setReverse(rightTrack, false);
   setBrake(leftTrack, true);
   setBrake(rightTrack, true);
-  setEnable(leftTrack, true);
-  setEnable(rightTrack, true);
   delay(50);
 
   armed = true;
@@ -335,7 +313,7 @@ bool armSystem(const char* source) {
 
 void updateTrack(Track& track, uint32_t nowMs) {
   if (!armed) {
-    applyTrackSafe(track, true);
+    applyTrackSafe(track);
     return;
   }
 
@@ -457,12 +435,7 @@ int16_t pulseToCommand(uint16_t pulseUs, bool reversed) {
   int32_t delta = static_cast<int32_t>(pulseUs) - Config::RC_CENTER_US;
   if (abs(delta) <= Config::RC_DEADBAND_US) return 0;
 
-  if (delta > 0) {
-    delta -= Config::RC_DEADBAND_US;
-  } else {
-    delta += Config::RC_DEADBAND_US;
-  }
-
+  delta += delta > 0 ? -Config::RC_DEADBAND_US : Config::RC_DEADBAND_US;
   const int32_t usableSpan = 500 - Config::RC_DEADBAND_US;
   int32_t command = delta * 1000 / usableSpan;
   command = constrain(command, -1000, 1000);
@@ -471,14 +444,11 @@ int16_t pulseToCommand(uint16_t pulseUs, bool reversed) {
 }
 
 void readPremixedRcTracks(const RcSnapshot& rc, int16_t& left, int16_t& right) {
-  // MC7 BOAT CH1/CH2 MIX already performs differential mixing.
   left = pulseToCommand(rc.channel1Us, Config::RC_LEFT_REVERSED);
   right = pulseToCommand(rc.channel2Us, Config::RC_RIGHT_REVERSED);
 }
 
 void mixRcTracksOnEsp32(const RcSnapshot& rc, int16_t& left, int16_t& right) {
-  // Fallback mode for a transmitter with mixing disabled:
-  // CH1 = steering, CH2 = throttle.
   const int16_t steering = pulseToCommand(
       rc.channel1Us,
       Config::RC_STEERING_REVERSED);
@@ -529,12 +499,10 @@ void updateCommandSource() {
     disarmSystem("ESTOP");
     return;
   }
-
   if (controlMode == ControlMode::Safe) {
     disarmSystem(nullptr);
     return;
   }
-
   if (!rc.valid) {
     disarmSystem("RC_SIGNAL_LOST");
     return;
@@ -554,13 +522,11 @@ void updateCommandSource() {
       disarmSystem(nullptr);
       return;
     }
-
     if (!armed && !armSystem("RC")) return;
     calculateRcTracks(rc, leftTrack.target, rightTrack.target);
     return;
   }
 
-  // ROS mode. The RC mode and ARM channels remain an independent safety gate.
   if (Config::ROS_REQUIRES_RC_ARM && !physicalPermission) {
     disarmSystem(nullptr);
   }
@@ -588,8 +554,8 @@ void sendFrame(const String& body) {
 }
 
 void sendAck(uint32_t sequence, const char* result) {
-  String body = "ACK," + String(sequence) + "," + result + "," +
-                String(leftTrack.target) + "," + String(rightTrack.target);
+  const String body = "ACK," + String(sequence) + "," + result + "," +
+                      String(leftTrack.target) + "," + String(rightTrack.target);
   sendFrame(body);
 }
 
@@ -631,7 +597,6 @@ void processFrame(char* line) {
 
     lastDriveFrameMs = millis();
     watchdogTripped = false;
-
     if (controlMode != ControlMode::RosAutonomous) {
       sendAck(sequence, "NOT_ROS_MODE");
       return;
@@ -655,7 +620,6 @@ void processFrame(char* line) {
       sendAck(sequence, "OK");
       return;
     }
-
     if (controlMode != ControlMode::RosAutonomous) {
       sendAck(sequence, "NOT_ROS_MODE");
       return;
@@ -679,12 +643,10 @@ void processFrame(char* line) {
     sendAck(sequence, "OK");
     return;
   }
-
   if (strcmp(command, "PING") == 0) {
     sendAck(sequence, "PONG");
     return;
   }
-
   sendAck(sequence, "UNKNOWN");
 }
 
@@ -700,6 +662,7 @@ void readSerialFrames() {
       }
       continue;
     }
+
     if (serialLineLength + 1 < sizeof(serialLine)) {
       serialLine[serialLineLength++] = c;
     } else {
@@ -765,23 +728,25 @@ void setup() {
   pinMode(Pins::RIGHT_REVERSE, OUTPUT);
   pinMode(Pins::LEFT_BRAKE, OUTPUT);
   pinMode(Pins::RIGHT_BRAKE, OUTPUT);
-  pinMode(Pins::LEFT_ENABLE, OUTPUT);
-  pinMode(Pins::RIGHT_ENABLE, OUTPUT);
   pinMode(Pins::STATUS_LED, OUTPUT);
   pinMode(Pins::ESTOP_OK, INPUT_PULLUP);
   pinMode(Pins::LEFT_HALL, INPUT);
   pinMode(Pins::RIGHT_HALL, INPUT);
-
   pinMode(Pins::RC_CHANNEL_1, INPUT);
   pinMode(Pins::RC_CHANNEL_2, INPUT);
   pinMode(Pins::RC_MODE, INPUT);
   pinMode(Pins::RC_ARM, INPUT);
 
+  // Safe output state before interrupts and command processing start.
+  digitalWrite(Pins::LEFT_REVERSE, LOW);
+  digitalWrite(Pins::RIGHT_REVERSE, LOW);
+  digitalWrite(Pins::LEFT_BRAKE, HIGH);
+  digitalWrite(Pins::RIGHT_BRAKE, HIGH);
+  digitalWrite(Pins::STATUS_LED, LOW);
   setReverse(leftTrack, false);
   setReverse(rightTrack, false);
-  applyTrackSafe(leftTrack, true);
-  applyTrackSafe(rightTrack, true);
-  digitalWrite(Pins::STATUS_LED, LOW);
+  applyTrackSafe(leftTrack);
+  applyTrackSafe(rightTrack);
 
   attachInterrupt(digitalPinToInterrupt(Pins::LEFT_HALL), onLeftHall, RISING);
   attachInterrupt(digitalPinToInterrupt(Pins::RIGHT_HALL), onRightHall, RISING);
@@ -793,7 +758,7 @@ void setup() {
   lastControlMs = millis();
   lastTelemetryMs = millis();
   lastTelemetryPulseMs = millis();
-  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,3,MC7_BOAT_CH1_CH2_MIX");
+  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,4,TLP240A_GPIO21_22_FREE");
 }
 
 void loop() {
