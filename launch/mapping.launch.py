@@ -32,12 +32,14 @@ def generate_launch_description() -> LaunchDescription:
     ekf_config = LaunchConfiguration('ekf_config')
     slam_config = LaunchConfiguration('slam_config')
     serial_port = LaunchConfiguration('serial_port')
+    use_esp32_drive = LaunchConfiguration('use_esp32_drive')
 
     return LaunchDescription([
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('ekf_config', default_value=default_ekf),
         DeclareLaunchArgument('slam_config', default_value=default_slam),
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
+        DeclareLaunchArgument('use_esp32_drive', default_value='false'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch),
@@ -47,6 +49,7 @@ def generate_launch_description() -> LaunchDescription:
                 'serial_port': serial_port,
                 'start_lidar': 'true',
                 'start_imu': 'true',
+                'use_esp32_drive': use_esp32_drive,
             }.items(),
         ),
         IncludeLaunchDescription(
