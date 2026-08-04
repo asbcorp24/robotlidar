@@ -33,6 +33,7 @@ def generate_launch_description() -> LaunchDescription:
     nav2_config = LaunchConfiguration('nav2_config')
     map_file = LaunchConfiguration('map')
     serial_port = LaunchConfiguration('serial_port')
+    use_esp32_drive = LaunchConfiguration('use_esp32_drive')
 
     return LaunchDescription([
         DeclareLaunchArgument('config', default_value=default_config),
@@ -44,6 +45,7 @@ def generate_launch_description() -> LaunchDescription:
             description='Absolute path to the saved map YAML',
         ),
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
+        DeclareLaunchArgument('use_esp32_drive', default_value='false'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch),
@@ -53,6 +55,7 @@ def generate_launch_description() -> LaunchDescription:
                 'serial_port': serial_port,
                 'start_lidar': 'true',
                 'start_imu': 'true',
+                'use_esp32_drive': use_esp32_drive,
             }.items(),
         ),
         IncludeLaunchDescription(
