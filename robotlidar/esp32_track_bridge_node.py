@@ -22,7 +22,7 @@ except ImportError:
 
 
 class Esp32TrackBridgeNode(Node):
-    """Send signed track commands and receive Hall ticks over USB Serial."""
+    """Send signed track commands and receive Hall/RC telemetry over USB."""
 
     def __init__(self) -> None:
         super().__init__('esp32_track_bridge_node')
@@ -241,9 +241,9 @@ class Esp32TrackBridgeNode(Node):
             self.get_logger().info(f'ESP32 boot: {body}')
 
     def _handle_telemetry(self, fields: list[str]) -> None:
-        # TEL plus 12 values = 13 comma-separated fields total.
         if len(fields) < 13:
-            raise ValueError(f'TEL expected 13 fields, got {len(fields)}')
+            raise ValueError(f'TEL expected at least 13 fields, got {len(fields)}')
+
         telemetry = {
             'millis': int(fields[1]),
             'armed': bool(int(fields[2])),
@@ -259,6 +259,20 @@ class Esp32TrackBridgeNode(Node):
             'watchdog': bool(int(fields[12])),
             'received_at': time.time(),
         }
+
+        # Firmware v2+ appends RC data. Keep compatibility with older frames.
+        if len(fields) >= 19:
+            telemetry.update({
+                'control_mode': fields[13],
+                'rc_ch1_us': int(fields[14]),
+                'rc_ch2_us': int(fields[15]),
+                'rc_mode_us': int(fields[16]),
+                'rc_arm_us': int(fields[17]),
+                'rc_valid': bool(int(fields[18])),
+            })
+        if len(fields) >= 20:
+            telemetry['rc_input_mode'] = fields[19]
+
         with self._lock:
             self._last_telemetry = telemetry
             self._connected = True
