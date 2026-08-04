@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Differential-drive odometry from one Hall pulse channel per track."""
+"""Differential-drive odometry from Hall pulses or simulated /cmd_vel."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 from typing import Optional
 
 import rclpy
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Empty, Int8MultiArray
@@ -22,7 +22,7 @@ except ImportError:
 
 
 class HallOdometryNode(Node):
-    """Publish odometry using signed Hall pulses from left and right tracks."""
+    """Publish differential-drive odometry from real or simulated Hall data."""
 
     def __init__(self) -> None:
         super().__init__('hall_odometry_node')
@@ -44,6 +44,11 @@ class HallOdometryNode(Node):
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('publish_tf', True)
+
+        # When Hall sensors are absent, integrate commanded velocity so SLAM,
+        # EKF and the web panel can be tested without physical pulse inputs.
+        self.declare_parameter('simulate_from_cmd_vel', True)
+        self.declare_parameter('simulation_command_timeout_sec', 0.60)
 
         self.dry_run = bool(self.get_parameter('dry_run').value)
         self.left_hall_pin = int(self.get_parameter('left_hall_pin').value)
@@ -72,6 +77,12 @@ class HallOdometryNode(Node):
         self.odom_frame = str(self.get_parameter('odom_frame').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
         self.publish_tf = bool(self.get_parameter('publish_tf').value)
+        self.simulate_from_cmd_vel = bool(
+            self.get_parameter('simulate_from_cmd_vel').value
+        )
+        self.simulation_command_timeout_sec = float(
+            self.get_parameter('simulation_command_timeout_sec').value
+        )
 
         for name, value in (
             ('pulses_per_motor_revolution', pulses_per_revolution),
@@ -85,6 +96,8 @@ class HallOdometryNode(Node):
 
         if self.bounce_time_sec < 0.0:
             raise ValueError('bounce_time_sec cannot be negative')
+        if self.simulation_command_timeout_sec <= 0.0:
+            raise ValueError('simulation_command_timeout_sec must be positive')
 
         self.meters_per_pulse = (
             sprocket_circumference / (pulses_per_revolution * gear_ratio)
@@ -97,6 +110,10 @@ class HallOdometryNode(Node):
         self._right_last_pulses = 0
         self._left_direction = 0
         self._right_direction = 0
+
+        self._sim_linear_velocity = 0.0
+        self._sim_angular_velocity = 0.0
+        self._sim_last_command_time = 0.0
 
         self.x = 0.0
         self.y = 0.0
@@ -116,9 +133,15 @@ class HallOdometryNode(Node):
             self._direction_callback,
             20,
         )
+        self.create_subscription(
+            Twist,
+            '/cmd_vel',
+            self._cmd_vel_callback,
+            20,
+        )
 
         # One message on either topic represents one Hall edge. These topics
-        # make it possible to test the math without physical GPIO.
+        # remain available for manual pulse tests, including in dry-run mode.
         self.create_subscription(
             Empty, '/hall/left_pulse', self._left_test_pulse_callback, 50
         )
@@ -128,12 +151,15 @@ class HallOdometryNode(Node):
 
         self.create_timer(1.0 / publish_rate_hz, self._publish_odometry)
 
+        mode = 'HARDWARE'
+        if self.dry_run and self.simulate_from_cmd_vel:
+            mode = 'DRY-RUN CMD_VEL SIMULATION'
+        elif self.dry_run:
+            mode = 'DRY-RUN PULSE TEST'
+
         self.get_logger().info(
             'Hall odometry started in %s mode; %.9f m/pulse'
-            % (
-                'DRY-RUN' if self.dry_run else 'HARDWARE',
-                self.meters_per_pulse,
-            )
+            % (mode, self.meters_per_pulse)
         )
 
     def _configure_gpio(self) -> None:
@@ -162,11 +188,12 @@ class HallOdometryNode(Node):
             )
             self.left_input.when_activated = self._left_gpio_pulse_callback
             self.right_input.when_activated = self._right_gpio_pulse_callback
-        except Exception:
+        except Exception as exc:
             self._close_inputs()
             self.dry_run = True
-            self.get_logger().exception(
-                'Hall GPIO initialization failed; switching to dry-run mode'
+            self.get_logger().error(
+                'Hall GPIO initialization failed: %s; switching to dry-run mode'
+                % exc
             )
 
     def _direction_callback(self, message: Int8MultiArray) -> None:
@@ -179,6 +206,14 @@ class HallOdometryNode(Node):
         with self._lock:
             self._left_direction = self._normalize_direction(message.data[0])
             self._right_direction = self._normalize_direction(message.data[1])
+
+    def _cmd_vel_callback(self, message: Twist) -> None:
+        if not self.dry_run or not self.simulate_from_cmd_vel:
+            return
+        with self._lock:
+            self._sim_linear_velocity = float(message.linear.x)
+            self._sim_angular_velocity = float(message.angular.z)
+            self._sim_last_command_time = time.monotonic()
 
     @staticmethod
     def _normalize_direction(value: int) -> int:
@@ -224,6 +259,9 @@ class HallOdometryNode(Node):
         with self._lock:
             left_total = self._left_total_pulses
             right_total = self._right_total_pulses
+            sim_linear = self._sim_linear_velocity
+            sim_angular = self._sim_angular_velocity
+            sim_last_command = self._sim_last_command_time
 
         delta_left_pulses = left_total - self._left_last_pulses
         delta_right_pulses = right_total - self._right_last_pulses
@@ -232,6 +270,25 @@ class HallOdometryNode(Node):
 
         delta_left = delta_left_pulses * self.meters_per_pulse
         delta_right = delta_right_pulses * self.meters_per_pulse
+
+        if self.dry_run and self.simulate_from_cmd_vel:
+            command_fresh = (
+                sim_last_command > 0.0
+                and now_monotonic - sim_last_command
+                <= self.simulation_command_timeout_sec
+            )
+            if not command_fresh:
+                sim_linear = 0.0
+                sim_angular = 0.0
+
+            left_velocity = (
+                sim_linear - sim_angular * self.track_width_m / 2.0
+            )
+            right_velocity = (
+                sim_linear + sim_angular * self.track_width_m / 2.0
+            )
+            delta_left += left_velocity * dt
+            delta_right += right_velocity * dt
 
         delta_distance = (delta_right + delta_left) / 2.0
         delta_yaw = (delta_right - delta_left) / self.track_width_m
