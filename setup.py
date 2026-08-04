@@ -5,7 +5,7 @@ package_name = 'robotlidar'
 
 setup(
     name=package_name,
-    version='0.3.2',
+    version='0.4.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -24,7 +24,7 @@ setup(
     maintainer='asbcorp24',
     maintainer_email='asbcorp24@users.noreply.github.com',
     description=(
-        'Offline tracked tractor control, Hall/MPU6050 odometry, '
+        'Offline tracked tractor control, ESP32 drive, Hall/MPU odometry, '
         'LDROBOT STL-19P, SLAM, Nav2 and local web control panel.'
     ),
     license='MIT',
@@ -32,6 +32,8 @@ setup(
         'console_scripts': [
             'motor_gpio_node = robotlidar.motor_gpio_node:main',
             'hall_odometry_node = robotlidar.hall_odometry_node:main',
+            'esp32_track_bridge_node = robotlidar.esp32_track_bridge_node:main',
+            'esp32_track_odometry_node = robotlidar.esp32_track_odometry_node:main',
             'mpu6050_node = robotlidar.mpu6050_node:main',
             'route_recorder_node = robotlidar.route_recorder_node:main',
             'route_player_node = robotlidar.route_player_node:main',
