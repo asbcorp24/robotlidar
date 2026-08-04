@@ -220,7 +220,6 @@ class Esp32TrackBridgeNode(Node):
         if not line:
             return
         if '*' not in line:
-            # BOOT/EVT diagnostic lines may be emitted without framed data.
             self.get_logger().info(f'ESP32: {line}')
             return
         body, checksum_text = line.rsplit('*', 1)
@@ -242,8 +241,9 @@ class Esp32TrackBridgeNode(Node):
             self.get_logger().info(f'ESP32 boot: {body}')
 
     def _handle_telemetry(self, fields: list[str]) -> None:
-        if len(fields) < 14:
-            raise ValueError(f'TEL expected 14 fields, got {len(fields)}')
+        # TEL plus 12 values = 13 comma-separated fields total.
+        if len(fields) < 13:
+            raise ValueError(f'TEL expected 13 fields, got {len(fields)}')
         telemetry = {
             'millis': int(fields[1]),
             'armed': bool(int(fields[2])),
