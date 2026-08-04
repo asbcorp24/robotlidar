@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111d">
+  <title>RobotLidar — радар и IMU</title>
+  <link rel="stylesheet" href="/static/radar.css">
+</head>
+<body>
+  <header class="radar-header">
+    <div>
+      <div class="eyebrow">RobotLidar • поток WebSocket</div>
+      <h1>Лидар, гироскоп и координаты</h1>
+    </div>
+    <div class="header-actions">
+      <span class="connection offline" id="wsBadge">Подключение…</span>
+      <a class="back-link" href="/">← Панель управления</a>
+    </div>
+  </header>
+
+  <main class="radar-layout">
+    <section class="panel radar-panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">LDROBOT STL-19P</div>
+          <h2>Радар лидара</h2>
+        </div>
+        <label class="range-control">
+          Масштаб
+          <select id="rangeSelect">
+            <option value="3">3 м</option>
+            <option value="6" selected>6 м</option>
+            <option value="12">12 м</option>
+            <option value="20">20 м</option>
+          </select>
+        </label>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="radarCanvas" width="900" height="900"></canvas>
+        <div class="radar-empty" id="radarEmpty">Нет данных /scan</div>
+      </div>
+      <div class="radar-stats">
+        <div><span>Точек</span><strong id="pointCount">0</strong></div>
+        <div><span>Ближайшая</span><strong id="nearestRange">—</strong></div>
+        <div><span>Частота</span><strong id="scanRate">—</strong></div>
+        <div><span>Возраст</span><strong id="scanAge">—</strong></div>
+      </div>
+    </section>
+
+    <section class="panel telemetry-panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">/odometry/filtered</div>
+          <h2>Координаты робота</h2>
+        </div>
+      </div>
+      <div class="coordinate-grid">
+        <article><span>X</span><strong id="coordX">0.000</strong><small>м</small></article>
+        <article><span>Y</span><strong id="coordY">0.000</strong><small>м</small></article>
+        <article><span>Курс</span><strong id="coordYaw">0.0</strong><small>°</small></article>
+        <article><span>Скорость</span><strong id="linearSpeed">0.000</strong><small>м/с</small></article>
+      </div>
+
+      <div class="orientation-view">
+        <div class="horizon" id="horizon">
+          <div class="horizon-sky"></div>
+          <div class="horizon-ground"></div>
+          <div class="horizon-line"></div>
+          <div class="horizon-marker">▲</div>
+        </div>
+        <div class="orientation-values">
+          <div><span>Крен</span><strong id="rollValue">0.0°</strong></div>
+          <div><span>Тангаж</span><strong id="pitchValue">0.0°</strong></div>
+          <p>Крен и тангаж вычисляются приблизительно по акселерометру.</p>
+        </div>
+      </div>
+
+      <div class="panel-head compact">
+        <div>
+          <div class="eyebrow">MPU6500</div>
+          <h2>Гироскоп</h2>
+        </div>
+      </div>
+      <div class="imu-grid">
+        <article><span>Gyro X</span><strong id="gyroX">0.000</strong><small>рад/с</small></article>
+        <article><span>Gyro Y</span><strong id="gyroY">0.000</strong><small>рад/с</small></article>
+        <article><span>Gyro Z</span><strong id="gyroZ">0.000</strong><small>рад/с</small></article>
+        <article><span>IMU</span><strong id="imuAge">—</strong><small>возраст</small></article>
+      </div>
+
+      <div class="panel-head compact">
+        <div>
+          <div class="eyebrow">Состояние ROS 2</div>
+          <h2>Источники данных</h2>
+        </div>
+      </div>
+      <div class="sensor-list">
+        <div><span class="dot" id="lidarDot"></span>Лидар <small id="lidarText">нет данных</small></div>
+        <div><span class="dot" id="imuDot"></span>IMU <small id="imuText">нет данных</small></div>
+        <div><span class="dot" id="wheelDot"></span>Эмулятор Холлов <small id="wheelText">нет данных</small></div>
+        <div><span class="dot" id="odomDot"></span>Одометрия <small id="odomText">нет данных</small></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/radar.js"></script>
+</body>
+</html>
