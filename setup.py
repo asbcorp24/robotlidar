@@ -5,7 +5,7 @@ package_name = 'robotlidar'
 
 setup(
     name=package_name,
-    version='0.3.1',
+    version='0.3.2',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -35,7 +35,7 @@ setup(
             'mpu6050_node = robotlidar.mpu6050_node:main',
             'route_recorder_node = robotlidar.route_recorder_node:main',
             'route_player_node = robotlidar.route_player_node:main',
-            'robotlidar_web = robotlidar.web_app:main',
+            'robotlidar_web = robotlidar.web_entry:main',
         ],
     },
 )
