@@ -1,0 +1,32 @@
+esp32_track_bridge_node:
+  ros__parameters:
+    # Оставить true до прошивки ESP32 и проверки аварийной петли.
+    dry_run: true
+    serial_port: /dev/esp32drive
+    baud_rate: 115200
+
+    # Геометрия и масштаб команды гусениц.
+    track_width_m: 0.60
+    max_track_speed_mps: 0.50
+
+    # Raspberry Pi передаёт команду 20 раз/с. ESP32 самостоятельно отключает
+    # привод, если кадры не приходят более 450 мс.
+    command_timeout_sec: 0.50
+    send_rate_hz: 20.0
+
+    # Для безопасности привод разрешается только отдельным ROS-сервисом.
+    auto_arm: false
+
+esp32_track_odometry_node:
+  ros__parameters:
+    ticks_topic: /drive/hall_ticks
+
+    # ВРЕМЕННЫЕ значения. Hall/Speed может давать не 6 импульсов за оборот.
+    # Определить фактическое число тиков экспериментально.
+    pulses_per_motor_revolution: 6.0
+    gear_ratio: 30.0
+    drive_sprocket_circumference_m: 0.40
+    track_width_m: 0.60
+
+    odom_frame: odom
+    base_frame: base_link
