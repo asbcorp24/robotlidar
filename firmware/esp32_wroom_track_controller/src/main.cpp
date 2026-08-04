@@ -3,8 +3,12 @@
 // ============================================================
 // RobotLidar ESP32-WROOM dual-track controller
 // Sources of commands:
-//   1. Microzone MC8RE-V2 receiver, PWM outputs (default/manual mode)
+//   1. Microzone MC7 + MC8RE-V2 receiver (default/manual mode)
 //   2. Raspberry Pi ROS 2 over USB Serial (autonomous mode)
+//
+// The MC7 is normally configured as BOAT with CH1/CH2 MIX enabled. In that
+// mode CH1 and CH2 are already the final left/right motor commands. ESP32 must
+// not mix them a second time.
 // Framework: Arduino, build system: PlatformIO
 // ============================================================
 // IMPORTANT:
@@ -30,10 +34,11 @@ constexpr uint8_t LEFT_HALL = 34;   // input-only, external 5V -> 3.3V condition
 constexpr uint8_t RIGHT_HALL = 35;  // input-only, external 5V -> 3.3V conditioning
 
 // MC8RE-V2 PWM signal inputs. Receiver ground and ESP32 ground must be common.
-constexpr uint8_t RC_STEERING = 27;  // receiver CH1 by default
-constexpr uint8_t RC_THROTTLE = 33;  // receiver CH2 by default
-constexpr uint8_t RC_MODE = 13;      // receiver CH5: manual / neutral / ROS
-constexpr uint8_t RC_ARM = 14;       // receiver CH6: drive permission
+// With MC7 BOAT CH1/CH2 MIX: CH1 is the left motor, CH2 is the right motor.
+constexpr uint8_t RC_CHANNEL_1 = 27;
+constexpr uint8_t RC_CHANNEL_2 = 33;
+constexpr uint8_t RC_MODE = 13;  // receiver CH5: manual / neutral / ROS
+constexpr uint8_t RC_ARM = 14;   // receiver CH6: drive permission
 
 constexpr uint8_t STATUS_LED = 2;
 }  // namespace Pins
@@ -57,7 +62,15 @@ constexpr uint16_t RC_MODE_ROS_MIN_US = 1700;
 constexpr uint16_t RC_ARM_OFF_MAX_US = 1400;
 constexpr uint16_t RC_ARM_ON_MIN_US = 1600;
 
-// Change these if the sticks move in the opposite direction.
+// true: MC7 BOAT CH1/CH2 MIX is enabled and CH1/CH2 are final track commands.
+// false: transmitter mixing is disabled; ESP32 mixes steering and throttle.
+constexpr bool RC_PREMIXED_BY_TRANSMITTER = true;
+
+// Used in BOAT premixed mode. Change one flag if its track runs backwards.
+constexpr bool RC_LEFT_REVERSED = false;
+constexpr bool RC_RIGHT_REVERSED = false;
+
+// Used only when RC_PREMIXED_BY_TRANSMITTER is false.
 constexpr bool RC_THROTTLE_REVERSED = false;
 constexpr bool RC_STEERING_REVERSED = false;
 
@@ -107,12 +120,12 @@ struct RcCapture {
 };
 
 struct RcSnapshot {
-  uint16_t steeringUs = 0;
-  uint16_t throttleUs = 0;
+  uint16_t channel1Us = 0;
+  uint16_t channel2Us = 0;
   uint16_t modeUs = 0;
   uint16_t armUs = 0;
-  uint32_t steeringAgeUs = UINT32_MAX;
-  uint32_t throttleAgeUs = UINT32_MAX;
+  uint32_t channel1AgeUs = UINT32_MAX;
+  uint32_t channel2AgeUs = UINT32_MAX;
   uint32_t modeAgeUs = UINT32_MAX;
   uint32_t armAgeUs = UINT32_MAX;
   bool valid = false;
@@ -141,8 +154,8 @@ volatile uint32_t rightWindowPulses = 0;
 volatile int8_t leftPulseSign = 1;
 volatile int8_t rightPulseSign = 1;
 
-RcCapture rcSteering;
-RcCapture rcThrottle;
+RcCapture rcChannel1;
+RcCapture rcChannel2;
 RcCapture rcMode;
 RcCapture rcArm;
 
@@ -190,12 +203,12 @@ void IRAM_ATTR captureRcEdge(uint8_t pin, RcCapture& channel) {
   portEXIT_CRITICAL_ISR(&rcMux);
 }
 
-void IRAM_ATTR onRcSteering() {
-  captureRcEdge(Pins::RC_STEERING, rcSteering);
+void IRAM_ATTR onRcChannel1() {
+  captureRcEdge(Pins::RC_CHANNEL_1, rcChannel1);
 }
 
-void IRAM_ATTR onRcThrottle() {
-  captureRcEdge(Pins::RC_THROTTLE, rcThrottle);
+void IRAM_ATTR onRcChannel2() {
+  captureRcEdge(Pins::RC_CHANNEL_2, rcChannel2);
 }
 
 void IRAM_ATTR onRcMode() {
@@ -267,8 +280,6 @@ uint8_t commandToDac(int16_t signedCommand) {
 }
 
 bool estopOkay() {
-  // Fail-safe wiring: external normally-closed contact pulls this pin to GND.
-  // Open wire, pressed button, or disconnected plug reads HIGH and stops drive.
   return digitalRead(Pins::ESTOP_OK) == LOW;
 }
 
@@ -388,30 +399,30 @@ bool pulseValid(uint16_t pulseUs, uint32_t ageUs) {
 
 RcSnapshot readRcSnapshot() {
   RcSnapshot result;
-  uint32_t steerLast;
-  uint32_t throttleLast;
+  uint32_t channel1Last;
+  uint32_t channel2Last;
   uint32_t modeLast;
   uint32_t armLast;
   const uint32_t nowUs = micros();
 
   portENTER_CRITICAL(&rcMux);
-  result.steeringUs = rcSteering.pulseUs;
-  result.throttleUs = rcThrottle.pulseUs;
+  result.channel1Us = rcChannel1.pulseUs;
+  result.channel2Us = rcChannel2.pulseUs;
   result.modeUs = rcMode.pulseUs;
   result.armUs = rcArm.pulseUs;
-  steerLast = rcSteering.lastPulseUs;
-  throttleLast = rcThrottle.lastPulseUs;
+  channel1Last = rcChannel1.lastPulseUs;
+  channel2Last = rcChannel2.lastPulseUs;
   modeLast = rcMode.lastPulseUs;
   armLast = rcArm.lastPulseUs;
   portEXIT_CRITICAL(&rcMux);
 
-  result.steeringAgeUs = steerLast == 0 ? UINT32_MAX : nowUs - steerLast;
-  result.throttleAgeUs = throttleLast == 0 ? UINT32_MAX : nowUs - throttleLast;
+  result.channel1AgeUs = channel1Last == 0 ? UINT32_MAX : nowUs - channel1Last;
+  result.channel2AgeUs = channel2Last == 0 ? UINT32_MAX : nowUs - channel2Last;
   result.modeAgeUs = modeLast == 0 ? UINT32_MAX : nowUs - modeLast;
   result.armAgeUs = armLast == 0 ? UINT32_MAX : nowUs - armLast;
   result.valid =
-      pulseValid(result.steeringUs, result.steeringAgeUs) &&
-      pulseValid(result.throttleUs, result.throttleAgeUs) &&
+      pulseValid(result.channel1Us, result.channel1AgeUs) &&
+      pulseValid(result.channel2Us, result.channel2AgeUs) &&
       pulseValid(result.modeUs, result.modeAgeUs) &&
       pulseValid(result.armUs, result.armAgeUs);
   return result;
@@ -438,6 +449,10 @@ const char* modeName(ControlMode mode) {
   }
 }
 
+const char* rcInputModeName() {
+  return Config::RC_PREMIXED_BY_TRANSMITTER ? "BOAT_MIX" : "ESP32_MIX";
+}
+
 int16_t pulseToCommand(uint16_t pulseUs, bool reversed) {
   int32_t delta = static_cast<int32_t>(pulseUs) - Config::RC_CENTER_US;
   if (abs(delta) <= Config::RC_DEADBAND_US) return 0;
@@ -455,13 +470,21 @@ int16_t pulseToCommand(uint16_t pulseUs, bool reversed) {
   return static_cast<int16_t>(command);
 }
 
-void mixRcTracks(const RcSnapshot& rc, int16_t& left, int16_t& right) {
-  const int16_t throttle = pulseToCommand(
-      rc.throttleUs,
-      Config::RC_THROTTLE_REVERSED);
+void readPremixedRcTracks(const RcSnapshot& rc, int16_t& left, int16_t& right) {
+  // MC7 BOAT CH1/CH2 MIX already performs differential mixing.
+  left = pulseToCommand(rc.channel1Us, Config::RC_LEFT_REVERSED);
+  right = pulseToCommand(rc.channel2Us, Config::RC_RIGHT_REVERSED);
+}
+
+void mixRcTracksOnEsp32(const RcSnapshot& rc, int16_t& left, int16_t& right) {
+  // Fallback mode for a transmitter with mixing disabled:
+  // CH1 = steering, CH2 = throttle.
   const int16_t steering = pulseToCommand(
-      rc.steeringUs,
+      rc.channel1Us,
       Config::RC_STEERING_REVERSED);
+  const int16_t throttle = pulseToCommand(
+      rc.channel2Us,
+      Config::RC_THROTTLE_REVERSED);
 
   int32_t mixedLeft = static_cast<int32_t>(throttle) + steering;
   int32_t mixedRight = static_cast<int32_t>(throttle) - steering;
@@ -473,6 +496,14 @@ void mixRcTracks(const RcSnapshot& rc, int16_t& left, int16_t& right) {
 
   left = static_cast<int16_t>(constrain(mixedLeft, -1000, 1000));
   right = static_cast<int16_t>(constrain(mixedRight, -1000, 1000));
+}
+
+void calculateRcTracks(const RcSnapshot& rc, int16_t& left, int16_t& right) {
+  if (Config::RC_PREMIXED_BY_TRANSMITTER) {
+    readPremixedRcTracks(rc, left, right);
+  } else {
+    mixRcTracksOnEsp32(rc, left, right);
+  }
 }
 
 void changeMode(ControlMode nextMode) {
@@ -525,7 +556,7 @@ void updateCommandSource() {
     }
 
     if (!armed && !armSystem("RC")) return;
-    mixRcTracks(rc, leftTrack.target, rightTrack.target);
+    calculateRcTracks(rc, leftTrack.target, rightTrack.target);
     return;
   }
 
@@ -699,11 +730,11 @@ void sendTelemetry(uint32_t nowMs) {
   const uint32_t leftPps = leftPulseSnapshot * 1000UL / elapsed;
   const uint32_t rightPps = rightPulseSnapshot * 1000UL / elapsed;
 
-  char body[260];
+  char body[280];
   snprintf(
       body,
       sizeof(body),
-      "TEL,%lu,%d,%d,%d,%d,%d,%d,%lld,%lld,%lu,%lu,%d,%s,%u,%u,%u,%u,%d",
+      "TEL,%lu,%d,%d,%d,%d,%d,%d,%lld,%lld,%lu,%lu,%d,%s,%u,%u,%u,%u,%d,%s",
       static_cast<unsigned long>(nowMs),
       armed ? 1 : 0,
       estopOkay() ? 1 : 0,
@@ -717,11 +748,12 @@ void sendTelemetry(uint32_t nowMs) {
       static_cast<unsigned long>(rightPps),
       watchdogTripped ? 1 : 0,
       modeName(controlMode),
-      lastRcSnapshot.steeringUs,
-      lastRcSnapshot.throttleUs,
+      lastRcSnapshot.channel1Us,
+      lastRcSnapshot.channel2Us,
       lastRcSnapshot.modeUs,
       lastRcSnapshot.armUs,
-      lastRcValid ? 1 : 0);
+      lastRcValid ? 1 : 0,
+      rcInputModeName());
   sendFrame(String(body));
 }
 
@@ -740,8 +772,8 @@ void setup() {
   pinMode(Pins::LEFT_HALL, INPUT);
   pinMode(Pins::RIGHT_HALL, INPUT);
 
-  pinMode(Pins::RC_STEERING, INPUT);
-  pinMode(Pins::RC_THROTTLE, INPUT);
+  pinMode(Pins::RC_CHANNEL_1, INPUT);
+  pinMode(Pins::RC_CHANNEL_2, INPUT);
   pinMode(Pins::RC_MODE, INPUT);
   pinMode(Pins::RC_ARM, INPUT);
 
@@ -753,17 +785,15 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(Pins::LEFT_HALL), onLeftHall, RISING);
   attachInterrupt(digitalPinToInterrupt(Pins::RIGHT_HALL), onRightHall, RISING);
-  attachInterrupt(
-      digitalPinToInterrupt(Pins::RC_STEERING), onRcSteering, CHANGE);
-  attachInterrupt(
-      digitalPinToInterrupt(Pins::RC_THROTTLE), onRcThrottle, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1), onRcChannel1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2), onRcChannel2, CHANGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE), onRcMode, CHANGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_ARM), onRcArm, CHANGE);
 
   lastControlMs = millis();
   lastTelemetryMs = millis();
   lastTelemetryPulseMs = millis();
-  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,2,RC_DEFAULT");
+  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,3,MC7_BOAT_CH1_CH2_MIX");
 }
 
 void loop() {
