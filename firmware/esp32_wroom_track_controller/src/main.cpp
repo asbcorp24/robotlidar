@@ -1,15 +1,18 @@
 #include <Arduino.h>
 
 // ============================================================
-// RobotLidar ESP32-WROOM controller for two e-bike BLDC drivers
+// RobotLidar ESP32-WROOM dual-track controller
+// Sources of commands:
+//   1. Microzone MC8RE-V2 receiver, PWM outputs (default/manual mode)
+//   2. Raspberry Pi ROS 2 over USB Serial (autonomous mode)
 // Framework: Arduino, build system: PlatformIO
 // ============================================================
 // IMPORTANT:
 // - GPIO25/GPIO26 are true 8-bit DAC outputs (0..3.3 V nominal).
-// - Do not connect 5 V Hall/speed outputs directly to ESP32 GPIO.
-// - ENABLE pins must drive isolated relay/transistor interfaces; the thin
-//   controller ignition wire may carry battery voltage and never goes to ESP32.
-// - BRAKE/REVERSE polarity must be verified on the actual controller harness.
+// - MC8RE PWM outputs are 3.3 V, but its receiver supply is 4.5..6 V.
+// - Do not connect 5 V motor Hall signals directly to ESP32 GPIO.
+// - ENABLE/BRAKE/REVERSE must use suitable isolated interfaces.
+// - The controller ignition wire may carry battery voltage.
 // ============================================================
 
 namespace Pins {
@@ -21,9 +24,17 @@ constexpr uint8_t LEFT_BRAKE = 18;
 constexpr uint8_t RIGHT_BRAKE = 19;
 constexpr uint8_t LEFT_ENABLE = 21;
 constexpr uint8_t RIGHT_ENABLE = 22;
-constexpr uint8_t ESTOP_OK = 32;       // NC emergency loop to GND; LOW = healthy
-constexpr uint8_t LEFT_HALL = 34;      // input-only, external 3.3 V conditioning
-constexpr uint8_t RIGHT_HALL = 35;     // input-only, external 3.3 V conditioning
+
+constexpr uint8_t ESTOP_OK = 32;    // NC emergency loop to GND; LOW = healthy
+constexpr uint8_t LEFT_HALL = 34;   // input-only, external 5V -> 3.3V conditioning
+constexpr uint8_t RIGHT_HALL = 35;  // input-only, external 5V -> 3.3V conditioning
+
+// MC8RE-V2 PWM signal inputs. Receiver ground and ESP32 ground must be common.
+constexpr uint8_t RC_STEERING = 27;  // receiver CH1 by default
+constexpr uint8_t RC_THROTTLE = 33;  // receiver CH2 by default
+constexpr uint8_t RC_MODE = 13;      // receiver CH5: manual / neutral / ROS
+constexpr uint8_t RC_ARM = 14;       // receiver CH6: drive permission
+
 constexpr uint8_t STATUS_LED = 2;
 }  // namespace Pins
 
@@ -32,24 +43,49 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t CONTROL_PERIOD_MS = 20;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 100;
 constexpr uint32_t COMMAND_WATCHDOG_MS = 450;
+constexpr uint32_t RC_SIGNAL_TIMEOUT_US = 160000;  // about 11 MC8RE frames
 constexpr uint32_t REVERSE_BRAKE_MS = 700;
 constexpr uint32_t REVERSE_SETTLE_MS = 300;
 
-// Safe initial limits. Increase only after measuring the real throttle input.
+// MC8RE PWM: nominal 1000..2000 us, 1500 us centre, 14 ms period.
+constexpr uint16_t RC_MIN_VALID_US = 800;
+constexpr uint16_t RC_MAX_VALID_US = 2200;
+constexpr uint16_t RC_CENTER_US = 1500;
+constexpr uint16_t RC_DEADBAND_US = 45;
+constexpr uint16_t RC_MODE_MANUAL_MAX_US = 1300;
+constexpr uint16_t RC_MODE_ROS_MIN_US = 1700;
+constexpr uint16_t RC_ARM_OFF_MAX_US = 1400;
+constexpr uint16_t RC_ARM_ON_MIN_US = 1600;
+
+// Change these if the sticks move in the opposite direction.
+constexpr bool RC_THROTTLE_REVERSED = false;
+constexpr bool RC_STEERING_REVERSED = false;
+
+// In autonomous mode, the radio remains an independent physical permission.
+// The mode switch must select ROS and the ARM switch must remain ON.
+constexpr bool ROS_REQUIRES_RC_ARM = true;
+
+// Safe initial throttle limits. Increase only after measuring the real input.
 // ESP32 DAC count is approximately voltage / 3.3 * 255.
 constexpr uint8_t DAC_DISARMED = 0;
-constexpr uint8_t DAC_IDLE = 68;       // approximately 0.88 V
+constexpr uint8_t DAC_IDLE = 77;       // approximately 1.00 V
 constexpr uint8_t DAC_MAX_TEST = 220;  // approximately 2.85 V, intentionally limited
 constexpr int16_t RAMP_STEP_PER_TICK = 12;  // command units per 20 ms
 constexpr bool HOLD_BRAKE_AT_ZERO = true;
 constexpr bool REVERSE_SUPPORTED = true;
 
 // Output polarities refer to the low-voltage interface board, not directly to
-// high-voltage controller wires.
+// unknown high-voltage controller wires.
 constexpr bool ENABLE_ACTIVE_HIGH = true;
 constexpr bool BRAKE_ACTIVE_HIGH = true;
 constexpr bool REVERSE_ACTIVE_HIGH = true;
 }  // namespace Config
+
+enum class ControlMode : uint8_t {
+  Safe = 0,
+  RcManual = 1,
+  RosAutonomous = 2,
+};
 
 struct Track {
   uint8_t throttlePin;
@@ -62,6 +98,24 @@ struct Track {
   enum class Phase : uint8_t { Normal, BrakeBeforeReverse, ReverseSettle };
   Phase phase = Phase::Normal;
   uint32_t deadlineMs = 0;
+};
+
+struct RcCapture {
+  volatile uint32_t riseUs = 0;
+  volatile uint32_t lastPulseUs = 0;
+  volatile uint16_t pulseUs = 0;
+};
+
+struct RcSnapshot {
+  uint16_t steeringUs = 0;
+  uint16_t throttleUs = 0;
+  uint16_t modeUs = 0;
+  uint16_t armUs = 0;
+  uint32_t steeringAgeUs = UINT32_MAX;
+  uint32_t throttleAgeUs = UINT32_MAX;
+  uint32_t modeAgeUs = UINT32_MAX;
+  uint32_t armAgeUs = UINT32_MAX;
+  bool valid = false;
 };
 
 Track leftTrack{
@@ -78,6 +132,8 @@ Track rightTrack{
 };
 
 portMUX_TYPE hallMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE rcMux = portMUX_INITIALIZER_UNLOCKED;
+
 volatile int64_t leftTicks = 0;
 volatile int64_t rightTicks = 0;
 volatile uint32_t leftWindowPulses = 0;
@@ -85,13 +141,22 @@ volatile uint32_t rightWindowPulses = 0;
 volatile int8_t leftPulseSign = 1;
 volatile int8_t rightPulseSign = 1;
 
+RcCapture rcSteering;
+RcCapture rcThrottle;
+RcCapture rcMode;
+RcCapture rcArm;
+
 bool armed = false;
 bool watchdogTripped = false;
+bool rcArmSeenOff = false;
+bool lastRcValid = false;
+ControlMode controlMode = ControlMode::Safe;
 uint32_t lastDriveFrameMs = 0;
 uint32_t lastControlMs = 0;
 uint32_t lastTelemetryMs = 0;
 uint32_t lastTelemetryPulseMs = 0;
 uint32_t lastSequence = 0;
+RcSnapshot lastRcSnapshot;
 
 char serialLine[180];
 size_t serialLineLength = 0;
@@ -108,6 +173,37 @@ void IRAM_ATTR onRightHall() {
   rightTicks += rightPulseSign;
   ++rightWindowPulses;
   portEXIT_CRITICAL_ISR(&hallMux);
+}
+
+void IRAM_ATTR captureRcEdge(uint8_t pin, RcCapture& channel) {
+  const uint32_t nowUs = micros();
+  portENTER_CRITICAL_ISR(&rcMux);
+  if (digitalRead(pin) == HIGH) {
+    channel.riseUs = nowUs;
+  } else {
+    const uint32_t width = nowUs - channel.riseUs;
+    if (width <= 65535U) {
+      channel.pulseUs = static_cast<uint16_t>(width);
+      channel.lastPulseUs = nowUs;
+    }
+  }
+  portEXIT_CRITICAL_ISR(&rcMux);
+}
+
+void IRAM_ATTR onRcSteering() {
+  captureRcEdge(Pins::RC_STEERING, rcSteering);
+}
+
+void IRAM_ATTR onRcThrottle() {
+  captureRcEdge(Pins::RC_THROTTLE, rcThrottle);
+}
+
+void IRAM_ATTR onRcMode() {
+  captureRcEdge(Pins::RC_MODE, rcMode);
+}
+
+void IRAM_ATTR onRcArm() {
+  captureRcEdge(Pins::RC_ARM, rcArm);
 }
 
 bool outputLevel(bool active, bool activeHigh) {
@@ -197,7 +293,7 @@ void disarmSystem(const char* reason) {
   }
 }
 
-bool armSystem() {
+bool armSystem(const char* source) {
   if (!estopOkay()) {
     Serial.println("ERR,ESTOP_OPEN");
     return false;
@@ -221,7 +317,8 @@ bool armSystem() {
   watchdogTripped = false;
   lastDriveFrameMs = millis();
   digitalWrite(Pins::STATUS_LED, HIGH);
-  Serial.println("EVT,ARMED");
+  Serial.print("EVT,ARMED,");
+  Serial.println(source != nullptr ? source : "UNKNOWN");
   return true;
 }
 
@@ -280,6 +377,161 @@ void updateTrack(Track& track, uint32_t nowMs) {
   } else {
     setBrake(track, false);
     writeThrottle(track, commandToDac(track.actual));
+  }
+}
+
+bool pulseValid(uint16_t pulseUs, uint32_t ageUs) {
+  return pulseUs >= Config::RC_MIN_VALID_US &&
+         pulseUs <= Config::RC_MAX_VALID_US &&
+         ageUs <= Config::RC_SIGNAL_TIMEOUT_US;
+}
+
+RcSnapshot readRcSnapshot() {
+  RcSnapshot result;
+  uint32_t steerLast;
+  uint32_t throttleLast;
+  uint32_t modeLast;
+  uint32_t armLast;
+  const uint32_t nowUs = micros();
+
+  portENTER_CRITICAL(&rcMux);
+  result.steeringUs = rcSteering.pulseUs;
+  result.throttleUs = rcThrottle.pulseUs;
+  result.modeUs = rcMode.pulseUs;
+  result.armUs = rcArm.pulseUs;
+  steerLast = rcSteering.lastPulseUs;
+  throttleLast = rcThrottle.lastPulseUs;
+  modeLast = rcMode.lastPulseUs;
+  armLast = rcArm.lastPulseUs;
+  portEXIT_CRITICAL(&rcMux);
+
+  result.steeringAgeUs = steerLast == 0 ? UINT32_MAX : nowUs - steerLast;
+  result.throttleAgeUs = throttleLast == 0 ? UINT32_MAX : nowUs - throttleLast;
+  result.modeAgeUs = modeLast == 0 ? UINT32_MAX : nowUs - modeLast;
+  result.armAgeUs = armLast == 0 ? UINT32_MAX : nowUs - armLast;
+  result.valid =
+      pulseValid(result.steeringUs, result.steeringAgeUs) &&
+      pulseValid(result.throttleUs, result.throttleAgeUs) &&
+      pulseValid(result.modeUs, result.modeAgeUs) &&
+      pulseValid(result.armUs, result.armAgeUs);
+  return result;
+}
+
+ControlMode modeFromPulse(uint16_t pulseUs) {
+  if (pulseUs <= Config::RC_MODE_MANUAL_MAX_US) {
+    return ControlMode::RcManual;
+  }
+  if (pulseUs >= Config::RC_MODE_ROS_MIN_US) {
+    return ControlMode::RosAutonomous;
+  }
+  return ControlMode::Safe;
+}
+
+const char* modeName(ControlMode mode) {
+  switch (mode) {
+    case ControlMode::RcManual:
+      return "RC";
+    case ControlMode::RosAutonomous:
+      return "ROS";
+    default:
+      return "SAFE";
+  }
+}
+
+int16_t pulseToCommand(uint16_t pulseUs, bool reversed) {
+  int32_t delta = static_cast<int32_t>(pulseUs) - Config::RC_CENTER_US;
+  if (abs(delta) <= Config::RC_DEADBAND_US) return 0;
+
+  if (delta > 0) {
+    delta -= Config::RC_DEADBAND_US;
+  } else {
+    delta += Config::RC_DEADBAND_US;
+  }
+
+  const int32_t usableSpan = 500 - Config::RC_DEADBAND_US;
+  int32_t command = delta * 1000 / usableSpan;
+  command = constrain(command, -1000, 1000);
+  if (reversed) command = -command;
+  return static_cast<int16_t>(command);
+}
+
+void mixRcTracks(const RcSnapshot& rc, int16_t& left, int16_t& right) {
+  const int16_t throttle = pulseToCommand(
+      rc.throttleUs,
+      Config::RC_THROTTLE_REVERSED);
+  const int16_t steering = pulseToCommand(
+      rc.steeringUs,
+      Config::RC_STEERING_REVERSED);
+
+  int32_t mixedLeft = static_cast<int32_t>(throttle) + steering;
+  int32_t mixedRight = static_cast<int32_t>(throttle) - steering;
+  const int32_t peak = max(abs(mixedLeft), abs(mixedRight));
+  if (peak > 1000) {
+    mixedLeft = mixedLeft * 1000 / peak;
+    mixedRight = mixedRight * 1000 / peak;
+  }
+
+  left = static_cast<int16_t>(constrain(mixedLeft, -1000, 1000));
+  right = static_cast<int16_t>(constrain(mixedRight, -1000, 1000));
+}
+
+void changeMode(ControlMode nextMode) {
+  if (nextMode == controlMode) return;
+  disarmSystem("MODE_CHANGE");
+  controlMode = nextMode;
+  rcArmSeenOff = false;
+  Serial.print("EVT,MODE,");
+  Serial.println(modeName(controlMode));
+}
+
+void updateCommandSource() {
+  const RcSnapshot rc = readRcSnapshot();
+  lastRcSnapshot = rc;
+  lastRcValid = rc.valid;
+
+  const ControlMode requestedMode = rc.valid
+      ? modeFromPulse(rc.modeUs)
+      : ControlMode::Safe;
+  changeMode(requestedMode);
+
+  if (!estopOkay()) {
+    disarmSystem("ESTOP");
+    return;
+  }
+
+  if (controlMode == ControlMode::Safe) {
+    disarmSystem(nullptr);
+    return;
+  }
+
+  if (!rc.valid) {
+    disarmSystem("RC_SIGNAL_LOST");
+    return;
+  }
+
+  if (rc.armUs <= Config::RC_ARM_OFF_MAX_US) {
+    rcArmSeenOff = true;
+    disarmSystem(nullptr);
+    return;
+  }
+
+  const bool physicalPermission =
+      rcArmSeenOff && rc.armUs >= Config::RC_ARM_ON_MIN_US;
+
+  if (controlMode == ControlMode::RcManual) {
+    if (!physicalPermission) {
+      disarmSystem(nullptr);
+      return;
+    }
+
+    if (!armed && !armSystem("RC")) return;
+    mixRcTracks(rc, leftTrack.target, rightTrack.target);
+    return;
+  }
+
+  // ROS mode. The RC mode and ARM channels remain an independent safety gate.
+  if (Config::ROS_REQUIRES_RC_ARM && !physicalPermission) {
+    disarmSystem(nullptr);
   }
 }
 
@@ -345,18 +597,21 @@ void processFrame(char* line) {
       sendAck(sequence, "BAD_FORMAT");
       return;
     }
-    const int16_t left = clampCommand(strtol(leftText, nullptr, 10));
-    const int16_t right = clampCommand(strtol(rightText, nullptr, 10));
+
     lastDriveFrameMs = millis();
     watchdogTripped = false;
+
+    if (controlMode != ControlMode::RosAutonomous) {
+      sendAck(sequence, "NOT_ROS_MODE");
+      return;
+    }
     if (!armed) {
-      leftTrack.target = 0;
-      rightTrack.target = 0;
       sendAck(sequence, "DISARMED");
       return;
     }
-    leftTrack.target = left;
-    rightTrack.target = right;
+
+    leftTrack.target = clampCommand(strtol(leftText, nullptr, 10));
+    rightTrack.target = clampCommand(strtol(rightText, nullptr, 10));
     sendAck(sequence, "OK");
     return;
   }
@@ -364,14 +619,27 @@ void processFrame(char* line) {
   if (strcmp(command, "ARM") == 0) {
     char* valueText = strtok_r(nullptr, ",", &save);
     const bool requestArm = valueText != nullptr && atoi(valueText) != 0;
-    if (requestArm) {
-      leftTrack.target = 0;
-      rightTrack.target = 0;
-      sendAck(sequence, armSystem() ? "OK" : "REFUSED");
-    } else {
+    if (!requestArm) {
       disarmSystem("REMOTE");
       sendAck(sequence, "OK");
+      return;
     }
+
+    if (controlMode != ControlMode::RosAutonomous) {
+      sendAck(sequence, "NOT_ROS_MODE");
+      return;
+    }
+    if (!lastRcSnapshot.valid ||
+        (Config::ROS_REQUIRES_RC_ARM &&
+         !(rcArmSeenOff &&
+           lastRcSnapshot.armUs >= Config::RC_ARM_ON_MIN_US))) {
+      sendAck(sequence, "RC_PERMISSION_REQUIRED");
+      return;
+    }
+
+    leftTrack.target = 0;
+    rightTrack.target = 0;
+    sendAck(sequence, armSystem("ROS") ? "OK" : "REFUSED");
     return;
   }
 
@@ -425,20 +693,36 @@ void sendTelemetry(uint32_t nowMs) {
   rightWindowPulses = 0;
   portEXIT_CRITICAL(&hallMux);
 
-  const uint32_t elapsed = max<uint32_t>(1, nowMs - lastTelemetryPulseMs);
+  uint32_t elapsed = nowMs - lastTelemetryPulseMs;
+  if (elapsed == 0) elapsed = 1;
   lastTelemetryPulseMs = nowMs;
   const uint32_t leftPps = leftPulseSnapshot * 1000UL / elapsed;
   const uint32_t rightPps = rightPulseSnapshot * 1000UL / elapsed;
 
-  String body = "TEL," + String(nowMs) + "," + String(armed ? 1 : 0) + "," +
-                String(estopOkay() ? 1 : 0) + "," +
-                String(leftTrack.target) + "," + String(rightTrack.target) + "," +
-                String(leftTrack.actual) + "," + String(rightTrack.actual) + "," +
-                String(static_cast<long long>(leftTickSnapshot)) + "," +
-                String(static_cast<long long>(rightTickSnapshot)) + "," +
-                String(leftPps) + "," + String(rightPps) + "," +
-                String(watchdogTripped ? 1 : 0);
-  sendFrame(body);
+  char body[260];
+  snprintf(
+      body,
+      sizeof(body),
+      "TEL,%lu,%d,%d,%d,%d,%d,%d,%lld,%lld,%lu,%lu,%d,%s,%u,%u,%u,%u,%d",
+      static_cast<unsigned long>(nowMs),
+      armed ? 1 : 0,
+      estopOkay() ? 1 : 0,
+      leftTrack.target,
+      rightTrack.target,
+      leftTrack.actual,
+      rightTrack.actual,
+      static_cast<long long>(leftTickSnapshot),
+      static_cast<long long>(rightTickSnapshot),
+      static_cast<unsigned long>(leftPps),
+      static_cast<unsigned long>(rightPps),
+      watchdogTripped ? 1 : 0,
+      modeName(controlMode),
+      lastRcSnapshot.steeringUs,
+      lastRcSnapshot.throttleUs,
+      lastRcSnapshot.modeUs,
+      lastRcSnapshot.armUs,
+      lastRcValid ? 1 : 0);
+  sendFrame(String(body));
 }
 
 void setup() {
@@ -456,6 +740,11 @@ void setup() {
   pinMode(Pins::LEFT_HALL, INPUT);
   pinMode(Pins::RIGHT_HALL, INPUT);
 
+  pinMode(Pins::RC_STEERING, INPUT);
+  pinMode(Pins::RC_THROTTLE, INPUT);
+  pinMode(Pins::RC_MODE, INPUT);
+  pinMode(Pins::RC_ARM, INPUT);
+
   setReverse(leftTrack, false);
   setReverse(rightTrack, false);
   applyTrackSafe(leftTrack, true);
@@ -464,11 +753,17 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(Pins::LEFT_HALL), onLeftHall, RISING);
   attachInterrupt(digitalPinToInterrupt(Pins::RIGHT_HALL), onRightHall, RISING);
+  attachInterrupt(
+      digitalPinToInterrupt(Pins::RC_STEERING), onRcSteering, CHANGE);
+  attachInterrupt(
+      digitalPinToInterrupt(Pins::RC_THROTTLE), onRcThrottle, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE), onRcMode, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(Pins::RC_ARM), onRcArm, CHANGE);
 
   lastControlMs = millis();
   lastTelemetryMs = millis();
   lastTelemetryPulseMs = millis();
-  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,1");
+  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,2,RC_DEFAULT");
 }
 
 void loop() {
@@ -479,13 +774,16 @@ void loop() {
     disarmSystem("ESTOP");
   }
 
-  if (armed && nowMs - lastDriveFrameMs > Config::COMMAND_WATCHDOG_MS) {
-    watchdogTripped = true;
-    disarmSystem("WATCHDOG");
-  }
-
   if (nowMs - lastControlMs >= Config::CONTROL_PERIOD_MS) {
     lastControlMs = nowMs;
+    updateCommandSource();
+
+    if (controlMode == ControlMode::RosAutonomous && armed &&
+        nowMs - lastDriveFrameMs > Config::COMMAND_WATCHDOG_MS) {
+      watchdogTripped = true;
+      disarmSystem("WATCHDOG");
+    }
+
     updateTrack(leftTrack, nowMs);
     updateTrack(rightTrack, nowMs);
   }
