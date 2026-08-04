@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Launch drive GPIO, Hall odometry, MPU6050, EKF and LDROBOT STL-19P."""
+"""Launch drive backend, odometry, MPU6050/6500, EKF and STL-19P."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -27,6 +27,7 @@ def generate_launch_description() -> LaunchDescription:
     serial_port = LaunchConfiguration('serial_port')
     start_lidar = LaunchConfiguration('start_lidar')
     start_imu = LaunchConfiguration('start_imu')
+    use_esp32_drive = LaunchConfiguration('use_esp32_drive')
     laser_scan_dir = LaunchConfiguration('laser_scan_dir')
 
     actions = [
@@ -35,6 +36,14 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
         DeclareLaunchArgument('start_lidar', default_value='true'),
         DeclareLaunchArgument('start_imu', default_value='true'),
+        DeclareLaunchArgument(
+            'use_esp32_drive',
+            default_value='false',
+            description=(
+                'true: ESP32 USB drive plus controller Hall ticks; '
+                'false: GPIO drive plus local/simulated Hall odometry'
+            ),
+        ),
         DeclareLaunchArgument(
             'laser_scan_dir',
             default_value='true',
@@ -47,6 +56,7 @@ def generate_launch_description() -> LaunchDescription:
             name='motor_gpio_node',
             output='screen',
             parameters=[config],
+            condition=UnlessCondition(use_esp32_drive),
             emulate_tty=True,
         ),
         Node(
@@ -55,6 +65,25 @@ def generate_launch_description() -> LaunchDescription:
             name='hall_odometry_node',
             output='screen',
             parameters=[config],
+            condition=UnlessCondition(use_esp32_drive),
+            emulate_tty=True,
+        ),
+        Node(
+            package='robotlidar',
+            executable='esp32_track_bridge_node',
+            name='esp32_track_bridge_node',
+            output='screen',
+            parameters=[config],
+            condition=IfCondition(use_esp32_drive),
+            emulate_tty=True,
+        ),
+        Node(
+            package='robotlidar',
+            executable='esp32_track_odometry_node',
+            name='esp32_track_odometry_node',
+            output='screen',
+            parameters=[config],
+            condition=IfCondition(use_esp32_drive),
             emulate_tty=True,
         ),
         Node(
