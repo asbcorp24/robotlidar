@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Publish raw MPU6050 measurements as sensor_msgs/Imu.
+"""Publish raw MPU6050/MPU6500 measurements as sensor_msgs/Imu.
 
-The node intentionally leaves orientation unavailable because MPU6050 has no
-magnetometer. robot_localization should fuse angular_velocity.z with wheel
+The node intentionally leaves orientation unavailable because these sensors have
+no magnetometer. robot_localization should fuse angular_velocity.z with wheel
 odometry while SLAM/AMCL provides the global map correction.
 """
 
@@ -28,7 +28,7 @@ GRAVITY = 9.80665
 
 
 class MPU6050Node(Node):
-    """Minimal offline MPU6050 I2C driver for Raspberry Pi."""
+    """Minimal offline MPU6050/MPU6500 I2C driver for Raspberry Pi."""
 
     REG_SMPLRT_DIV = 0x19
     REG_CONFIG = 0x1A
@@ -99,6 +99,9 @@ class MPU6050Node(Node):
 
         self.bus = None
         self.gyro_bias = [0.0, 0.0, 0.0]
+        self.sensor_model = 'MPU60X0'
+        self.temperature_scale = 340.0
+        self.temperature_offset = 36.53
 
         self.imu_publisher = self.create_publisher(Imu, '/imu/data_raw', 30)
         self.temperature_publisher = self.create_publisher(
@@ -112,8 +115,9 @@ class MPU6050Node(Node):
         self.create_timer(1.0 / self.publish_rate_hz, self._publish)
 
         self.get_logger().info(
-            'MPU6050 started in %s mode at 0x%02X, %.1f Hz'
+            '%s started in %s mode at 0x%02X, %.1f Hz'
             % (
+                self.sensor_model,
                 'DRY-RUN' if self.dry_run else 'HARDWARE',
                 self.address,
                 self.publish_rate_hz,
@@ -151,7 +155,7 @@ class MPU6050Node(Node):
     def _open_and_configure(self, gyro_bits: int, accel_bits: int) -> None:
         if SMBus is None:
             self.get_logger().error(
-                'python3-smbus2 is unavailable; switching MPU6050 to dry-run'
+                'python3-smbus2 is unavailable; switching IMU to dry-run'
             )
             self.dry_run = True
             return
@@ -159,10 +163,26 @@ class MPU6050Node(Node):
         try:
             self.bus = SMBus(self.i2c_bus_number)
             who_am_i = self.bus.read_byte_data(self.address, self.REG_WHO_AM_I)
-            if (who_am_i & 0x7E) != 0x68:
+            identities = {
+                0x68: ('MPU6050', 340.0, 36.53),
+                0x70: ('MPU6500', 333.87, 21.0),
+            }
+            try:
+                (
+                    self.sensor_model,
+                    self.temperature_scale,
+                    self.temperature_offset,
+                ) = identities[who_am_i]
+            except KeyError as exc:
                 raise RuntimeError(
-                    f'unexpected WHO_AM_I 0x{who_am_i:02X}, expected MPU6050'
-                )
+                    'unexpected WHO_AM_I 0x%02X; expected MPU6050 0x68 '
+                    'or MPU6500 0x70' % who_am_i
+                ) from exc
+
+            self.get_logger().info(
+                'Detected %s, WHO_AM_I=0x%02X'
+                % (self.sensor_model, who_am_i)
+            )
 
             self.bus.write_byte_data(self.address, self.REG_PWR_MGMT_1, 0x01)
             time.sleep(0.10)
@@ -176,9 +196,9 @@ class MPU6050Node(Node):
 
             divider = max(0, min(255, round(1000.0 / self.publish_rate_hz) - 1))
             self.bus.write_byte_data(self.address, self.REG_SMPLRT_DIV, divider)
-        except Exception:
-            self.get_logger().exception(
-                'MPU6050 initialization failed; switching to dry-run'
+        except Exception as exc:
+            self.get_logger().error(
+                'IMU initialization failed: %s; switching to dry-run' % exc
             )
             self._close_bus()
             self.dry_run = True
@@ -191,7 +211,7 @@ class MPU6050Node(Node):
             self.address, self.REG_ACCEL_XOUT_H, 14
         )
         if len(block) != 14:
-            raise RuntimeError(f'MPU6050 returned {len(block)} bytes, expected 14')
+            raise RuntimeError(f'IMU returned {len(block)} bytes, expected 14')
         return struct.unpack('>hhhhhhh', bytes(block))
 
     def _calibrate_gyro(self) -> None:
@@ -199,7 +219,7 @@ class MPU6050Node(Node):
             return
 
         self.get_logger().info(
-            'Calibrating MPU6050 gyro: keep the tractor completely still'
+            'Calibrating IMU gyro: keep the tractor completely still'
         )
         sums = [0.0, 0.0, 0.0]
         accepted = 0
@@ -207,8 +227,8 @@ class MPU6050Node(Node):
         for _ in range(self.calibration_samples):
             try:
                 _, _, _, _, gx, gy, gz = self._read_raw()
-            except Exception:
-                self.get_logger().exception('MPU6050 calibration read failed')
+            except Exception as exc:
+                self.get_logger().error('IMU calibration read failed: %s' % exc)
                 continue
 
             sums[0] += gx / self.gyro_scale
@@ -219,7 +239,7 @@ class MPU6050Node(Node):
                 time.sleep(self.calibration_delay)
 
         if accepted == 0:
-            raise RuntimeError('MPU6050 calibration produced no valid samples')
+            raise RuntimeError('IMU calibration produced no valid samples')
 
         self.gyro_bias = [value / accepted for value in sums]
         self.get_logger().info(
@@ -234,7 +254,7 @@ class MPU6050Node(Node):
             )
         except Exception:
             self.get_logger().error(
-                'MPU6050 read failed; no IMU message published',
+                'IMU read failed; no IMU message published',
                 throttle_duration_sec=2.0,
             )
             return
@@ -280,7 +300,9 @@ class MPU6050Node(Node):
         self.imu_publisher.publish(message)
 
         temperature = Float32()
-        temperature.data = temp_raw / 340.0 + 36.53
+        temperature.data = (
+            temp_raw / self.temperature_scale + self.temperature_offset
+        )
         self.temperature_publisher.publish(temperature)
 
     def _close_bus(self) -> None:
