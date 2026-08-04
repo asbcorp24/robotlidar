@@ -18,12 +18,16 @@ def generate_launch_description() -> LaunchDescription:
     default_ekf = PathJoinSubstitution(
         [package_share, 'config', 'ekf.yaml']
     )
+    default_esp32_config = PathJoinSubstitution(
+        [package_share, 'config', 'esp32_drive.yaml']
+    )
     lidar_launch = PathJoinSubstitution(
         [package_share, 'launch', 'ldrobot_stl19p.launch.py']
     )
 
     config = LaunchConfiguration('config')
     ekf_config = LaunchConfiguration('ekf_config')
+    esp32_config = LaunchConfiguration('esp32_config')
     serial_port = LaunchConfiguration('serial_port')
     start_lidar = LaunchConfiguration('start_lidar')
     start_imu = LaunchConfiguration('start_imu')
@@ -33,6 +37,7 @@ def generate_launch_description() -> LaunchDescription:
     actions = [
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('ekf_config', default_value=default_ekf),
+        DeclareLaunchArgument('esp32_config', default_value=default_esp32_config),
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
         DeclareLaunchArgument('start_lidar', default_value='true'),
         DeclareLaunchArgument('start_imu', default_value='true'),
@@ -73,7 +78,7 @@ def generate_launch_description() -> LaunchDescription:
             executable='esp32_track_bridge_node',
             name='esp32_track_bridge_node',
             output='screen',
-            parameters=[config],
+            parameters=[config, esp32_config],
             condition=IfCondition(use_esp32_drive),
             emulate_tty=True,
         ),
@@ -82,7 +87,7 @@ def generate_launch_description() -> LaunchDescription:
             executable='esp32_track_odometry_node',
             name='esp32_track_odometry_node',
             output='screen',
-            parameters=[config],
+            parameters=[config, esp32_config],
             condition=IfCondition(use_esp32_drive),
             emulate_tty=True,
         ),
