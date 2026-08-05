@@ -1,8 +1,36 @@
 #include <Arduino.h>
+#include <Wire.h>
 
 // ============================================================
 // RobotLidar ESP32-WROOM dual-track controller
 //
+// Hardware profiles:
+//   ROBOTLIDAR_HW_LEGACY
+//     - internal ESP32 DAC on GPIO25/GPIO26
+//     - Hall inputs use the legacy non-inverting interface
+//
+//   ROBOTLIDAR_HW_MCP4725_PC817
+//     - two MCP4725 DAC modules over I2C through BSS138
+//     - LEFT address 0x60, RIGHT address 0x61
+//     - Hall inputs are received through an inverting PC817 module
+//
+// The legacy profile is intentionally the default.
+// To enable the new hardware, change ROBOTLIDAR_HW_PROFILE below or define
+// ROBOTLIDAR_HW_PROFILE=ROBOTLIDAR_HW_MCP4725_PC817 in build flags.
+// ============================================================
+
+#define ROBOTLIDAR_HW_LEGACY 0
+#define ROBOTLIDAR_HW_MCP4725_PC817 1
+
+#ifndef ROBOTLIDAR_HW_PROFILE
+#define ROBOTLIDAR_HW_PROFILE ROBOTLIDAR_HW_LEGACY
+#endif
+
+#if ROBOTLIDAR_HW_PROFILE != ROBOTLIDAR_HW_LEGACY && \
+    ROBOTLIDAR_HW_PROFILE != ROBOTLIDAR_HW_MCP4725_PC817
+#error "Unsupported ROBOTLIDAR_HW_PROFILE"
+#endif
+
 // Command sources:
 //   1. Microzone MC7 + MC8RE-V2 (manual/default mode)
 //   2. Raspberry Pi ROS 2 over USB Serial (autonomous mode)
@@ -15,22 +43,22 @@
 //   GPIO17 -> TLP240A -> Reverse RIGHT
 //   GPIO18 -> TLP240A -> Low brake LEFT
 //   GPIO19 -> TLP240A -> Low brake RIGHT
-//
-// GPIO21 and GPIO22 are intentionally free. Controller Lock/Ignition is
-// switched only by a physical key/switch and the hardware emergency circuit.
 // ============================================================
 
 namespace Pins {
 constexpr uint8_t LEFT_THROTTLE_DAC = 25;
 constexpr uint8_t RIGHT_THROTTLE_DAC = 26;
+constexpr uint8_t I2C_SDA = 21;
+constexpr uint8_t I2C_SCL = 22;
+
 constexpr uint8_t LEFT_REVERSE = 16;
 constexpr uint8_t RIGHT_REVERSE = 17;
 constexpr uint8_t LEFT_BRAKE = 18;
 constexpr uint8_t RIGHT_BRAKE = 19;
 
 constexpr uint8_t ESTOP_OK = 32;    // NC emergency loop to GND; LOW = healthy
-constexpr uint8_t LEFT_HALL = 34;   // input-only; external 5 V -> 3.3 V circuit
-constexpr uint8_t RIGHT_HALL = 35;  // input-only; external 5 V -> 3.3 V circuit
+constexpr uint8_t LEFT_HALL = 34;   // input-only; external conditioning required
+constexpr uint8_t RIGHT_HALL = 35;  // input-only; external conditioning required
 
 // MC8RE-V2 PWM inputs. Receiver GND and ESP32 GND must be common.
 constexpr uint8_t RC_CHANNEL_1 = 27;  // BOAT MIX: left track
@@ -70,17 +98,41 @@ constexpr bool RC_STEERING_REVERSED = false;
 // In ROS mode the radio remains an independent safety permission.
 constexpr bool ROS_REQUIRES_RC_ARM = true;
 
-// Safe initial throttle limits. Calibrate on the real controller.
-constexpr uint8_t DAC_DISARMED = 0;
-constexpr uint8_t DAC_IDLE = 77;       // approximately 1.00 V
-constexpr uint8_t DAC_MAX_TEST = 220;  // approximately 2.85 V
+// Safe initial throttle voltages. Calibrate on the real controller.
+//
+// These defaults reproduce the old firmware behaviour:
+//   0 mV    -> disarmed
+//   1000 mV -> idle
+//   2850 mV -> limited test maximum
+//
+// The internal ESP32 DAC cannot output above about 3.3 V.
+// MCP4725 mode can output up to its 5 V supply, but the test limit remains
+// 2.85 V until the real controller input has been measured and calibrated.
+constexpr uint16_t THROTTLE_DISARMED_MV = 0;
+constexpr uint16_t THROTTLE_IDLE_MV = 1000;
+constexpr uint16_t THROTTLE_MAX_TEST_MV = 2850;
+constexpr uint16_t INTERNAL_DAC_FULL_SCALE_MV = 3300;
+constexpr uint16_t MCP4725_FULL_SCALE_MV = 5000;
+
 constexpr int16_t RAMP_STEP_PER_TICK = 12;
 constexpr bool HOLD_BRAKE_AT_ZERO = true;
 constexpr bool REVERSE_SUPPORTED = true;
 
+// MCP4725 configuration for the new hardware profile.
+constexpr uint8_t MCP4725_LEFT_ADDRESS = 0x60;
+constexpr uint8_t MCP4725_RIGHT_ADDRESS = 0x61;
+constexpr uint32_t I2C_CLOCK_HZ = 100000;
+
 // HIGH lights the TLP240A input LED and closes its output contact.
 constexpr bool BRAKE_ACTIVE_HIGH = true;
 constexpr bool REVERSE_ACTIVE_HIGH = true;
+
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+// A normal PC817 open-collector output is inverted, so count falling edges.
+constexpr int HALL_INTERRUPT_EDGE = FALLING;
+#else
+constexpr int HALL_INTERRUPT_EDGE = RISING;
+#endif
 }  // namespace Config
 
 enum class ControlMode : uint8_t {
@@ -89,7 +141,13 @@ enum class ControlMode : uint8_t {
   RosAutonomous = 2,
 };
 
+enum class TrackSide : uint8_t {
+  Left = 0,
+  Right = 1,
+};
+
 struct Track {
+  TrackSide side;
   uint8_t throttlePin;
   uint8_t reversePin;
   uint8_t brakePin;
@@ -120,11 +178,13 @@ struct RcSnapshot {
 };
 
 Track leftTrack{
+    TrackSide::Left,
     Pins::LEFT_THROTTLE_DAC,
     Pins::LEFT_REVERSE,
     Pins::LEFT_BRAKE,
 };
 Track rightTrack{
+    TrackSide::Right,
     Pins::RIGHT_THROTTLE_DAC,
     Pins::RIGHT_REVERSE,
     Pins::RIGHT_BRAKE,
@@ -149,6 +209,11 @@ bool armed = false;
 bool watchdogTripped = false;
 bool rcArmSeenOff = false;
 bool lastRcValid = false;
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_LEGACY
+bool throttleBackendReady = true;
+#else
+bool throttleBackendReady = false;
+#endif
 ControlMode controlMode = ControlMode::Safe;
 uint32_t lastDriveFrameMs = 0;
 uint32_t lastControlMs = 0;
@@ -215,7 +280,7 @@ void setReverse(Track& track, bool reverse) {
   track.appliedSign = reverse ? -1 : 1;
 
   portENTER_CRITICAL(&hallMux);
-  if (&track == &leftTrack) {
+  if (track.side == TrackSide::Left) {
     leftPulseSign = track.appliedSign;
   } else {
     rightPulseSign = track.appliedSign;
@@ -223,8 +288,117 @@ void setReverse(Track& track, bool reverse) {
   portEXIT_CRITICAL(&hallMux);
 }
 
-void writeThrottle(const Track& track, uint8_t value) {
-  dacWrite(track.throttlePin, value);
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+bool i2cDevicePresent(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+uint16_t millivoltsToMcp4725Code(uint16_t millivolts) {
+  uint32_t limited = millivolts;
+  if (limited > Config::MCP4725_FULL_SCALE_MV) {
+    limited = Config::MCP4725_FULL_SCALE_MV;
+  }
+  return static_cast<uint16_t>(
+      (limited * 4095UL + Config::MCP4725_FULL_SCALE_MV / 2) /
+      Config::MCP4725_FULL_SCALE_MV);
+}
+
+bool writeMcp4725(uint8_t address, uint16_t millivolts) {
+  const uint16_t value = millivoltsToMcp4725Code(millivolts);
+
+  // MCP4725 fast-mode write: volatile DAC register only.
+  // No EEPROM write is performed.
+  Wire.beginTransmission(address);
+  Wire.write(static_cast<uint8_t>((value >> 8) & 0x0F));
+  Wire.write(static_cast<uint8_t>(value & 0xFF));
+  return Wire.endTransmission() == 0;
+}
+#endif
+
+uint8_t millivoltsToInternalDacCode(uint16_t millivolts) {
+  uint32_t limited = millivolts;
+  if (limited > Config::INTERNAL_DAC_FULL_SCALE_MV) {
+    limited = Config::INTERNAL_DAC_FULL_SCALE_MV;
+  }
+  return static_cast<uint8_t>(
+      (limited * 255UL + Config::INTERNAL_DAC_FULL_SCALE_MV / 2) /
+      Config::INTERNAL_DAC_FULL_SCALE_MV);
+}
+
+bool writeThrottle(const Track& track, uint16_t millivolts) {
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+  if (!throttleBackendReady) return false;
+
+  const uint8_t address = track.side == TrackSide::Left
+      ? Config::MCP4725_LEFT_ADDRESS
+      : Config::MCP4725_RIGHT_ADDRESS;
+
+  if (!writeMcp4725(address, millivolts)) {
+    throttleBackendReady = false;
+    return false;
+  }
+  return true;
+#else
+  dacWrite(track.throttlePin, millivoltsToInternalDacCode(millivolts));
+  return true;
+#endif
+}
+
+bool initializeThrottleBackend() {
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+  static_assert(
+      Config::MCP4725_LEFT_ADDRESS != Config::MCP4725_RIGHT_ADDRESS,
+      "MCP4725 addresses must be different");
+
+  Wire.begin(Pins::I2C_SDA, Pins::I2C_SCL);
+  Wire.setClock(Config::I2C_CLOCK_HZ);
+
+  const bool leftPresent = i2cDevicePresent(Config::MCP4725_LEFT_ADDRESS);
+  const bool rightPresent = i2cDevicePresent(Config::MCP4725_RIGHT_ADDRESS);
+
+  if (!leftPresent) {
+    Serial.println("ERR,MCP4725_LEFT_NOT_FOUND");
+  }
+  if (!rightPresent) {
+    Serial.println("ERR,MCP4725_RIGHT_NOT_FOUND");
+  }
+
+  if (!leftPresent || !rightPresent) {
+    throttleBackendReady = false;
+    return false;
+  }
+
+  const bool leftSafe = writeMcp4725(
+      Config::MCP4725_LEFT_ADDRESS,
+      Config::THROTTLE_DISARMED_MV);
+  const bool rightSafe = writeMcp4725(
+      Config::MCP4725_RIGHT_ADDRESS,
+      Config::THROTTLE_DISARMED_MV);
+
+  throttleBackendReady = leftSafe && rightSafe;
+  if (!throttleBackendReady) {
+    Serial.println("ERR,MCP4725_SAFE_WRITE_FAILED");
+  }
+  return throttleBackendReady;
+#else
+  throttleBackendReady = true;
+  dacWrite(
+      Pins::LEFT_THROTTLE_DAC,
+      millivoltsToInternalDacCode(Config::THROTTLE_DISARMED_MV));
+  dacWrite(
+      Pins::RIGHT_THROTTLE_DAC,
+      millivoltsToInternalDacCode(Config::THROTTLE_DISARMED_MV));
+  return true;
+#endif
+}
+
+const char* hardwareProfileName() {
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+  return "MCP4725_PC817";
+#else
+  return "LEGACY_INTERNAL_DAC";
+#endif
 }
 
 int8_t signOf(int16_t value) {
@@ -251,12 +425,14 @@ int16_t moveToward(int16_t current, int16_t target, int16_t step) {
   return current;
 }
 
-uint8_t commandToDac(int16_t signedCommand) {
+uint16_t commandToThrottleMillivolts(int16_t signedCommand) {
   const int magnitude = abs(signedCommand);
-  if (magnitude <= 0) return Config::DAC_IDLE;
-  const long span = Config::DAC_MAX_TEST - Config::DAC_IDLE;
-  return static_cast<uint8_t>(
-      Config::DAC_IDLE + (span * constrain(magnitude, 0, 1000)) / 1000);
+  if (magnitude <= 0) return Config::THROTTLE_IDLE_MV;
+  const uint32_t span =
+      Config::THROTTLE_MAX_TEST_MV - Config::THROTTLE_IDLE_MV;
+  return static_cast<uint16_t>(
+      Config::THROTTLE_IDLE_MV +
+      (span * constrain(magnitude, 0, 1000)) / 1000);
 }
 
 bool estopOkay() {
@@ -267,8 +443,8 @@ void applyTrackSafe(Track& track) {
   track.target = 0;
   track.actual = 0;
   track.phase = Track::Phase::Normal;
-  writeThrottle(track, Config::DAC_DISARMED);
   setBrake(track, true);
+  writeThrottle(track, Config::THROTTLE_DISARMED_MV);
 }
 
 void disarmSystem(const char* reason) {
@@ -308,17 +484,31 @@ bool armSystem(const char* source) {
     Serial.println("ERR,ESTOP_OPEN");
     return false;
   }
+  if (!throttleBackendReady) {
+    Serial.println("ERR,THROTTLE_DAC_NOT_READY");
+    return false;
+  }
   if (leftTrack.target != 0 || rightTrack.target != 0) {
     Serial.println("ERR,NONZERO_TARGET");
     return false;
   }
 
-  writeThrottle(leftTrack, Config::DAC_IDLE);
-  writeThrottle(rightTrack, Config::DAC_IDLE);
-  setReverse(leftTrack, false);
-  setReverse(rightTrack, false);
   setBrake(leftTrack, true);
   setBrake(rightTrack, true);
+
+  const bool leftIdle =
+      writeThrottle(leftTrack, Config::THROTTLE_IDLE_MV);
+  const bool rightIdle =
+      writeThrottle(rightTrack, Config::THROTTLE_IDLE_MV);
+  if (!leftIdle || !rightIdle) {
+    setBrake(leftTrack, true);
+    setBrake(rightTrack, true);
+    Serial.println("ERR,THROTTLE_DAC_WRITE");
+    return false;
+  }
+
+  setReverse(leftTrack, false);
+  setReverse(rightTrack, false);
   delay(50);
 
   armed = true;
@@ -340,8 +530,8 @@ void updateTrack(Track& track, uint32_t nowMs) {
   const int8_t desiredSign = signOf(track.target);
 
   if (track.phase == Track::Phase::BrakeBeforeReverse) {
-    writeThrottle(track, Config::DAC_IDLE);
     setBrake(track, true);
+    writeThrottle(track, Config::THROTTLE_IDLE_MV);
     track.actual = 0;
     if (static_cast<int32_t>(nowMs - track.deadlineMs) >= 0) {
       if (desiredSign == 0) {
@@ -356,8 +546,8 @@ void updateTrack(Track& track, uint32_t nowMs) {
   }
 
   if (track.phase == Track::Phase::ReverseSettle) {
-    writeThrottle(track, Config::DAC_IDLE);
     setBrake(track, true);
+    writeThrottle(track, Config::THROTTLE_IDLE_MV);
     track.actual = 0;
     if (static_cast<int32_t>(nowMs - track.deadlineMs) >= 0) {
       track.phase = Track::Phase::Normal;
@@ -367,8 +557,8 @@ void updateTrack(Track& track, uint32_t nowMs) {
 
   if (desiredSign != 0 && desiredSign != track.appliedSign) {
     track.actual = 0;
-    writeThrottle(track, Config::DAC_IDLE);
     setBrake(track, true);
+    writeThrottle(track, Config::THROTTLE_IDLE_MV);
     track.phase = Track::Phase::BrakeBeforeReverse;
     track.deadlineMs = nowMs + Config::REVERSE_BRAKE_MS;
     return;
@@ -380,11 +570,19 @@ void updateTrack(Track& track, uint32_t nowMs) {
       Config::RAMP_STEP_PER_TICK);
 
   if (track.actual == 0) {
-    writeThrottle(track, Config::DAC_IDLE);
     setBrake(track, Config::HOLD_BRAKE_AT_ZERO);
+    if (!writeThrottle(track, Config::THROTTLE_IDLE_MV)) {
+      setBrake(track, true);
+    }
   } else {
+    const bool throttleWritten =
+        writeThrottle(track, commandToThrottleMillivolts(track.actual));
+    if (!throttleWritten) {
+      track.actual = 0;
+      setBrake(track, true);
+      return;
+    }
     setBrake(track, false);
-    writeThrottle(track, commandToDac(track.actual));
   }
 }
 
@@ -516,6 +714,10 @@ void updateCommandSource() {
 
   if (!estopOkay()) {
     disarmSystem("ESTOP");
+    return;
+  }
+  if (!throttleBackendReady) {
+    disarmSystem("THROTTLE_DAC");
     return;
   }
   if (controlMode == ControlMode::Safe) {
@@ -756,7 +958,7 @@ void setup() {
   pinMode(Pins::RC_MODE, INPUT);
   pinMode(Pins::RC_ARM, INPUT);
 
-  // Safe output state before interrupts and command processing start.
+  // Establish a hardware-safe state before DAC/I2C initialization.
   digitalWrite(Pins::LEFT_REVERSE, LOW);
   digitalWrite(Pins::RIGHT_REVERSE, LOW);
   digitalWrite(Pins::LEFT_BRAKE, HIGH);
@@ -764,11 +966,19 @@ void setup() {
   digitalWrite(Pins::STATUS_LED, LOW);
   setReverse(leftTrack, false);
   setReverse(rightTrack, false);
+
+  initializeThrottleBackend();
   applyTrackSafe(leftTrack);
   applyTrackSafe(rightTrack);
 
-  attachInterrupt(digitalPinToInterrupt(Pins::LEFT_HALL), onLeftHall, RISING);
-  attachInterrupt(digitalPinToInterrupt(Pins::RIGHT_HALL), onRightHall, RISING);
+  attachInterrupt(
+      digitalPinToInterrupt(Pins::LEFT_HALL),
+      onLeftHall,
+      Config::HALL_INTERRUPT_EDGE);
+  attachInterrupt(
+      digitalPinToInterrupt(Pins::RIGHT_HALL),
+      onRightHall,
+      Config::HALL_INTERRUPT_EDGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1), onRcChannel1, CHANGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2), onRcChannel2, CHANGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE), onRcMode, CHANGE);
@@ -777,7 +987,15 @@ void setup() {
   lastControlMs = millis();
   lastTelemetryMs = millis();
   lastTelemetryPulseMs = millis();
-  sendFrame("BOOT,ESP32_WROOM_TRACK_CONTROLLER,4,TLP240A_GPIO21_22_FREE");
+
+  const String bootBody =
+      String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,5,") +
+      hardwareProfileName();
+  sendFrame(bootBody);
+
+  if (!throttleBackendReady) {
+    Serial.println("EVT,DISARM,THROTTLE_DAC");
+  }
 }
 
 void loop() {
@@ -786,6 +1004,9 @@ void loop() {
 
   if (!estopOkay() && armed) {
     disarmSystem("ESTOP");
+  }
+  if (!throttleBackendReady && armed) {
+    disarmSystem("THROTTLE_DAC");
   }
 
   if (nowMs - lastControlMs >= Config::CONTROL_PERIOD_MS) {
