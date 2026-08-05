@@ -272,15 +272,34 @@ void applyTrackSafe(Track& track) {
 }
 
 void disarmSystem(const char* reason) {
+  // Remember the last reported reason so a persistent fault does not flood
+  // USB Serial and the ROS log every 20 ms. A changed reason is still reported
+  // immediately, and a new disarm after arming is always reported.
+  static char lastReportedReason[32] = "";
+
   const bool wasArmed = armed;
   armed = false;
   applyTrackSafe(leftTrack);
   applyTrackSafe(rightTrack);
   digitalWrite(Pins::STATUS_LED, LOW);
 
-  if (wasArmed || reason != nullptr) {
+  const char* eventReason = reason != nullptr ? reason : "requested";
+  const bool reasonChanged =
+      reason != nullptr &&
+      strncmp(lastReportedReason, eventReason, sizeof(lastReportedReason)) != 0;
+
+  if (wasArmed || reasonChanged) {
     Serial.print("EVT,DISARM,");
-    Serial.println(reason != nullptr ? reason : "requested");
+    Serial.println(eventReason);
+  }
+
+  if (reason == nullptr) {
+    // A normal safe/disarmed pass clears the latch. The same fault will then
+    // be reported again if it disappears and later returns.
+    lastReportedReason[0] = '\0';
+  } else {
+    strncpy(lastReportedReason, eventReason, sizeof(lastReportedReason) - 1);
+    lastReportedReason[sizeof(lastReportedReason) - 1] = '\0';
   }
 }
 
