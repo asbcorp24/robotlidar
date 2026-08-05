@@ -22,6 +22,18 @@ else
   SERIAL_PORT="/dev/ldlidar"
 fi
 
+if [[ -n "${ROBOTLIDAR_GPS_PORT:-}" ]]; then
+  GPS_PORT="$ROBOTLIDAR_GPS_PORT"
+elif [[ -e /dev/serial0 ]]; then
+  GPS_PORT="/dev/serial0"
+elif [[ -e /dev/ttyS0 ]]; then
+  GPS_PORT="/dev/ttyS0"
+elif [[ -e /dev/ttyAMA0 ]]; then
+  GPS_PORT="/dev/ttyAMA0"
+else
+  GPS_PORT="/dev/ttyS0"
+fi
+
 if [[ ! -f "$WORKSPACE/install/setup.bash" ]]; then
   echo "Не найден $WORKSPACE/install/setup.bash"
   echo "Сначала соберите workspace: colcon build --symlink-install"
@@ -34,9 +46,10 @@ if [[ ! -f "$TEMPLATE" ]]; then
 fi
 
 sudo apt update
-sudo apt install -y python3-fastapi python3-uvicorn python3-pil
+sudo apt install -y \
+  python3-fastapi python3-uvicorn python3-pil python3-serial
 
-# Разрешения на USB-лидар, I2C и GPIO. Отсутствующие группы пропускаются.
+# Разрешения на USB-лидар, UART GPS, I2C и GPIO.
 for DEVICE_GROUP in dialout i2c gpio; do
   if getent group "$DEVICE_GROUP" >/dev/null; then
     sudo usermod -aG "$DEVICE_GROUP" "$USER_NAME"
@@ -50,6 +63,7 @@ sed \
   -e "s|@HOME@|$USER_HOME|g" \
   -e "s|@WORKSPACE@|$WORKSPACE|g" \
   -e "s|@SERIAL_PORT@|$SERIAL_PORT|g" \
+  -e "s|@GPS_PORT@|$GPS_PORT|g" \
   "$TEMPLATE" > "$TEMP_FILE"
 
 sudo install -m 0644 "$TEMP_FILE" "$TARGET"
@@ -66,6 +80,7 @@ sudo systemctl enable --now "$SERVICE_NAME"
 echo
 echo "RobotLidar Web установлен и запущен."
 echo "Порт лидара: $SERIAL_PORT"
+echo "Порт GPS: $GPS_PORT"
 echo "Статус: sudo systemctl status $SERVICE_NAME"
 echo "Журнал: journalctl -u $SERVICE_NAME -f"
 echo "Панель: http://<IP_RASPBERRY_PI>:8080"

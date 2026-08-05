@@ -40,8 +40,53 @@ function modeLabel(mode) {
 function sensor(id, data) {
   const dot = $(`#${id}Dot`);
   const age = $(`#${id}Age`);
+  if (!dot || !age) return;
   dot.className = `dot ${data?.online ? 'online' : 'offline'}`;
   age.textContent = data?.online ? `данные ${data.age_sec ?? 0} с назад` : 'нет данных';
+}
+
+function finiteOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function gpsReasonLabel(reason) {
+  if (!reason) return 'Ожидание данных GPS';
+  if (reason === 'accepted') return 'Координаты приняты. GPS используется только как слабая дополнительная коррекция.';
+  if (reason === 'no_fix') return 'Нет спутникового фикса. Основная навигация продолжает работать без GPS.';
+  if (reason === 'no_coordinates') return 'GPS передаёт NMEA, но координаты ещё не определены.';
+  if (reason === 'no_hdop') return 'Нет оценки точности HDOP.';
+  if (reason.startsWith('few_satellites:')) return `Недостаточно спутников: ${reason.split(':')[1]}.`;
+  if (reason.startsWith('hdop:')) return `Низкая точность GPS, HDOP ${reason.split(':')[1]}.`;
+  if (reason.startsWith('jump:')) return `Отброшен скачок координат ${reason.split(':')[1]}.`;
+  return reason;
+}
+
+function renderGps(gps = {}) {
+  const latitude = finiteOrNull(gps.latitude);
+  const longitude = finiteOrNull(gps.longitude);
+  const hdop = finiteOrNull(gps.hdop);
+  const speed = finiteOrNull(gps.speed_mps);
+  const course = finiteOrNull(gps.course_deg);
+  const used = Number(gps.satellites_used || 0);
+  const visible = Number(gps.satellites_visible || 0);
+
+  $('#gpsFix').textContent = gps.fix_valid ? 'есть' : 'нет';
+  $('#gpsFix').className = gps.fix_valid ? 'value-ok' : 'value-warn';
+  $('#gpsLatitude').textContent = latitude == null ? '—' : latitude.toFixed(7);
+  $('#gpsLongitude').textContent = longitude == null ? '—' : longitude.toFixed(7);
+  $('#gpsSatellites').textContent = visible > used ? `${used} / ${visible}` : String(used);
+  $('#gpsHdop').textContent = hdop == null ? '—' : hdop.toFixed(2);
+  $('#gpsSpeed').textContent = speed == null ? '—' : speed.toFixed(2);
+  $('#gpsCourse').textContent = course == null ? '—' : course.toFixed(1);
+
+  let assist = 'выключена';
+  if (gps.assist_enabled) {
+    assist = gps.assist_ready ? 'активна' : (gps.alignment_state || 'ожидание');
+  }
+  $('#gpsAssist').textContent = assist;
+  $('#gpsAssist').className = gps.assist_ready ? 'value-ok' : 'value-warn';
+  $('#gpsReason').textContent = gpsReasonLabel(gps.reject_reason);
 }
 
 function renderStatus(data) {
@@ -58,6 +103,8 @@ function renderStatus(data) {
   sensor('imu', ros.sensors?.imu);
   sensor('hall', ros.sensors?.wheel_odom);
   sensor('odom', ros.sensors?.odom);
+  sensor('gps', ros.sensors?.gps);
+  renderGps(ros.gps || data.gps || {});
   $('#logs').textContent = (runtime.logs || []).join('\n') || 'Журнал пока пуст.';
   $('#logs').scrollTop = $('#logs').scrollHeight;
 
@@ -190,6 +237,13 @@ $('#emergencyStop').addEventListener('click', async () => {
   try {
     await request('/api/mode/stop', { method: 'POST' });
     toast('Движение и ROS-режим остановлены', 'success');
+  } catch (error) { toast(error.message, 'error'); }
+});
+
+$('#resetGpsAssist').addEventListener('click', async () => {
+  try {
+    const data = await request('/api/gps/reset-assist', { method: 'POST' });
+    toast(data.message || 'Привязка GPS сброшена', 'success');
   } catch (error) { toast(error.message, 'error'); }
 });
 

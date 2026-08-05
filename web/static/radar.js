@@ -30,6 +30,11 @@
     return Number.isFinite(number) ? number : fallback;
   }
 
+  function nullableNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
   function sensor(dotSelector, textSelector, state) {
     const dot = $(dotSelector);
     const text = $(textSelector);
@@ -40,6 +45,18 @@
         ? `${finite(state.age_sec).toFixed(2)} с назад`
         : 'нет данных';
     }
+  }
+
+  function gpsReason(reason) {
+    if (!reason) return 'Ожидание данных';
+    if (reason === 'accepted') return 'Координаты приняты';
+    if (reason === 'no_fix') return 'Нет спутникового фикса';
+    if (reason === 'no_coordinates') return 'Координаты ещё не определены';
+    if (reason === 'no_hdop') return 'Нет оценки HDOP';
+    if (reason.startsWith('few_satellites:')) return `Мало спутников: ${reason.split(':')[1]}`;
+    if (reason.startsWith('hdop:')) return `Плохой HDOP: ${reason.split(':')[1]}`;
+    if (reason.startsWith('jump:')) return `Отброшен скачок: ${reason.split(':')[1]}`;
+    return reason;
   }
 
   function resizeCanvas() {
@@ -200,6 +217,35 @@
     });
   }
 
+  function renderGps(gps) {
+    const latitude = nullableNumber(gps?.latitude);
+    const longitude = nullableNumber(gps?.longitude);
+    const hdop = nullableNumber(gps?.hdop);
+    const speed = nullableNumber(gps?.speed_mps);
+    const course = nullableNumber(gps?.course_deg);
+    const localX = nullableNumber(gps?.local_x);
+    const localY = nullableNumber(gps?.local_y);
+    const used = Number(gps?.satellites_used || 0);
+    const visible = Number(gps?.satellites_visible || 0);
+
+    setText('#gpsLatitude', latitude == null ? '—' : latitude.toFixed(7));
+    setText('#gpsLongitude', longitude == null ? '—' : longitude.toFixed(7));
+    setText('#gpsSatellites', visible > used ? `${used} / ${visible}` : String(used));
+    setText('#gpsHdop', hdop == null ? '—' : hdop.toFixed(2));
+    setText('#gpsSpeed', speed == null ? '—' : speed.toFixed(2));
+    setText('#gpsCourse', course == null ? '—' : course.toFixed(1));
+    setText('#gpsLocalX', localX == null ? '—' : localX.toFixed(2));
+    setText('#gpsLocalY', localY == null ? '—' : localY.toFixed(2));
+    setText('#gpsAssistState', gps?.assist_ready ? 'активна' : (gps?.alignment_state || 'ожидание'));
+    setText('#gpsRejectReason', gpsReason(gps?.reject_reason));
+
+    const badge = $('#gpsFixBadge');
+    if (badge) {
+      badge.textContent = gps?.fix_valid ? 'фикс есть' : 'нет фикса';
+      badge.className = `gps-fix-badge ${gps?.fix_valid ? 'online' : 'offline'}`;
+    }
+  }
+
   function render(payload) {
     latestPayload = payload;
     drawRadar(payload);
@@ -211,11 +257,14 @@
     const gyro = imu.gyro || {};
     const tilt = imu.tilt || {};
     const scan = payload?.scan || {};
+    const gps = payload?.gps || ros.gps || {};
 
     setText('#coordX', finite(pose.x).toFixed(3));
     setText('#coordY', finite(pose.y).toFixed(3));
     setText('#coordYaw', `${(finite(pose.yaw) * 180 / Math.PI).toFixed(1)}`);
     setText('#linearSpeed', finite(velocity.linear).toFixed(3));
+
+    renderGps(gps);
 
     setText('#gyroX', finite(gyro.x).toFixed(4));
     setText('#gyroY', finite(gyro.y).toFixed(4));
@@ -247,6 +296,7 @@
     sensor('#imuDot', '#imuText', ros.sensors?.imu);
     sensor('#wheelDot', '#wheelText', ros.sensors?.wheel_odom);
     sensor('#odomDot', '#odomText', ros.sensors?.odom);
+    sensor('#gpsDot', '#gpsText', ros.sensors?.gps);
   }
 
   function scheduleReconnect() {

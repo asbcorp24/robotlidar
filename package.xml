@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>robotlidar</name>
-  <version>0.4.0</version>
-  <description>Offline tracked tractor navigation and web control for Raspberry Pi 4.</description>
+  <version>0.5.0</version>
+  <description>Offline tracked tractor navigation with LiDAR, Hall, IMU, optional GPS assistance and web control for Raspberry Pi 4.</description>
 
   <maintainer email="asbcorp24@users.noreply.github.com">asbcorp24</maintainer>
   <license>MIT</license>

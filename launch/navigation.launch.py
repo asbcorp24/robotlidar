@@ -4,7 +4,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -33,6 +33,8 @@ def generate_launch_description() -> LaunchDescription:
     nav2_config = LaunchConfiguration('nav2_config')
     map_file = LaunchConfiguration('map')
     serial_port = LaunchConfiguration('serial_port')
+    gps_port = LaunchConfiguration('gps_port')
+    start_gps = LaunchConfiguration('start_gps')
     use_esp32_drive = LaunchConfiguration('use_esp32_drive')
 
     return LaunchDescription([
@@ -45,6 +47,13 @@ def generate_launch_description() -> LaunchDescription:
             description='Absolute path to the saved map YAML',
         ),
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
+        DeclareLaunchArgument(
+            'gps_port',
+            default_value=EnvironmentVariable(
+                'ROBOTLIDAR_GPS_PORT', default_value='/dev/ttyS0'
+            ),
+        ),
+        DeclareLaunchArgument('start_gps', default_value='true'),
         DeclareLaunchArgument('use_esp32_drive', default_value='false'),
 
         IncludeLaunchDescription(
@@ -53,8 +62,10 @@ def generate_launch_description() -> LaunchDescription:
                 'config': config,
                 'ekf_config': ekf_config,
                 'serial_port': serial_port,
+                'gps_port': gps_port,
                 'start_lidar': 'true',
                 'start_imu': 'true',
+                'start_gps': start_gps,
                 'use_esp32_drive': use_esp32_drive,
             }.items(),
         ),

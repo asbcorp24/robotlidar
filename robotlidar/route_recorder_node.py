@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Record the tractor pose in the map frame as a reusable cleaning route."""
+"""Record map-frame poses and optional GPS coordinates as a cleaning route."""
 
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -11,7 +12,9 @@ import rclpy
 import yaml
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
+from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -32,6 +35,9 @@ class RouteRecorderNode(Node):
         self.declare_parameter('minimum_distance_m', 0.30)
         self.declare_parameter('minimum_heading_rad', 0.20)
         self.declare_parameter('auto_save_on_stop', True)
+        self.declare_parameter('include_gps', True)
+        self.declare_parameter('gps_topic', '/gps/fix')
+        self.declare_parameter('gps_max_age_sec', 3.0)
 
         self.route_file = Path(
             str(self.get_parameter('route_file').value)
@@ -48,6 +54,11 @@ class RouteRecorderNode(Node):
         self.auto_save_on_stop = bool(
             self.get_parameter('auto_save_on_stop').value
         )
+        self.include_gps = bool(self.get_parameter('include_gps').value)
+        self.gps_max_age_sec = float(
+            self.get_parameter('gps_max_age_sec').value
+        )
+        gps_topic = str(self.get_parameter('gps_topic').value)
 
         if sample_rate_hz <= 0.0:
             raise ValueError('sample_rate_hz must be greater than zero')
@@ -55,16 +66,27 @@ class RouteRecorderNode(Node):
             raise ValueError('minimum_distance_m cannot be negative')
         if self.minimum_heading_rad < 0.0:
             raise ValueError('minimum_heading_rad cannot be negative')
+        if self.gps_max_age_sec <= 0.0:
+            raise ValueError('gps_max_age_sec must be greater than zero')
 
         self.tf_buffer = Buffer(cache_time=Duration(seconds=30.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.recording = False
-        self.points: list[dict[str, float]] = []
+        self.points: list[dict] = []
+        self._latest_gps: Optional[dict[str, float]] = None
+        self._latest_gps_monotonic = 0.0
 
         self.recording_publisher = self.create_publisher(
             Bool, '/route/recording', 10
         )
+        if self.include_gps:
+            self.create_subscription(
+                NavSatFix,
+                gps_topic,
+                self._gps_callback,
+                qos_profile_sensor_data,
+            )
         self.create_service(Trigger, '/route/start_recording', self._start)
         self.create_service(Trigger, '/route/stop_recording', self._stop)
         self.create_service(Trigger, '/route/clear', self._clear)
@@ -72,7 +94,8 @@ class RouteRecorderNode(Node):
         self.create_timer(1.0 / sample_rate_hz, self._sample)
 
         self.get_logger().info(
-            f'Route recorder ready; output: {self.route_file}'
+            f'Route recorder ready; output: {self.route_file}; '
+            f'GPS metadata: {self.include_gps}'
         )
 
     def _start(
@@ -149,6 +172,28 @@ class RouteRecorderNode(Node):
         self.get_logger().info(response.message)
         return response
 
+    def _gps_callback(self, message: NavSatFix) -> None:
+        if message.status.status < NavSatStatus.STATUS_FIX:
+            return
+        latitude = float(message.latitude)
+        longitude = float(message.longitude)
+        if not math.isfinite(latitude) or not math.isfinite(longitude):
+            return
+
+        covariance_x = float(message.position_covariance[0])
+        covariance_y = float(message.position_covariance[4])
+        horizontal_variance = max(covariance_x, covariance_y, 0.0)
+        gps = {
+            'latitude': latitude,
+            'longitude': longitude,
+            'altitude_m': float(message.altitude)
+            if math.isfinite(float(message.altitude))
+            else 0.0,
+            'horizontal_sigma_m': math.sqrt(horizontal_variance),
+        }
+        self._latest_gps = gps
+        self._latest_gps_monotonic = time.monotonic()
+
     def _sample(self) -> None:
         if not self.recording:
             return
@@ -173,11 +218,20 @@ class RouteRecorderNode(Node):
             rotation.x, rotation.y, rotation.z, rotation.w
         )
 
-        point = {
+        point: dict = {
             'x': float(translation.x),
             'y': float(translation.y),
             'yaw': float(yaw),
         }
+
+        gps_age = time.monotonic() - self._latest_gps_monotonic
+        if (
+            self.include_gps
+            and self._latest_gps is not None
+            and self._latest_gps_monotonic > 0.0
+            and gps_age <= self.gps_max_age_sec
+        ):
+            point['gps'] = dict(self._latest_gps)
 
         if self._should_store(point):
             self.points.append(point)
@@ -186,17 +240,19 @@ class RouteRecorderNode(Node):
                     f'Route points recorded: {len(self.points)}'
                 )
 
-    def _should_store(self, point: dict[str, float]) -> bool:
+    def _should_store(self, point: dict) -> bool:
         if not self.points:
             return True
 
         previous = self.points[-1]
         distance = math.hypot(
-            point['x'] - previous['x'],
-            point['y'] - previous['y'],
+            float(point['x']) - float(previous['x']),
+            float(point['y']) - float(previous['y']),
         )
         heading_change = abs(
-            self._normalize_angle(point['yaw'] - previous['yaw'])
+            self._normalize_angle(
+                float(point['yaw']) - float(previous['yaw'])
+            )
         )
         return (
             distance >= self.minimum_distance_m
@@ -207,12 +263,20 @@ class RouteRecorderNode(Node):
         if not self.points:
             raise RuntimeError('route contains no points')
 
+        gps_points = sum(1 for point in self.points if 'gps' in point)
+        first_gps = next(
+            (point['gps'] for point in self.points if 'gps' in point),
+            None,
+        )
+
         self.route_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            'format_version': 1,
+            'format_version': 2,
             'frame_id': self.map_frame,
             'base_frame': self.base_frame,
             'point_count': len(self.points),
+            'gps_point_count': gps_points,
+            'gps_origin': first_gps,
             'points': self.points,
         }
         temporary = self.route_file.with_suffix(self.route_file.suffix + '.tmp')

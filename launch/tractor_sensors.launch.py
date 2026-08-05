@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Launch drive backend, odometry, MPU6050/6500, EKF and STL-19P."""
+"""Launch drive backend, odometry, MPU6500, optional GPS, EKF and STL-19P."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -29,8 +29,10 @@ def generate_launch_description() -> LaunchDescription:
     ekf_config = LaunchConfiguration('ekf_config')
     esp32_config = LaunchConfiguration('esp32_config')
     serial_port = LaunchConfiguration('serial_port')
+    gps_port = LaunchConfiguration('gps_port')
     start_lidar = LaunchConfiguration('start_lidar')
     start_imu = LaunchConfiguration('start_imu')
+    start_gps = LaunchConfiguration('start_gps')
     use_esp32_drive = LaunchConfiguration('use_esp32_drive')
     laser_scan_dir = LaunchConfiguration('laser_scan_dir')
 
@@ -39,8 +41,21 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('ekf_config', default_value=default_ekf),
         DeclareLaunchArgument('esp32_config', default_value=default_esp32_config),
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
+        DeclareLaunchArgument(
+            'gps_port',
+            default_value=EnvironmentVariable(
+                'ROBOTLIDAR_GPS_PORT', default_value='/dev/ttyS0'
+            ),
+        ),
         DeclareLaunchArgument('start_lidar', default_value='true'),
         DeclareLaunchArgument('start_imu', default_value='true'),
+        DeclareLaunchArgument(
+            'start_gps',
+            default_value='true',
+            description=(
+                'Start optional UART GPS. Loss of GPS never stops the robot.'
+            ),
+        ),
         DeclareLaunchArgument(
             'use_esp32_drive',
             default_value='false',
@@ -101,6 +116,15 @@ def generate_launch_description() -> LaunchDescription:
             emulate_tty=True,
         ),
         Node(
+            package='robotlidar',
+            executable='gps_node',
+            name='gps_node',
+            output='screen',
+            parameters=[config, {'port': gps_port}],
+            condition=IfCondition(start_gps),
+            emulate_tty=True,
+        ),
+        Node(
             package='robot_localization',
             executable='ekf_node',
             name='ekf_filter_node',
@@ -122,6 +146,18 @@ def generate_launch_description() -> LaunchDescription:
                 '--child-frame-id', 'imu_link',
             ],
             condition=IfCondition(start_imu),
+        ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='base_to_gps_tf',
+            arguments=[
+                '--x', '0.0', '--y', '0.0', '--z', '0.75',
+                '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
+                '--frame-id', 'base_link',
+                '--child-frame-id', 'gps_link',
+            ],
+            condition=IfCondition(start_gps),
         ),
         Node(
             package='tf2_ros',

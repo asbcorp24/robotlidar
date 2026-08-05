@@ -21,8 +21,10 @@ http://IP_RASPBERRY_PI:8080
 - выбор карты для текущего запуска;
 - назначение основной карты;
 - автоматический запуск навигации по основной карте после включения Raspberry Pi;
-- контроль наличия данных лидара, MPU6050, Холлов и EKF;
-- просмотр текущих координат и журнала ROS 2.
+- контроль наличия данных лидара, MPU6500, Холлов, GPS и EKF;
+- просмотр локальных координат, широты, долготы, спутников, HDOP и состояния GPS-помощи;
+- отдельная страница `/radar` с LiDAR, IMU, одометрией и GPS;
+- просмотр журнала ROS 2.
 
 ## Архитектура
 
@@ -31,18 +33,31 @@ http://IP_RASPBERRY_PI:8080
         │ локальная Wi-Fi или Ethernet сеть
         ▼
 FastAPI :8080 на Raspberry Pi
-        ├── /cmd_vel ───────────────► motor_gpio_node
-        ├── ROS Trigger services ───► route_recorder / route_player
+        ├── /cmd_vel ───────────────► motor_gpio_node / ESP32 bridge
+        ├── ROS Trigger services ───► route_recorder / route_player / GPS reset
         ├── запускает mapping.launch.py
         ├── запускает navigation.launch.py
         ├── вызывает map_saver_cli
-        └── читает /scan, /imu/data_raw и /odometry/filtered
+        └── читает /scan, /imu/data_raw, /gps/fix, /gps/status
+            и /odometry/filtered
 ```
 
 Кнопки движения работают по принципу удержания. Браузер повторяет команду
 примерно каждые 180 мс. Если обновления прекращаются, backend перестаёт
-публиковать движение через 0,45 с, а `motor_gpio_node` дополнительно применяет
+публиковать движение через 0,45 с, а приводной backend дополнительно применяет
 собственный watchdog.
+
+GPS не является условием движения. При отсутствии фикса веб-панель показывает
+причину, но управление, SLAM и Nav2 продолжают работать по LiDAR, Холлам и IMU.
+
+## Потоки WebSocket и API
+
+```text
+/ws/status     состояние режима, датчиков, одометрии и GPS
+/ws/radar      состояние плюс точки /scan и телеметрия IMU
+GET /api/gps   текущая подробная GPS-диагностика
+POST /api/gps/reset-assist  сброс привязки GPS к локальной odom
+```
 
 ## Сборка
 
@@ -59,7 +74,8 @@ source install/setup.bash
 Для ручного тестового запуска:
 
 ```bash
-sudo apt install -y python3-fastapi python3-uvicorn python3-pil
+sudo apt install -y \
+  python3-fastapi python3-uvicorn python3-pil python3-serial
 ros2 run robotlidar robotlidar_web
 ```
 
@@ -81,6 +97,14 @@ hostname -I
 
 ```bash
 cd ~/robotlidar_ws/src/robotlidar
+bash scripts/install_web_service.sh ~/robotlidar_ws
+```
+
+Установщик определяет отдельно порт лидара и UART GPS. Их можно задать явно:
+
+```bash
+export ROBOTLIDAR_SERIAL_PORT=/dev/ldlidar
+export ROBOTLIDAR_GPS_PORT=/dev/ttyS0
 bash scripts/install_web_service.sh ~/robotlidar_ws
 ```
 
@@ -123,7 +147,7 @@ bash scripts/uninstall_web_service.sh
 ~/robotlidar_data/maps/
 ```
 
-Маршрут:
+Маршрут, включая доступные GPS-координаты точек:
 
 ```text
 ~/robotlidar_data/routes/cleaning_route.yaml
@@ -147,5 +171,8 @@ bash scripts/uninstall_web_service.sh
 - физическую кнопку аварийной остановки;
 - силовой контактор безопасности;
 - аппаратный watchdog;
-- гальваническую развязку выходов Raspberry Pi;
+- гальваническую развязку выходов Raspberry Pi или ESP32;
 - ручной режим с аппаратным приоритетом.
+
+GPS также не должен использоваться как единственный источник позиционирования
+или как условие безопасной остановки.

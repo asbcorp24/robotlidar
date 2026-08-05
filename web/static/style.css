@@ -102,7 +102,7 @@ button.ghost { background: transparent; }
 button.small { min-height: 36px; padding: 7px 11px; font-size: 13px; }
 button.danger { min-width: 110px; min-height: 58px; background: var(--danger); border-color: transparent; color: white; font-size: 18px; box-shadow: 0 10px 30px rgba(255,77,95,.25); }
 
-.sensor-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.sensor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
 .sensor { display: grid; grid-template-columns: auto 1fr; gap: 2px 9px; align-items: center; padding: 14px; border-radius: 14px; background: var(--card-2); border: 1px solid var(--line); }
 .sensor small { grid-column: 2; color: var(--muted); }
 .dot { width: 11px; height: 11px; border-radius: 50%; background: #68748c; box-shadow: 0 0 0 4px rgba(104,116,140,.12); }
@@ -114,6 +114,18 @@ button.danger { min-width: 110px; min-height: 58px; background: var(--danger); b
 .telemetry span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
 .telemetry strong { font-size: 21px; }
 .telemetry small { margin-left: 5px; color: var(--muted); }
+
+.gps-block { margin-top: 16px; padding: 16px; border-radius: 16px; border: 1px solid rgba(85,167,255,.22); background: rgba(10, 21, 39, .68); }
+.gps-block-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.gps-block h3 { margin: 0; font-size: 18px; }
+.gps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 9px; }
+.gps-grid > div { min-width: 0; padding: 12px; background: rgba(0,0,0,.18); border: 1px solid var(--line); border-radius: 12px; }
+.gps-grid span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+.gps-grid strong { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-size: 16px; }
+.gps-grid small { margin-left: 4px; color: var(--muted); }
+.gps-note { margin-top: 11px; }
+.value-ok { color: var(--accent); }
+.value-warn { color: var(--warning); }
 
 .notice { margin-bottom: 16px; padding: 11px 13px; border-radius: 12px; color: #d8e6fb; background: rgba(85,167,255,.09); border: 1px solid rgba(85,167,255,.18); font-size: 13px; line-height: 1.45; }
 .drive-pad { display: grid; grid-template-columns: repeat(3, minmax(82px, 1fr)); grid-template-areas: ". forward ." "left stop right" ". reverse ."; gap: 10px; max-width: 520px; margin: 0 auto; }
@@ -160,7 +172,7 @@ pre { margin: 0; max-height: 340px; overflow: auto; padding: 16px; border-radius
 
 @media (max-width: 900px) {
   .card { grid-column: span 12; }
-  .sensor-grid, .telemetry { grid-template-columns: repeat(2, 1fr); }
+  .telemetry { grid-template-columns: repeat(2, 1fr); }
   .save-map, .settings-row { grid-template-columns: 1fr; }
 }
 
@@ -168,7 +180,8 @@ pre { margin: 0; max-height: 340px; overflow: auto; padding: 16px; border-radius
   .topbar { padding: 13px 14px; }
   .layout { padding: 10px; gap: 10px; }
   .card { padding: 15px; border-radius: 16px; }
-  .card-head { align-items: flex-start; }
+  .card-head, .gps-block-head { align-items: flex-start; }
+  .gps-block-head { flex-direction: column; }
   button.danger { min-width: 88px; min-height: 52px; }
   .sensor { padding: 10px; }
   .telemetry strong { font-size: 17px; }

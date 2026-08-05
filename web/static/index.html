@@ -28,9 +28,10 @@
 
       <div class="sensor-grid">
         <div class="sensor"><span class="dot" id="lidarDot"></span><b>Лидар</b><small id="lidarAge">—</small></div>
-        <div class="sensor"><span class="dot" id="imuDot"></span><b>MPU6050</b><small id="imuAge">—</small></div>
+        <div class="sensor"><span class="dot" id="imuDot"></span><b>MPU6500</b><small id="imuAge">—</small></div>
         <div class="sensor"><span class="dot" id="hallDot"></span><b>Холлы</b><small id="hallAge">—</small></div>
         <div class="sensor"><span class="dot" id="odomDot"></span><b>Одометрия</b><small id="odomAge">—</small></div>
+        <div class="sensor"><span class="dot" id="gpsDot"></span><b>GPS</b><small id="gpsAge">—</small></div>
       </div>
 
       <div class="telemetry">
@@ -38,6 +39,27 @@
         <div><span>Y</span><strong id="poseY">0.000</strong><small>м</small></div>
         <div><span>Угол</span><strong id="poseYaw">0.0</strong><small>°</small></div>
         <div><span>Маршрут</span><strong id="routeState">—</strong></div>
+      </div>
+
+      <div class="gps-block">
+        <div class="gps-block-head">
+          <div>
+            <div class="eyebrow">Дополнительная коррекция</div>
+            <h3>GPS NEO-6M</h3>
+          </div>
+          <button class="ghost small" id="resetGpsAssist">Сбросить привязку GPS</button>
+        </div>
+        <div class="gps-grid">
+          <div><span>Фикс</span><strong id="gpsFix">нет</strong></div>
+          <div><span>Широта</span><strong id="gpsLatitude">—</strong></div>
+          <div><span>Долгота</span><strong id="gpsLongitude">—</strong></div>
+          <div><span>Спутники</span><strong id="gpsSatellites">0</strong></div>
+          <div><span>HDOP</span><strong id="gpsHdop">—</strong></div>
+          <div><span>Скорость</span><strong id="gpsSpeed">—</strong><small>м/с</small></div>
+          <div><span>Курс GPS</span><strong id="gpsCourse">—</strong><small>°</small></div>
+          <div><span>Помощь EKF</span><strong id="gpsAssist">ожидание</strong></div>
+        </div>
+        <p class="muted gps-note" id="gpsReason">GPS не является обязательным: при потере спутников робот продолжает работать по LiDAR, Холлам и IMU.</p>
       </div>
     </section>
 

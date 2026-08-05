@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """Reliable web entry point with WebSocket ROS telemetry.
 
-This wrapper keeps the original FastAPI control API from ``web_app``, serves
-static files reliably in ROS 2 symlink installs, and adds two live WebSocket
-streams:
-
-* /ws/status - main control-panel status without lidar point data;
-* /ws/radar  - status, downsampled LaserScan and MPU6050/MPU6500 telemetry.
+This wrapper keeps the FastAPI control API from ``web_app``, serves static files
+reliably in ROS 2 symlink installs, and adds live WebSocket streams for lidar,
+IMU, odometry and optional GPS assistance.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import threading
@@ -22,9 +20,10 @@ from typing import Optional
 import uvicorn
 from ament_index_python.packages import get_package_share_directory
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Imu, LaserScan, NavSatFix, NavSatStatus
+from std_msgs.msg import String
 
 from robotlidar import web_app
 
@@ -100,6 +99,29 @@ _stream_state = {
         'tilt': {'roll_deg': 0.0, 'pitch_deg': 0.0},
         'received_at': 0.0,
     },
+    'gps': {
+        'online': False,
+        'fix_valid': False,
+        'latitude': None,
+        'longitude': None,
+        'altitude_m': None,
+        'satellites_used': 0,
+        'satellites_visible': 0,
+        'hdop': None,
+        'speed_mps': None,
+        'course_deg': None,
+        'assist_enabled': True,
+        'assist_ready': False,
+        'alignment_state': 'waiting_fix',
+        'alignment_source': None,
+        'heading_offset_deg': None,
+        'local_x': None,
+        'local_y': None,
+        'reject_reason': 'waiting_for_data',
+        'sentence_age_sec': None,
+        'fix_age_sec': None,
+        'received_at': 0.0,
+    },
 }
 
 
@@ -138,8 +160,8 @@ def _imu_stream_callback(message: Imu) -> None:
     ay = float(message.linear_acceleration.y)
     az = float(message.linear_acceleration.z)
 
-    # MPU6050/MPU6500 publishes no absolute orientation. Roll and pitch here
-    # are gravity-vector estimates and are most useful while moving slowly.
+    # MPU6500 publishes no absolute orientation. Roll and pitch here are
+    # gravity-vector estimates and are most useful while moving slowly.
     roll = math.degrees(math.atan2(ay, az))
     pitch = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
 
@@ -163,6 +185,79 @@ def _imu_stream_callback(message: Imu) -> None:
         }
 
 
+def _gps_fix_callback(message: NavSatFix) -> None:
+    latitude = float(message.latitude)
+    longitude = float(message.longitude)
+    altitude = float(message.altitude)
+    valid = (
+        message.status.status >= NavSatStatus.STATUS_FIX
+        and math.isfinite(latitude)
+        and math.isfinite(longitude)
+    )
+    with _stream_lock:
+        gps = dict(_stream_state['gps'])
+        gps.update({
+            'fix_valid': valid,
+            'latitude': latitude if math.isfinite(latitude) else None,
+            'longitude': longitude if math.isfinite(longitude) else None,
+            'altitude_m': altitude if math.isfinite(altitude) else None,
+            'received_at': time.time(),
+        })
+        _stream_state['gps'] = gps
+
+
+def _gps_status_callback(message: String) -> None:
+    try:
+        parsed = json.loads(message.data)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return
+    if not isinstance(parsed, dict):
+        return
+    with _stream_lock:
+        gps = dict(_stream_state['gps'])
+        gps.update(parsed)
+        gps['received_at'] = time.time()
+        _stream_state['gps'] = gps
+
+
+def _gps_snapshot() -> dict:
+    now = time.time()
+    with _stream_lock:
+        gps = dict(_stream_state['gps'])
+    received_at = float(gps.get('received_at') or 0.0)
+    age_sec = now - received_at if received_at else None
+    gps['web_age_sec'] = round(age_sec, 3) if age_sec is not None else None
+    gps['online'] = bool(
+        gps.get('online')
+        and age_sec is not None
+        and age_sec < 3.0
+    )
+    if age_sec is None or age_sec >= 3.0:
+        gps['fix_valid'] = False
+        gps['assist_ready'] = False
+    return gps
+
+
+# Add GPS to the bridge status used by both HTTP and WebSocket APIs without
+# duplicating the original control-panel implementation.
+_original_bridge_status = web_app.bridge.status
+
+
+def _bridge_status_with_gps() -> dict:
+    payload = _original_bridge_status()
+    gps = _gps_snapshot()
+    sensors = dict(payload.get('sensors') or {})
+    sensors['gps'] = {
+        'online': bool(gps.get('online')),
+        'age_sec': gps.get('web_age_sec'),
+    }
+    payload['sensors'] = sensors
+    payload['gps'] = gps
+    return payload
+
+
+web_app.bridge.status = _bridge_status_with_gps  # type: ignore[method-assign]
+
 # Keep references so rclpy does not garbage-collect the subscriptions.
 _stream_subscriptions = [
     web_app.bridge.create_subscription(
@@ -176,6 +271,18 @@ _stream_subscriptions = [
         '/imu/data_raw',
         _imu_stream_callback,
         qos_profile_sensor_data,
+    ),
+    web_app.bridge.create_subscription(
+        NavSatFix,
+        '/gps/fix',
+        _gps_fix_callback,
+        qos_profile_sensor_data,
+    ),
+    web_app.bridge.create_subscription(
+        String,
+        '/gps/status',
+        _gps_status_callback,
+        10,
     ),
 ]
 
@@ -217,6 +324,7 @@ def _radar_payload() -> dict:
             if imu['received_at']
             else None,
         }
+        payload['gps'] = _gps_snapshot()
     return payload
 
 
@@ -240,7 +348,7 @@ def index_page() -> HTMLResponse:
     html = html.replace(
         connection,
         '<div class="topbar-live-actions">'
-        '<a class="radar-page-link" href="/radar">Радар и IMU</a>'
+        '<a class="radar-page-link" href="/radar">Радар, IMU и GPS</a>'
         + connection
         + '</div>',
     )
@@ -272,6 +380,22 @@ def static_file(filename: str) -> FileResponse:
             detail=f'Static file missing: {filename}',
         )
     return FileResponse(path)
+
+
+@web_app.app.get('/api/gps')
+def api_gps() -> dict:
+    return {'ok': True, 'gps': _gps_snapshot()}
+
+
+@web_app.app.post('/api/gps/reset-assist')
+async def api_gps_reset_assist() -> JSONResponse:
+    try:
+        result = await asyncio.to_thread(
+            web_app.bridge.call_trigger, '/gps/reset_assist'
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse(result, status_code=200 if result['success'] else 409)
 
 
 @web_app.app.websocket('/ws/status')
@@ -320,6 +444,7 @@ def debug_static() -> dict:
         },
         'websockets': ['/ws/status', '/ws/radar'],
         'pages': ['/', '/radar'],
+        'gps_api': ['/api/gps', '/api/gps/reset-assist'],
     }
 
 

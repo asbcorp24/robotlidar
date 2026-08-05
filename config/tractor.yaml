@@ -65,6 +65,41 @@ mpu6050_node:
     angular_velocity_variance: 0.0025
     linear_acceleration_variance: 0.25
 
+gps_node:
+  ros__parameters:
+    # UART NEO-6M: TXD GPS -> GPIO15/RXD (physical pin 10).
+    port: /dev/ttyS0
+    baudrate: 9600
+    frame_id: gps_link
+    odom_frame: odom
+    wheel_odom_topic: /wheel/odom
+    fix_topic: /gps/fix
+    status_topic: /gps/status
+    assist_odom_topic: /gps/odom
+    assist_ready_topic: /gps/assist_ready
+
+    # GPS — дополнительный источник. При плохом качестве /gps/odom не выходит.
+    publish_assist_odom: true
+    min_satellites: 4
+    max_hdop: 4.0
+    stale_timeout_sec: 3.0
+    max_jump_m: 15.0
+    max_plausible_speed_mps: 8.0
+
+    # NEO-6M имеет метровую погрешность, поэтому влияние на EKF небольшое.
+    position_sigma_floor_m: 2.5
+    hdop_sigma_scale: 1.5
+
+    # Для согласования GPS ENU с локальной системой odom робот должен проехать.
+    alignment_distance_m: 5.0
+    course_alignment_min_speed_mps: 0.8
+    wheel_odom_max_age_sec: 2.0
+    use_fixed_heading_offset: false
+    fixed_heading_offset_deg: 0.0
+
+    status_rate_hz: 2.0
+    reconnect_interval_sec: 2.0
+
 route_recorder_node:
   ros__parameters:
     route_file: ~/robotlidar_data/routes/cleaning_route.yaml
@@ -74,6 +109,9 @@ route_recorder_node:
     minimum_distance_m: 0.30
     minimum_heading_rad: 0.20
     auto_save_on_stop: true
+    include_gps: true
+    gps_topic: /gps/fix
+    gps_max_age_sec: 3.0
 
 route_player_node:
   ros__parameters:
