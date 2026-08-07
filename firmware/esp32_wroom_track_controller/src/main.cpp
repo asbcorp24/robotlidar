@@ -5,31 +5,45 @@
 // RobotLidar ESP32-WROOM dual-track controller
 //
 // Hardware profiles:
+//   ROBOTLIDAR_HW_LEGACY (default)
+//     GPIO25 -> internal DAC throttle LEFT
+//     GPIO26 -> internal DAC throttle RIGHT
+//     GPIO21 -> BTS7960 actuator RPWM
+//     GPIO22 -> BTS7960 actuator LPWM
 //
-// ROBOTLIDAR_HW_LEGACY (default)
-//   GPIO25 -> internal DAC throttle LEFT
-//   GPIO26 -> internal DAC throttle RIGHT
-//   GPIO21 -> BTS7960 actuator RPWM
-//   GPIO22 -> BTS7960 actuator LPWM
-//   Hall interface is non-inverting, interrupt edge RISING
+//   ROBOTLIDAR_HW_MCP4725_HW399
+//     GPIO21 -> I2C SDA through BSS138
+//     GPIO22 -> I2C SCL through BSS138
+//     MCP4725 LEFT  address 0x60
+//     MCP4725 RIGHT address 0x61
+//     GPIO25 -> BTS7960 actuator RPWM
+//     GPIO26 -> BTS7960 actuator LPWM
 //
-// ROBOTLIDAR_HW_MCP4725_PC817
-//   GPIO21 -> I2C SDA through BSS138
-//   GPIO22 -> I2C SCL through BSS138
-//   MCP4725 LEFT  address 0x60
-//   MCP4725 RIGHT address 0x61
-//   GPIO25 -> BTS7960 actuator RPWM
-//   GPIO26 -> BTS7960 actuator LPWM
-//   Hall interface uses an inverting PC817 module, edge FALLING
+// RC receiver:
+//   CH1 -> GPIO27 left track
+//   CH2 -> GPIO33 right track
+//   CH3 -> GPIO36 actuator
+//   CH5 -> GPIO13 three-position mode RC / SAFE / ROS
+//   GPIO14 is FREE: no separate RC ARM channel.
 //
-// Actuator:
-//   RC receiver CH3 -> GPIO36
-//   two-wire actuator -> BTS7960 M+/M-
-//   controlled only from RC CH3
+// HW-399 #1:
+//   GPIO16 -> Reverse LEFT
+//   GPIO17 -> Reverse RIGHT
+//   GPIO18 -> Brake LEFT
+//   GPIO19 -> Brake RIGHT
+//
+// HW-399 #2 (Hall, when enabled):
+//   OUT1 -> GPIO34 Hall LEFT
+//   OUT2 -> GPIO35 Hall RIGHT
+//
+// E-stop:
+//   GPIO32 -> NC contact -> GND, LOW = healthy.
 // ============================================================
 
 #define ROBOTLIDAR_HW_LEGACY 0
-#define ROBOTLIDAR_HW_MCP4725_PC817 1
+#define ROBOTLIDAR_HW_MCP4725_HW399 1
+// Backward-compatible name for existing build flags.
+#define ROBOTLIDAR_HW_MCP4725_PC817 ROBOTLIDAR_HW_MCP4725_HW399
 
 #ifndef ROBOTLIDAR_HW_PROFILE
 #define ROBOTLIDAR_HW_PROFILE ROBOTLIDAR_HW_LEGACY
@@ -39,8 +53,19 @@
 #define ROBOTLIDAR_ENABLE_RC_ACTUATOR 1
 #endif
 
+// Hall is currently not connected on the bench. Set to 1 after HW-399 #2
+// and both Hall sensors are physically wired.
+#ifndef ROBOTLIDAR_ENABLE_HALL
+#define ROBOTLIDAR_ENABLE_HALL 0
+#endif
+
+#ifndef ROBOTLIDAR_HALL_INVERTED
+// HW-399 phototransistor output normally inverts the Hall signal.
+#define ROBOTLIDAR_HALL_INVERTED 1
+#endif
+
 #if ROBOTLIDAR_HW_PROFILE != ROBOTLIDAR_HW_LEGACY && \
-    ROBOTLIDAR_HW_PROFILE != ROBOTLIDAR_HW_MCP4725_PC817
+    ROBOTLIDAR_HW_PROFILE != ROBOTLIDAR_HW_MCP4725_HW399
 #error "Unsupported ROBOTLIDAR_HW_PROFILE"
 #endif
 
@@ -50,7 +75,7 @@ constexpr uint8_t RIGHT_THROTTLE_DAC = 26;
 constexpr uint8_t I2C_SDA = 21;
 constexpr uint8_t I2C_SCL = 22;
 
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
 constexpr uint8_t ACTUATOR_RPWM = 25;
 constexpr uint8_t ACTUATOR_LPWM = 26;
 #else
@@ -71,7 +96,6 @@ constexpr uint8_t RC_CHANNEL_1 = 27;
 constexpr uint8_t RC_CHANNEL_2 = 33;
 constexpr uint8_t RC_ACTUATOR = 36;
 constexpr uint8_t RC_MODE = 13;
-constexpr uint8_t RC_ARM = 14;
 
 constexpr uint8_t STATUS_LED = 2;
 }  // namespace Pins
@@ -89,17 +113,19 @@ constexpr uint16_t RC_MIN_VALID_US = 800;
 constexpr uint16_t RC_MAX_VALID_US = 2200;
 constexpr uint16_t RC_CENTER_US = 1500;
 constexpr uint16_t RC_DEADBAND_US = 45;
+
+// CH5 three-position switch:
+//   <= 1300 us : RC manual
+//   1301..1699 : SAFE
+//   >= 1700 us : ROS
 constexpr uint16_t RC_MODE_MANUAL_MAX_US = 1300;
 constexpr uint16_t RC_MODE_ROS_MIN_US = 1700;
-constexpr uint16_t RC_ARM_OFF_MAX_US = 1400;
-constexpr uint16_t RC_ARM_ON_MIN_US = 1600;
 
 constexpr bool RC_PREMIXED_BY_TRANSMITTER = true;
 constexpr bool RC_LEFT_REVERSED = false;
 constexpr bool RC_RIGHT_REVERSED = false;
 constexpr bool RC_THROTTLE_REVERSED = false;
 constexpr bool RC_STEERING_REVERSED = false;
-constexpr bool ROS_REQUIRES_RC_ARM = true;
 
 constexpr uint16_t THROTTLE_DISARMED_MV = 0;
 constexpr uint16_t THROTTLE_IDLE_MV = 1000;
@@ -118,7 +144,6 @@ constexpr uint32_t I2C_CLOCK_HZ = 100000;
 constexpr bool BRAKE_ACTIVE_HIGH = true;
 constexpr bool REVERSE_ACTIVE_HIGH = true;
 
-// RC CH3 actuator settings.
 constexpr uint16_t ACTUATOR_RETRACT_MAX_US = 1400;
 constexpr uint16_t ACTUATOR_EXTEND_MIN_US = 1600;
 constexpr bool ACTUATOR_REVERSED = false;
@@ -129,9 +154,8 @@ constexpr uint32_t ACTUATOR_PWM_HZ = 20000;
 constexpr uint8_t ACTUATOR_PWM_BITS = 8;
 constexpr uint8_t ACTUATOR_RPWM_CHANNEL = 6;
 constexpr uint8_t ACTUATOR_LPWM_CHANNEL = 7;
-constexpr bool ACTUATOR_REQUIRES_RC_ARM = true;
 
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+#if ROBOTLIDAR_HALL_INVERTED
 constexpr int HALL_INTERRUPT_EDGE = FALLING;
 #else
 constexpr int HALL_INTERRUPT_EDGE = RISING;
@@ -157,11 +181,13 @@ struct Track {
   int16_t target = 0;
   int16_t actual = 0;
   int8_t appliedSign = 1;
+
   enum class Phase : uint8_t {
     Normal,
     BrakeBeforeReverse,
-    ReverseSettle
+    ReverseSettle,
   };
+
   Phase phase = Phase::Normal;
   uint32_t deadlineMs = 0;
 };
@@ -177,17 +203,15 @@ struct RcSnapshot {
   uint16_t channel2Us = 0;
   uint16_t actuatorUs = 0;
   uint16_t modeUs = 0;
-  uint16_t armUs = 0;
 
   uint32_t channel1AgeUs = UINT32_MAX;
   uint32_t channel2AgeUs = UINT32_MAX;
   uint32_t actuatorAgeUs = UINT32_MAX;
   uint32_t modeAgeUs = UINT32_MAX;
-  uint32_t armAgeUs = UINT32_MAX;
 
   bool valid = false;
   bool actuatorValid = false;
-  bool armValid = false;
+  bool modeValid = false;
 };
 
 Track leftTrack{
@@ -218,12 +242,9 @@ RcCapture rcChannel1;
 RcCapture rcChannel2;
 RcCapture rcActuator;
 RcCapture rcMode;
-RcCapture rcArm;
 
 bool armed = false;
 bool watchdogTripped = false;
-bool rcArmSeenOff = false;
-bool actuatorArmSeenOff = false;
 bool lastRcValid = false;
 
 #if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_LEGACY
@@ -245,6 +266,7 @@ int8_t actuatorPendingDirection = 0;
 uint32_t actuatorRunStartMs = 0;
 uint32_t actuatorGuardUntilMs = 0;
 bool actuatorTimeoutLatched = false;
+bool actuatorNeutralSeen = false;
 
 char serialLine[180];
 size_t serialLineLength = 0;
@@ -295,10 +317,6 @@ void IRAM_ATTR onRcMode() {
   captureRcEdge(Pins::RC_MODE, rcMode);
 }
 
-void IRAM_ATTR onRcArm() {
-  captureRcEdge(Pins::RC_ARM, rcArm);
-}
-
 bool outputLevel(bool active, bool activeHigh) {
   return activeHigh ? active : !active;
 }
@@ -325,7 +343,7 @@ void setReverse(Track& track, bool reverse) {
   portEXIT_CRITICAL(&hallMux);
 }
 
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
 bool i2cDevicePresent(uint8_t address) {
   Wire.beginTransmission(address);
   return Wire.endTransmission() == 0;
@@ -345,6 +363,7 @@ uint16_t millivoltsToMcp4725Code(uint16_t millivolts) {
 bool writeMcp4725(uint8_t address, uint16_t millivolts) {
   const uint16_t value = millivoltsToMcp4725Code(millivolts);
 
+  // Fast-mode DAC register write only; EEPROM is not written.
   Wire.beginTransmission(address);
   Wire.write(static_cast<uint8_t>((value >> 8) & 0x0F));
   Wire.write(static_cast<uint8_t>(value & 0xFF));
@@ -364,7 +383,7 @@ uint8_t millivoltsToInternalDacCode(uint16_t millivolts) {
 }
 
 bool writeThrottle(const Track& track, uint16_t millivolts) {
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
   if (!throttleBackendReady) {
     return false;
   }
@@ -389,7 +408,7 @@ bool writeThrottle(const Track& track, uint16_t millivolts) {
 }
 
 bool initializeThrottleBackend() {
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
   static_assert(
       Config::MCP4725_LEFT_ADDRESS != Config::MCP4725_RIGHT_ADDRESS,
       "MCP4725 addresses must be different");
@@ -405,7 +424,6 @@ bool initializeThrottleBackend() {
   if (!leftPresent) {
     Serial.println("ERR,MCP4725_LEFT_NOT_FOUND");
   }
-
   if (!rightPresent) {
     Serial.println("ERR,MCP4725_RIGHT_NOT_FOUND");
   }
@@ -418,43 +436,37 @@ bool initializeThrottleBackend() {
   const bool leftSafe = writeMcp4725(
       Config::MCP4725_LEFT_ADDRESS,
       Config::THROTTLE_DISARMED_MV);
-
   const bool rightSafe = writeMcp4725(
       Config::MCP4725_RIGHT_ADDRESS,
       Config::THROTTLE_DISARMED_MV);
 
   throttleBackendReady = leftSafe && rightSafe;
-
   if (!throttleBackendReady) {
     Serial.println("ERR,MCP4725_SAFE_WRITE_FAILED");
   }
-
   return throttleBackendReady;
 #else
   throttleBackendReady = true;
-
   dacWrite(
       Pins::LEFT_THROTTLE_DAC,
-      millivoltsToInternalDacCode(
-          Config::THROTTLE_DISARMED_MV));
-
+      millivoltsToInternalDacCode(Config::THROTTLE_DISARMED_MV));
   dacWrite(
       Pins::RIGHT_THROTTLE_DAC,
-      millivoltsToInternalDacCode(
-          Config::THROTTLE_DISARMED_MV));
-
+      millivoltsToInternalDacCode(Config::THROTTLE_DISARMED_MV));
   return true;
 #endif
 }
 
-bool estopOkay();
-
 const char* hardwareProfileName() {
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_PC817
-  return "MCP4725_PC817";
+#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
+  return "MCP4725_HW399";
 #else
   return "LEGACY_INTERNAL_DAC";
 #endif
+}
+
+bool estopOkay() {
+  return digitalRead(Pins::ESTOP_OK) == LOW;
 }
 
 void initializeActuator() {
@@ -469,7 +481,6 @@ void initializeActuator() {
       Config::ACTUATOR_RPWM_CHANNEL,
       Config::ACTUATOR_PWM_HZ,
       Config::ACTUATOR_PWM_BITS);
-
   ledcSetup(
       Config::ACTUATOR_LPWM_CHANNEL,
       Config::ACTUATOR_PWM_HZ,
@@ -478,7 +489,6 @@ void initializeActuator() {
   ledcAttachPin(
       Pins::ACTUATOR_RPWM,
       Config::ACTUATOR_RPWM_CHANNEL);
-
   ledcAttachPin(
       Pins::ACTUATOR_LPWM,
       Config::ACTUATOR_LPWM_CHANNEL);
@@ -527,7 +537,6 @@ int8_t requestedActuatorDirection(uint16_t pulseUs) {
   if (Config::ACTUATOR_REVERSED) {
     direction = -direction;
   }
-
   return direction;
 }
 
@@ -537,38 +546,29 @@ void updateRcActuator(const RcSnapshot& rc, uint32_t nowMs) {
   (void)nowMs;
   return;
 #else
-  if (rc.armValid &&
-      rc.armUs <= Config::RC_ARM_OFF_MAX_US) {
-    actuatorArmSeenOff = true;
-  }
-
-  const bool armPermission =
-      !Config::ACTUATOR_REQUIRES_RC_ARM ||
-      (rc.armValid &&
-       actuatorArmSeenOff &&
-       rc.armUs >= Config::RC_ARM_ON_MIN_US);
-
   if (!estopOkay() ||
-      !rc.actuatorValid ||
-      !armPermission) {
+      controlMode == ControlMode::Safe ||
+      !rc.actuatorValid) {
     stopActuatorOutput();
     actuatorPendingDirection = 0;
     actuatorGuardUntilMs = 0;
+    actuatorNeutralSeen = false;
     return;
   }
 
-  const int8_t requested =
-      requestedActuatorDirection(rc.actuatorUs);
+  const int8_t requested = requestedActuatorDirection(rc.actuatorUs);
 
+  // After SAFE or a mode change CH3 must be returned to neutral once.
   if (requested == 0) {
     stopActuatorOutput();
     actuatorPendingDirection = 0;
     actuatorGuardUntilMs = 0;
     actuatorTimeoutLatched = false;
+    actuatorNeutralSeen = true;
     return;
   }
 
-  if (actuatorTimeoutLatched) {
+  if (!actuatorNeutralSeen || actuatorTimeoutLatched) {
     stopActuatorOutput();
     return;
   }
@@ -589,8 +589,7 @@ void updateRcActuator(const RcSnapshot& rc, uint32_t nowMs) {
           nowMs + Config::ACTUATOR_REVERSE_GUARD_MS;
     }
 
-    if (static_cast<int32_t>(
-            nowMs - actuatorGuardUntilMs) < 0) {
+    if (static_cast<int32_t>(nowMs - actuatorGuardUntilMs) < 0) {
       stopActuatorOutput();
       return;
     }
@@ -607,8 +606,7 @@ void updateRcActuator(const RcSnapshot& rc, uint32_t nowMs) {
     return;
   }
 
-  if (nowMs - actuatorRunStartMs >=
-      Config::ACTUATOR_MAX_RUN_MS) {
+  if (nowMs - actuatorRunStartMs >= Config::ACTUATOR_MAX_RUN_MS) {
     stopActuatorOutput();
     actuatorTimeoutLatched = true;
     Serial.println("EVT,ACTUATOR,TIMEOUT");
@@ -617,82 +615,49 @@ void updateRcActuator(const RcSnapshot& rc, uint32_t nowMs) {
 }
 
 int8_t signOf(int16_t value) {
-  if (value > 0) {
-    return 1;
-  }
-
-  if (value < 0) {
-    return -1;
-  }
-
+  if (value > 0) return 1;
+  if (value < 0) return -1;
   return 0;
 }
 
 int16_t clampCommand(long value) {
-  if (value > 1000) {
-    return 1000;
-  }
-
-  if (value < -1000) {
-    return -1000;
-  }
-
+  if (value > 1000) return 1000;
+  if (value < -1000) return -1000;
   return static_cast<int16_t>(value);
 }
 
-int16_t moveToward(
-    int16_t current,
-    int16_t target,
-    int16_t step) {
+int16_t moveToward(int16_t current, int16_t target, int16_t step) {
   if (current < target) {
-    const int32_t next =
-        static_cast<int32_t>(current) + step;
-
-    return static_cast<int16_t>(
-        next > target ? target : next);
+    const int32_t next = static_cast<int32_t>(current) + step;
+    return static_cast<int16_t>(next > target ? target : next);
   }
-
   if (current > target) {
-    const int32_t next =
-        static_cast<int32_t>(current) - step;
-
-    return static_cast<int16_t>(
-        next < target ? target : next);
+    const int32_t next = static_cast<int32_t>(current) - step;
+    return static_cast<int16_t>(next < target ? target : next);
   }
-
   return current;
 }
 
-uint16_t commandToThrottleMillivolts(
-    int16_t signedCommand) {
+uint16_t commandToThrottleMillivolts(int16_t signedCommand) {
   const int magnitude = abs(signedCommand);
-
   if (magnitude <= 0) {
     return Config::THROTTLE_IDLE_MV;
   }
 
   const uint32_t span =
-      Config::THROTTLE_MAX_TEST_MV -
-      Config::THROTTLE_IDLE_MV;
+      Config::THROTTLE_MAX_TEST_MV - Config::THROTTLE_IDLE_MV;
 
   return static_cast<uint16_t>(
       Config::THROTTLE_IDLE_MV +
       (span * constrain(magnitude, 0, 1000)) / 1000);
 }
 
-bool estopOkay() {
-  return digitalRead(Pins::ESTOP_OK) == LOW;
-}
-
 void applyTrackSafe(Track& track) {
   track.target = 0;
   track.actual = 0;
   track.phase = Track::Phase::Normal;
-
   setBrake(track, true);
-  writeThrottle(
-      track,
-      Config::THROTTLE_DISARMED_MV);
+  writeThrottle(track, Config::THROTTLE_DISARMED_MV);
 }
 
 void disarmSystem(const char* reason) {
@@ -700,20 +665,14 @@ void disarmSystem(const char* reason) {
 
   const bool wasArmed = armed;
   armed = false;
-
   applyTrackSafe(leftTrack);
   applyTrackSafe(rightTrack);
   digitalWrite(Pins::STATUS_LED, LOW);
 
-  const char* eventReason =
-      reason != nullptr ? reason : "requested";
-
+  const char* eventReason = reason != nullptr ? reason : "requested";
   const bool reasonChanged =
       reason != nullptr &&
-      strncmp(
-          lastReportedReason,
-          eventReason,
-          sizeof(lastReportedReason)) != 0;
+      strncmp(lastReportedReason, eventReason, sizeof(lastReportedReason)) != 0;
 
   if (wasArmed || reasonChanged) {
     Serial.print("EVT,DISARM,");
@@ -723,13 +682,8 @@ void disarmSystem(const char* reason) {
   if (reason == nullptr) {
     lastReportedReason[0] = '\0';
   } else {
-    strncpy(
-        lastReportedReason,
-        eventReason,
-        sizeof(lastReportedReason) - 1);
-
-    lastReportedReason[
-        sizeof(lastReportedReason) - 1] = '\0';
+    strncpy(lastReportedReason, eventReason, sizeof(lastReportedReason) - 1);
+    lastReportedReason[sizeof(lastReportedReason) - 1] = '\0';
   }
 }
 
@@ -738,14 +692,11 @@ bool armSystem(const char* source) {
     Serial.println("ERR,ESTOP_OPEN");
     return false;
   }
-
   if (!throttleBackendReady) {
     Serial.println("ERR,THROTTLE_DAC_NOT_READY");
     return false;
   }
-
-  if (leftTrack.target != 0 ||
-      rightTrack.target != 0) {
+  if (leftTrack.target != 0 || rightTrack.target != 0) {
     Serial.println("ERR,NONZERO_TARGET");
     return false;
   }
@@ -753,13 +704,8 @@ bool armSystem(const char* source) {
   setBrake(leftTrack, true);
   setBrake(rightTrack, true);
 
-  const bool leftIdle = writeThrottle(
-      leftTrack,
-      Config::THROTTLE_IDLE_MV);
-
-  const bool rightIdle = writeThrottle(
-      rightTrack,
-      Config::THROTTLE_IDLE_MV);
+  const bool leftIdle = writeThrottle(leftTrack, Config::THROTTLE_IDLE_MV);
+  const bool rightIdle = writeThrottle(rightTrack, Config::THROTTLE_IDLE_MV);
 
   if (!leftIdle || !rightIdle) {
     setBrake(leftTrack, true);
@@ -775,13 +721,10 @@ bool armSystem(const char* source) {
   armed = true;
   watchdogTripped = false;
   lastDriveFrameMs = millis();
-
   digitalWrite(Pins::STATUS_LED, HIGH);
 
   Serial.print("EVT,ARMED,");
-  Serial.println(
-      source != nullptr ? source : "UNKNOWN");
-
+  Serial.println(source != nullptr ? source : "UNKNOWN");
   return true;
 }
 
@@ -791,73 +734,46 @@ void updateTrack(Track& track, uint32_t nowMs) {
     return;
   }
 
-  if (!Config::REVERSE_SUPPORTED &&
-      track.target < 0) {
+  if (!Config::REVERSE_SUPPORTED && track.target < 0) {
     track.target = 0;
   }
 
   const int8_t desiredSign = signOf(track.target);
 
-  if (track.phase ==
-      Track::Phase::BrakeBeforeReverse) {
+  if (track.phase == Track::Phase::BrakeBeforeReverse) {
     setBrake(track, true);
-    writeThrottle(
-        track,
-        Config::THROTTLE_IDLE_MV);
-
+    writeThrottle(track, Config::THROTTLE_IDLE_MV);
     track.actual = 0;
 
-    if (static_cast<int32_t>(
-            nowMs - track.deadlineMs) >= 0) {
+    if (static_cast<int32_t>(nowMs - track.deadlineMs) >= 0) {
       if (desiredSign == 0) {
         track.phase = Track::Phase::Normal;
         return;
       }
-
       setReverse(track, desiredSign < 0);
-
-      track.phase =
-          Track::Phase::ReverseSettle;
-
-      track.deadlineMs =
-          nowMs + Config::REVERSE_SETTLE_MS;
+      track.phase = Track::Phase::ReverseSettle;
+      track.deadlineMs = nowMs + Config::REVERSE_SETTLE_MS;
     }
-
     return;
   }
 
-  if (track.phase ==
-      Track::Phase::ReverseSettle) {
+  if (track.phase == Track::Phase::ReverseSettle) {
     setBrake(track, true);
-    writeThrottle(
-        track,
-        Config::THROTTLE_IDLE_MV);
-
+    writeThrottle(track, Config::THROTTLE_IDLE_MV);
     track.actual = 0;
 
-    if (static_cast<int32_t>(
-            nowMs - track.deadlineMs) >= 0) {
+    if (static_cast<int32_t>(nowMs - track.deadlineMs) >= 0) {
       track.phase = Track::Phase::Normal;
     }
-
     return;
   }
 
-  if (desiredSign != 0 &&
-      desiredSign != track.appliedSign) {
+  if (desiredSign != 0 && desiredSign != track.appliedSign) {
     track.actual = 0;
-
     setBrake(track, true);
-    writeThrottle(
-        track,
-        Config::THROTTLE_IDLE_MV);
-
-    track.phase =
-        Track::Phase::BrakeBeforeReverse;
-
-    track.deadlineMs =
-        nowMs + Config::REVERSE_BRAKE_MS;
-
+    writeThrottle(track, Config::THROTTLE_IDLE_MV);
+    track.phase = Track::Phase::BrakeBeforeReverse;
+    track.deadlineMs = nowMs + Config::REVERSE_BRAKE_MS;
     return;
   }
 
@@ -867,25 +783,16 @@ void updateTrack(Track& track, uint32_t nowMs) {
       Config::RAMP_STEP_PER_TICK);
 
   if (track.actual == 0) {
-    setBrake(
-        track,
-        Config::HOLD_BRAKE_AT_ZERO);
-
-    if (!writeThrottle(
-            track,
-            Config::THROTTLE_IDLE_MV)) {
+    setBrake(track, Config::HOLD_BRAKE_AT_ZERO);
+    if (!writeThrottle(track, Config::THROTTLE_IDLE_MV)) {
       setBrake(track, true);
     }
-
     return;
   }
 
-  const bool throttleWritten = writeThrottle(
-      track,
-      commandToThrottleMillivolts(
-          track.actual));
-
-  if (!throttleWritten) {
+  if (!writeThrottle(
+          track,
+          commandToThrottleMillivolts(track.actual))) {
     track.actual = 0;
     setBrake(track, true);
     return;
@@ -894,9 +801,7 @@ void updateTrack(Track& track, uint32_t nowMs) {
   setBrake(track, false);
 }
 
-bool pulseValid(
-    uint16_t pulseUs,
-    uint32_t ageUs) {
+bool pulseValid(uint16_t pulseUs, uint32_t ageUs) {
   return pulseUs >= Config::RC_MIN_VALID_US &&
          pulseUs <= Config::RC_MAX_VALID_US &&
          ageUs <= Config::RC_SIGNAL_TIMEOUT_US;
@@ -904,92 +809,50 @@ bool pulseValid(
 
 RcSnapshot readRcSnapshot() {
   RcSnapshot result;
-
   uint32_t channel1Last;
   uint32_t channel2Last;
   uint32_t actuatorLast;
   uint32_t modeLast;
-  uint32_t armLast;
-
   const uint32_t nowUs = micros();
 
   portENTER_CRITICAL(&rcMux);
-
   result.channel1Us = rcChannel1.pulseUs;
   result.channel2Us = rcChannel2.pulseUs;
   result.actuatorUs = rcActuator.pulseUs;
   result.modeUs = rcMode.pulseUs;
-  result.armUs = rcArm.pulseUs;
-
   channel1Last = rcChannel1.lastPulseUs;
   channel2Last = rcChannel2.lastPulseUs;
   actuatorLast = rcActuator.lastPulseUs;
   modeLast = rcMode.lastPulseUs;
-  armLast = rcArm.lastPulseUs;
-
   portEXIT_CRITICAL(&rcMux);
 
   result.channel1AgeUs =
-      channel1Last == 0
-          ? UINT32_MAX
-          : nowUs - channel1Last;
-
+      channel1Last == 0 ? UINT32_MAX : nowUs - channel1Last;
   result.channel2AgeUs =
-      channel2Last == 0
-          ? UINT32_MAX
-          : nowUs - channel2Last;
-
+      channel2Last == 0 ? UINT32_MAX : nowUs - channel2Last;
   result.actuatorAgeUs =
-      actuatorLast == 0
-          ? UINT32_MAX
-          : nowUs - actuatorLast;
-
+      actuatorLast == 0 ? UINT32_MAX : nowUs - actuatorLast;
   result.modeAgeUs =
-      modeLast == 0
-          ? UINT32_MAX
-          : nowUs - modeLast;
+      modeLast == 0 ? UINT32_MAX : nowUs - modeLast;
 
-  result.armAgeUs =
-      armLast == 0
-          ? UINT32_MAX
-          : nowUs - armLast;
-
-  result.armValid =
-      pulseValid(
-          result.armUs,
-          result.armAgeUs);
-
+  result.modeValid = pulseValid(result.modeUs, result.modeAgeUs);
   result.actuatorValid =
-      pulseValid(
-          result.actuatorUs,
-          result.actuatorAgeUs);
-
+      pulseValid(result.actuatorUs, result.actuatorAgeUs);
   result.valid =
-      pulseValid(
-          result.channel1Us,
-          result.channel1AgeUs) &&
-      pulseValid(
-          result.channel2Us,
-          result.channel2AgeUs) &&
-      pulseValid(
-          result.modeUs,
-          result.modeAgeUs) &&
-      result.armValid;
+      pulseValid(result.channel1Us, result.channel1AgeUs) &&
+      pulseValid(result.channel2Us, result.channel2AgeUs) &&
+      result.modeValid;
 
   return result;
 }
 
 ControlMode modeFromPulse(uint16_t pulseUs) {
-  if (pulseUs <=
-      Config::RC_MODE_MANUAL_MAX_US) {
+  if (pulseUs <= Config::RC_MODE_MANUAL_MAX_US) {
     return ControlMode::RcManual;
   }
-
-  if (pulseUs >=
-      Config::RC_MODE_ROS_MIN_US) {
+  if (pulseUs >= Config::RC_MODE_ROS_MIN_US) {
     return ControlMode::RosAutonomous;
   }
-
   return ControlMode::Safe;
 }
 
@@ -997,10 +860,8 @@ const char* modeName(ControlMode mode) {
   switch (mode) {
     case ControlMode::RcManual:
       return "RC";
-
     case ControlMode::RosAutonomous:
       return "ROS";
-
     default:
       return "SAFE";
   }
@@ -1012,12 +873,9 @@ const char* rcInputModeName() {
       : "ESP32_MIX";
 }
 
-int16_t pulseToCommand(
-    uint16_t pulseUs,
-    bool reversed) {
+int16_t pulseToCommand(uint16_t pulseUs, bool reversed) {
   int32_t delta =
-      static_cast<int32_t>(pulseUs) -
-      Config::RC_CENTER_US;
+      static_cast<int32_t>(pulseUs) - Config::RC_CENTER_US;
 
   if (abs(delta) <= Config::RC_DEADBAND_US) {
     return 0;
@@ -1027,18 +885,13 @@ int16_t pulseToCommand(
       ? -Config::RC_DEADBAND_US
       : Config::RC_DEADBAND_US;
 
-  const int32_t usableSpan =
-      500 - Config::RC_DEADBAND_US;
-
-  int32_t command =
-      delta * 1000 / usableSpan;
-
+  const int32_t usableSpan = 500 - Config::RC_DEADBAND_US;
+  int32_t command = delta * 1000 / usableSpan;
   command = constrain(command, -1000, 1000);
 
   if (reversed) {
     command = -command;
   }
-
   return static_cast<int16_t>(command);
 }
 
@@ -1046,13 +899,8 @@ void readPremixedRcTracks(
     const RcSnapshot& rc,
     int16_t& left,
     int16_t& right) {
-  left = pulseToCommand(
-      rc.channel1Us,
-      Config::RC_LEFT_REVERSED);
-
-  right = pulseToCommand(
-      rc.channel2Us,
-      Config::RC_RIGHT_REVERSED);
+  left = pulseToCommand(rc.channel1Us, Config::RC_LEFT_REVERSED);
+  right = pulseToCommand(rc.channel2Us, Config::RC_RIGHT_REVERSED);
 }
 
 void mixRcTracksOnEsp32(
@@ -1062,35 +910,21 @@ void mixRcTracksOnEsp32(
   const int16_t steering = pulseToCommand(
       rc.channel1Us,
       Config::RC_STEERING_REVERSED);
-
   const int16_t throttle = pulseToCommand(
       rc.channel2Us,
       Config::RC_THROTTLE_REVERSED);
 
-  int32_t mixedLeft =
-      static_cast<int32_t>(throttle) +
-      steering;
-
-  int32_t mixedRight =
-      static_cast<int32_t>(throttle) -
-      steering;
-
-  const int32_t peak =
-      max(abs(mixedLeft), abs(mixedRight));
+  int32_t mixedLeft = static_cast<int32_t>(throttle) + steering;
+  int32_t mixedRight = static_cast<int32_t>(throttle) - steering;
+  const int32_t peak = max(abs(mixedLeft), abs(mixedRight));
 
   if (peak > 1000) {
-    mixedLeft =
-        mixedLeft * 1000 / peak;
-
-    mixedRight =
-        mixedRight * 1000 / peak;
+    mixedLeft = mixedLeft * 1000 / peak;
+    mixedRight = mixedRight * 1000 / peak;
   }
 
-  left = static_cast<int16_t>(
-      constrain(mixedLeft, -1000, 1000));
-
-  right = static_cast<int16_t>(
-      constrain(mixedRight, -1000, 1000));
+  left = static_cast<int16_t>(constrain(mixedLeft, -1000, 1000));
+  right = static_cast<int16_t>(constrain(mixedRight, -1000, 1000));
 }
 
 void calculateRcTracks(
@@ -1104,14 +938,24 @@ void calculateRcTracks(
   }
 }
 
+bool rcTracksNeutral(const RcSnapshot& rc) {
+  int16_t left = 0;
+  int16_t right = 0;
+  calculateRcTracks(rc, left, right);
+  return left == 0 && right == 0;
+}
+
 void changeMode(ControlMode nextMode) {
   if (nextMode == controlMode) {
     return;
   }
 
   disarmSystem("MODE_CHANGE");
+  stopActuatorOutput();
+  actuatorPendingDirection = 0;
+  actuatorGuardUntilMs = 0;
+  actuatorNeutralSeen = false;
   controlMode = nextMode;
-  rcArmSeenOff = false;
 
   Serial.print("EVT,MODE,");
   Serial.println(modeName(controlMode));
@@ -1119,151 +963,99 @@ void changeMode(ControlMode nextMode) {
 
 void updateCommandSource() {
   const RcSnapshot rc = readRcSnapshot();
-
   lastRcSnapshot = rc;
   lastRcValid = rc.valid;
 
   const ControlMode requestedMode =
-      rc.valid
-          ? modeFromPulse(rc.modeUs)
-          : ControlMode::Safe;
-
+      rc.modeValid ? modeFromPulse(rc.modeUs) : ControlMode::Safe;
   changeMode(requestedMode);
 
   if (!estopOkay()) {
     disarmSystem("ESTOP");
     return;
   }
-
   if (!throttleBackendReady) {
     disarmSystem("THROTTLE_DAC");
     return;
   }
-
   if (controlMode == ControlMode::Safe) {
     disarmSystem(nullptr);
     return;
   }
-
   if (!rc.valid) {
     disarmSystem("RC_SIGNAL_LOST");
     return;
   }
 
-  if (rc.armUs <=
-      Config::RC_ARM_OFF_MAX_US) {
-    rcArmSeenOff = true;
-    disarmSystem(nullptr);
-    return;
-  }
-
-  const bool physicalPermission =
-      rcArmSeenOff &&
-      rc.armUs >= Config::RC_ARM_ON_MIN_US;
-
-  if (controlMode ==
-      ControlMode::RcManual) {
-    if (!physicalPermission) {
-      disarmSystem(nullptr);
-      return;
-    }
-
-    if (!armed && !armSystem("RC")) {
-      return;
+  if (controlMode == ControlMode::RcManual) {
+    // No separate ARM channel. CH5 SAFE is the physical safety mode.
+    // Before RC motion starts, both track commands must be neutral once.
+    if (!armed) {
+      if (!rcTracksNeutral(rc)) {
+        disarmSystem("WAIT_NEUTRAL");
+        return;
+      }
+      if (!armSystem("RC")) {
+        return;
+      }
     }
 
     calculateRcTracks(
         rc,
         leftTrack.target,
         rightTrack.target);
-
     return;
   }
 
-  if (Config::ROS_REQUIRES_RC_ARM &&
-      !physicalPermission) {
-    disarmSystem(nullptr);
-  }
+  // ROS mode is physically permitted by CH5. Software ARM over USB is kept
+  // for compatibility with the ROS bridge; it consumes no RC channel.
 }
 
 uint8_t xorChecksum(const char* text) {
   uint8_t checksum = 0;
-
   while (*text != '\0') {
-    checksum ^=
-        static_cast<uint8_t>(*text++);
+    checksum ^= static_cast<uint8_t>(*text++);
   }
-
   return checksum;
 }
 
 int hexNibble(char c) {
-  if (c >= '0' && c <= '9') {
-    return c - '0';
-  }
-
-  if (c >= 'A' && c <= 'F') {
-    return c - 'A' + 10;
-  }
-
-  if (c >= 'a' && c <= 'f') {
-    return c - 'a' + 10;
-  }
-
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
   return -1;
 }
 
 void sendFrame(const String& body) {
   Serial.print(body);
   Serial.print('*');
-
-  const uint8_t checksum =
-      xorChecksum(body.c_str());
-
-  if (checksum < 16) {
-    Serial.print('0');
-  }
-
+  const uint8_t checksum = xorChecksum(body.c_str());
+  if (checksum < 16) Serial.print('0');
   Serial.println(checksum, HEX);
 }
 
-void sendAck(
-    uint32_t sequence,
-    const char* result) {
+void sendAck(uint32_t sequence, const char* result) {
   const String body =
-      "ACK," +
-      String(sequence) +
-      "," +
-      result +
-      "," +
-      String(leftTrack.target) +
-      "," +
-      String(rightTrack.target);
-
+      "ACK," + String(sequence) + "," + result + "," +
+      String(leftTrack.target) + "," + String(rightTrack.target);
   sendFrame(body);
 }
 
 bool verifyAndStripChecksum(char* line) {
   char* star = strrchr(line, '*');
-
-  if (star == nullptr ||
-      strlen(star + 1) != 2) {
+  if (star == nullptr || strlen(star + 1) != 2) {
     return false;
   }
 
   const int high = hexNibble(star[1]);
   const int low = hexNibble(star[2]);
-
   if (high < 0 || low < 0) {
     return false;
   }
 
   const uint8_t received =
-      static_cast<uint8_t>(
-          (high << 4) | low);
-
+      static_cast<uint8_t>((high << 4) | low);
   *star = '\0';
-
   return xorChecksum(line) == received;
 }
 
@@ -1274,30 +1066,22 @@ void processFrame(char* line) {
   }
 
   char* save = nullptr;
-  char* command =
-      strtok_r(line, ",", &save);
-  char* seqText =
-      strtok_r(nullptr, ",", &save);
+  char* command = strtok_r(line, ",", &save);
+  char* seqText = strtok_r(nullptr, ",", &save);
 
-  if (command == nullptr ||
-      seqText == nullptr) {
+  if (command == nullptr || seqText == nullptr) {
     Serial.println("ERR,FORMAT");
     return;
   }
 
-  const uint32_t sequence =
-      strtoul(seqText, nullptr, 10);
-
+  const uint32_t sequence = strtoul(seqText, nullptr, 10);
   lastSequence = sequence;
 
   if (strcmp(command, "DRV") == 0) {
-    char* leftText =
-        strtok_r(nullptr, ",", &save);
-    char* rightText =
-        strtok_r(nullptr, ",", &save);
+    char* leftText = strtok_r(nullptr, ",", &save);
+    char* rightText = strtok_r(nullptr, ",", &save);
 
-    if (leftText == nullptr ||
-        rightText == nullptr) {
+    if (leftText == nullptr || rightText == nullptr) {
       sendAck(sequence, "BAD_FORMAT");
       return;
     }
@@ -1305,34 +1089,25 @@ void processFrame(char* line) {
     lastDriveFrameMs = millis();
     watchdogTripped = false;
 
-    if (controlMode !=
-        ControlMode::RosAutonomous) {
+    if (controlMode != ControlMode::RosAutonomous) {
       sendAck(sequence, "NOT_ROS_MODE");
       return;
     }
-
     if (!armed) {
       sendAck(sequence, "DISARMED");
       return;
     }
 
-    leftTrack.target = clampCommand(
-        strtol(leftText, nullptr, 10));
-
-    rightTrack.target = clampCommand(
-        strtol(rightText, nullptr, 10));
-
+    leftTrack.target = clampCommand(strtol(leftText, nullptr, 10));
+    rightTrack.target = clampCommand(strtol(rightText, nullptr, 10));
     sendAck(sequence, "OK");
     return;
   }
 
   if (strcmp(command, "ARM") == 0) {
-    char* valueText =
-        strtok_r(nullptr, ",", &save);
-
+    char* valueText = strtok_r(nullptr, ",", &save);
     const bool requestArm =
-        valueText != nullptr &&
-        atoi(valueText) != 0;
+        valueText != nullptr && atoi(valueText) != 0;
 
     if (!requestArm) {
       disarmSystem("REMOTE");
@@ -1340,37 +1115,22 @@ void processFrame(char* line) {
       return;
     }
 
-    if (controlMode !=
-        ControlMode::RosAutonomous) {
+    if (controlMode != ControlMode::RosAutonomous) {
       sendAck(sequence, "NOT_ROS_MODE");
-      return;
-    }
-
-    if (!lastRcSnapshot.valid ||
-        (Config::ROS_REQUIRES_RC_ARM &&
-         !(rcArmSeenOff &&
-           lastRcSnapshot.armUs >=
-               Config::RC_ARM_ON_MIN_US))) {
-      sendAck(
-          sequence,
-          "RC_PERMISSION_REQUIRED");
       return;
     }
 
     leftTrack.target = 0;
     rightTrack.target = 0;
-
     sendAck(
         sequence,
-        armSystem("ROS")
-            ? "OK"
-            : "REFUSED");
-
+        armSystem("ROS") ? "OK" : "REFUSED");
     return;
   }
 
   if (strcmp(command, "STOP") == 0) {
     disarmSystem("REMOTE_STOP");
+    stopActuatorOutput();
     sendAck(sequence, "OK");
     return;
   }
@@ -1385,8 +1145,7 @@ void processFrame(char* line) {
 
 void readSerialFrames() {
   while (Serial.available() > 0) {
-    const char c =
-        static_cast<char>(Serial.read());
+    const char c = static_cast<char>(Serial.read());
 
     if (c == '\r') {
       continue;
@@ -1398,12 +1157,10 @@ void readSerialFrames() {
         processFrame(serialLine);
         serialLineLength = 0;
       }
-
       continue;
     }
 
-    if (serialLineLength + 1 <
-        sizeof(serialLine)) {
+    if (serialLineLength + 1 < sizeof(serialLine)) {
       serialLine[serialLineLength++] = c;
     } else {
       serialLineLength = 0;
@@ -1419,40 +1176,30 @@ void sendTelemetry(uint32_t nowMs) {
   uint32_t rightPulseSnapshot;
 
   portENTER_CRITICAL(&hallMux);
-
   leftTickSnapshot = leftTicks;
   rightTickSnapshot = rightTicks;
   leftPulseSnapshot = leftWindowPulses;
   rightPulseSnapshot = rightWindowPulses;
-
   leftWindowPulses = 0;
   rightWindowPulses = 0;
-
   portEXIT_CRITICAL(&hallMux);
 
-  uint32_t elapsed =
-      nowMs - lastTelemetryPulseMs;
-
-  if (elapsed == 0) {
-    elapsed = 1;
-  }
-
+  uint32_t elapsed = nowMs - lastTelemetryPulseMs;
+  if (elapsed == 0) elapsed = 1;
   lastTelemetryPulseMs = nowMs;
 
-  const uint32_t leftPps =
-      leftPulseSnapshot * 1000UL / elapsed;
+  const uint32_t leftPps = leftPulseSnapshot * 1000UL / elapsed;
+  const uint32_t rightPps = rightPulseSnapshot * 1000UL / elapsed;
 
-  const uint32_t rightPps =
-      rightPulseSnapshot * 1000UL / elapsed;
-
+  // Keep the old telemetry field positions for the ROS bridge. Field 17,
+  // previously rc_arm_us, is now reserved and always 0.
   char body[340];
-
   snprintf(
       body,
       sizeof(body),
       "TEL,%lu,%d,%d,%d,%d,%d,%d,"
       "%lld,%lld,%lu,%lu,%d,%s,"
-      "%u,%u,%u,%u,%d,%s,"
+      "%u,%u,%u,0,%d,%s,"
       "%u,%d,%d,%d",
       static_cast<unsigned long>(nowMs),
       armed ? 1 : 0,
@@ -1470,7 +1217,6 @@ void sendTelemetry(uint32_t nowMs) {
       lastRcSnapshot.channel1Us,
       lastRcSnapshot.channel2Us,
       lastRcSnapshot.modeUs,
-      lastRcSnapshot.armUs,
       lastRcValid ? 1 : 0,
       rcInputModeName(),
       lastRcSnapshot.actuatorUs,
@@ -1492,14 +1238,16 @@ void setup() {
   pinMode(Pins::STATUS_LED, OUTPUT);
 
   pinMode(Pins::ESTOP_OK, INPUT_PULLUP);
+
+#if ROBOTLIDAR_ENABLE_HALL
   pinMode(Pins::LEFT_HALL, INPUT);
   pinMode(Pins::RIGHT_HALL, INPUT);
+#endif
 
   pinMode(Pins::RC_CHANNEL_1, INPUT);
   pinMode(Pins::RC_CHANNEL_2, INPUT);
   pinMode(Pins::RC_ACTUATOR, INPUT);
   pinMode(Pins::RC_MODE, INPUT);
-  pinMode(Pins::RC_ARM, INPUT);
 
   digitalWrite(Pins::LEFT_REVERSE, LOW);
   digitalWrite(Pins::RIGHT_REVERSE, LOW);
@@ -1517,62 +1265,58 @@ void setup() {
   applyTrackSafe(leftTrack);
   applyTrackSafe(rightTrack);
 
+#if ROBOTLIDAR_ENABLE_HALL
   attachInterrupt(
       digitalPinToInterrupt(Pins::LEFT_HALL),
       onLeftHall,
       Config::HALL_INTERRUPT_EDGE);
-
   attachInterrupt(
       digitalPinToInterrupt(Pins::RIGHT_HALL),
       onRightHall,
       Config::HALL_INTERRUPT_EDGE);
+#endif
 
   attachInterrupt(
       digitalPinToInterrupt(Pins::RC_CHANNEL_1),
       onRcChannel1,
       CHANGE);
-
   attachInterrupt(
       digitalPinToInterrupt(Pins::RC_CHANNEL_2),
       onRcChannel2,
       CHANGE);
-
   attachInterrupt(
       digitalPinToInterrupt(Pins::RC_ACTUATOR),
       onRcActuator,
       CHANGE);
-
   attachInterrupt(
       digitalPinToInterrupt(Pins::RC_MODE),
       onRcMode,
-      CHANGE);
-
-  attachInterrupt(
-      digitalPinToInterrupt(Pins::RC_ARM),
-      onRcArm,
       CHANGE);
 
   lastControlMs = millis();
   lastTelemetryMs = millis();
   lastTelemetryPulseMs = millis();
 
-  const String bootBody =
-      String(
-          "BOOT,ESP32_WROOM_TRACK_CONTROLLER,6,") +
+  String bootBody =
+      String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,7,") +
       hardwareProfileName() +
-      ",RC_CH3_BTS7960";
+      ",RC_SAFE_ROS_NO_CH6,RC_CH3_BTS7960";
+
+#if ROBOTLIDAR_ENABLE_HALL
+  bootBody += ",HALL_HW399";
+#else
+  bootBody += ",HALL_OFF";
+#endif
 
   sendFrame(bootBody);
 
   if (!throttleBackendReady) {
-    Serial.println(
-        "EVT,DISARM,THROTTLE_DAC");
+    Serial.println("EVT,DISARM,THROTTLE_DAC");
   }
 }
 
 void loop() {
   readSerialFrames();
-
   const uint32_t nowMs = millis();
 
   if (!estopOkay() && armed) {
@@ -1583,20 +1327,15 @@ void loop() {
     disarmSystem("THROTTLE_DAC");
   }
 
-  if (nowMs - lastControlMs >=
-      Config::CONTROL_PERIOD_MS) {
+  if (nowMs - lastControlMs >= Config::CONTROL_PERIOD_MS) {
     lastControlMs = nowMs;
 
     updateCommandSource();
-
-    // Actuator is controlled only by RC CH3.
     updateRcActuator(lastRcSnapshot, nowMs);
 
-    if (controlMode ==
-            ControlMode::RosAutonomous &&
+    if (controlMode == ControlMode::RosAutonomous &&
         armed &&
-        nowMs - lastDriveFrameMs >
-            Config::COMMAND_WATCHDOG_MS) {
+        nowMs - lastDriveFrameMs > Config::COMMAND_WATCHDOG_MS) {
       watchdogTripped = true;
       disarmSystem("WATCHDOG");
     }
@@ -1605,8 +1344,7 @@ void loop() {
     updateTrack(rightTrack, nowMs);
   }
 
-  if (nowMs - lastTelemetryMs >=
-      Config::TELEMETRY_PERIOD_MS) {
+  if (nowMs - lastTelemetryMs >= Config::TELEMETRY_PERIOD_MS) {
     lastTelemetryMs = nowMs;
     sendTelemetry(nowMs);
   }
