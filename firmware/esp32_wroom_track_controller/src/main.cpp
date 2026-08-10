@@ -80,6 +80,8 @@ constexpr uint32_t REVERSE_BRAKE_MS = 700;
 constexpr uint32_t REVERSE_SETTLE_MS = 300;
 constexpr uint16_t RC_MIN_VALID_US = 800;
 constexpr uint16_t RC_MAX_VALID_US = 2200;
+constexpr uint16_t RC_ISR_MIN_US = 750;
+constexpr uint16_t RC_ISR_MAX_US = 2250;
 constexpr uint16_t RC_CENTER_US = 1500;
 constexpr uint16_t RC_DEADBAND_US = 45;
 constexpr uint16_t RC_MODE_MANUAL_MAX_US = 1300;
@@ -219,10 +221,11 @@ void IRAM_ATTR onRightHall() {
 void IRAM_ATTR captureRcEdge(uint8_t pin, RcCapture& channel) {
   const uint32_t nowUs = micros();
   portENTER_CRITICAL_ISR(&rcMux);
-  if (digitalRead(pin) == HIGH) channel.riseUs = nowUs;
-  else {
+  if (digitalRead(pin) == HIGH) {
+    channel.riseUs = nowUs;
+  } else {
     const uint32_t width = nowUs - channel.riseUs;
-    if (width <= 65535U) {
+    if (width >= Config::RC_ISR_MIN_US && width <= Config::RC_ISR_MAX_US) {
       channel.pulseUs = static_cast<uint16_t>(width);
       channel.lastPulseUs = nowUs;
     }
@@ -620,6 +623,11 @@ void printCompactVoltage(uint16_t mv) {
   oled.print(hundredths);
 }
 
+void printRcValue(uint16_t pulseUs, uint32_t ageUs) {
+  if (pulseValid(pulseUs, ageUs)) oled.print(pulseUs);
+  else oled.print(F("----"));
+}
+
 void updateOled(uint32_t nowMs) {
   (void)nowMs;
   if (!oledReady) return;
@@ -631,7 +639,6 @@ void updateOled(uint32_t nowMs) {
   oled.setTextColor(SSD1306_WHITE);
   oled.setTextSize(1);
 
-  // Fixed coordinates keep labels from shifting when numeric values change width.
   oled.setCursor(0, 0);
   oled.print(modeName(controlMode));
   oled.print(armed ? F(" A1") : F(" A0"));
@@ -639,37 +646,34 @@ void updateOled(uint32_t nowMs) {
   oled.print(lastRcValid ? F(" RC1") : F(" RC0"));
   oled.print(watchdogTripped ? F(" W1") : F(" W0"));
 
-  // CH1 and CH2 use independent fixed columns.
   oled.setCursor(0, 8);
   oled.print(F("CH1:"));
-  oled.print(lastRcSnapshot.channel1Us);
+  printRcValue(lastRcSnapshot.channel1Us, lastRcSnapshot.channel1AgeUs);
   oled.setCursor(66, 8);
   oled.print(F("CH2:"));
-  oled.print(lastRcSnapshot.channel2Us);
+  printRcValue(lastRcSnapshot.channel2Us, lastRcSnapshot.channel2AgeUs);
 
   oled.setCursor(0, 16);
   oled.print(F("CMD:L")); oled.print(leftTrack.target);
-  oled.setCursor(60, 16);
-  oled.print(F("R")); oled.print(rightTrack.target);
-  oled.setCursor(96, 16);
-  oled.print(F("O")); oled.print(leftTrack.actual); oled.print('/'); oled.print(rightTrack.actual);
+  oled.setCursor(66, 16);
+  oled.print(F("R:")); oled.print(rightTrack.target);
 
   oled.setCursor(0, 24);
   oled.print(F("DAC:")); printCompactVoltage(leftThrottleMv);
-  oled.setCursor(68, 24);
-  printCompactVoltage(rightThrottleMv); oled.print(F("V"));
+  oled.setCursor(66, 24);
+  printCompactVoltage(rightThrottleMv); oled.print('V');
 
   oled.setCursor(0, 32);
   oled.print(F("RV:")); oled.print(leftTrack.appliedSign < 0 ? 1 : 0); oled.print('/'); oled.print(rightTrack.appliedSign < 0 ? 1 : 0);
-  oled.setCursor(68, 32);
+  oled.setCursor(66, 32);
   oled.print(F("BK:")); oled.print(leftBrakeActive ? 1 : 0); oled.print('/'); oled.print(rightBrakeActive ? 1 : 0);
 
   oled.setCursor(0, 40);
-  oled.print(F("CH3:")); oled.print(lastRcSnapshot.actuatorUs);
-  oled.setCursor(62, 40);
-  oled.print(F("A:")); oled.print(actuatorName());
-  oled.setCursor(92, 40);
-  oled.print(F("C5:")); oled.print(lastRcSnapshot.modeUs);
+  oled.print(F("CH3:"));
+  printRcValue(lastRcSnapshot.actuatorUs, lastRcSnapshot.actuatorAgeUs);
+  oled.setCursor(66, 40);
+  oled.print(F("CH5:"));
+  printRcValue(lastRcSnapshot.modeUs, lastRcSnapshot.modeAgeUs);
 
   oled.setCursor(0, 48);
 #if ROBOTLIDAR_ENABLE_HALL
@@ -683,15 +687,9 @@ void updateOled(uint32_t nowMs) {
 #endif
 
   oled.setCursor(0, 56);
-#if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
-  oled.print(F("MCP:"));
-#else
-  oled.print(F("DAC:"));
-#endif
-  oled.print(throttleBackendReady ? F("OK") : F("ERR"));
-  oled.setCursor(54, 56);
-  oled.print(F("O:")); oled.print(oledAddress, HEX);
-  oled.setCursor(88, 56);
+  oled.print(F("A:")); oled.print(actuatorName());
+  oled.print(F(" DAC:")); oled.print(throttleBackendReady ? F("OK") : F("ERR"));
+  oled.setCursor(96, 56);
   oled.print(actuatorTimeoutLatched ? F("AT!") : F("AT0"));
 
   oled.display();
@@ -706,8 +704,10 @@ void setup() {
 #if ROBOTLIDAR_ENABLE_HALL
   pinMode(Pins::LEFT_HALL, INPUT); pinMode(Pins::RIGHT_HALL, INPUT);
 #endif
-  pinMode(Pins::RC_CHANNEL_1, INPUT); pinMode(Pins::RC_CHANNEL_2, INPUT);
-  pinMode(Pins::RC_ACTUATOR, INPUT); pinMode(Pins::RC_MODE, INPUT);
+  pinMode(Pins::RC_CHANNEL_1, INPUT_PULLDOWN);
+  pinMode(Pins::RC_CHANNEL_2, INPUT_PULLDOWN);
+  pinMode(Pins::RC_ACTUATOR, INPUT_PULLDOWN);
+  pinMode(Pins::RC_MODE, INPUT_PULLDOWN);
   digitalWrite(Pins::LEFT_REVERSE, LOW); digitalWrite(Pins::RIGHT_REVERSE, LOW);
   digitalWrite(Pins::LEFT_BRAKE, HIGH); digitalWrite(Pins::RIGHT_BRAKE, HIGH); digitalWrite(Pins::STATUS_LED, LOW);
   setReverse(leftTrack, false); setReverse(rightTrack, false);
@@ -724,8 +724,8 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR), onRcActuator, CHANGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE), onRcMode, CHANGE);
   lastControlMs = lastTelemetryMs = lastTelemetryPulseMs = lastOledMs = millis();
-  String bootBody = String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,12,") + hardwareProfileName() +
-      ",30PIN_RC_CH3_GPIO14,RC_SAFE_ROS,OLED_FIXED_COLUMNS";
+  String bootBody = String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,13,") + hardwareProfileName() +
+      ",30PIN_RC_CH3_GPIO14,RC_SAFE_ROS,OLED_FIXED_COLUMNS,RC_PULLDOWN_FILTER";
 #if ROBOTLIDAR_ENABLE_HALL
   bootBody += ",HALL_HW399";
 #else
