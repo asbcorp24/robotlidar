@@ -630,47 +630,69 @@ void updateOled(uint32_t nowMs) {
   oled.clearDisplay();
   oled.setTextColor(SSD1306_WHITE);
   oled.setTextSize(1);
-  oled.setCursor(0, 0);
 
-  // One fixed screen, eight rows.
+  // Fixed coordinates keep labels from shifting when numeric values change width.
+  oled.setCursor(0, 0);
   oled.print(modeName(controlMode));
   oled.print(armed ? F(" A1") : F(" A0"));
   oled.print(estopOkay() ? F(" E1") : F(" E0"));
   oled.print(lastRcValid ? F(" RC1") : F(" RC0"));
   oled.print(watchdogTripped ? F(" W1") : F(" W0"));
-  oled.println();
 
-  // Both receiver track channels are always visible simultaneously.
+  // CH1 and CH2 use independent fixed columns.
+  oled.setCursor(0, 8);
   oled.print(F("CH1:"));
   oled.print(lastRcSnapshot.channel1Us);
-  oled.print(F(" CH2:"));
-  oled.println(lastRcSnapshot.channel2Us);
+  oled.setCursor(66, 8);
+  oled.print(F("CH2:"));
+  oled.print(lastRcSnapshot.channel2Us);
 
-  oled.print(F("CMD:L")); oled.print(leftTrack.target); oled.print(F(" R")); oled.print(rightTrack.target);
-  oled.print(F(" O:")); oled.print(leftTrack.actual); oled.print('/'); oled.println(rightTrack.actual);
+  oled.setCursor(0, 16);
+  oled.print(F("CMD:L")); oled.print(leftTrack.target);
+  oled.setCursor(60, 16);
+  oled.print(F("R")); oled.print(rightTrack.target);
+  oled.setCursor(96, 16);
+  oled.print(F("O")); oled.print(leftTrack.actual); oled.print('/'); oled.print(rightTrack.actual);
 
-  oled.print(F("DAC:")); printCompactVoltage(leftThrottleMv); oled.print(' '); printCompactVoltage(rightThrottleMv); oled.println(F("V"));
+  oled.setCursor(0, 24);
+  oled.print(F("DAC:")); printCompactVoltage(leftThrottleMv);
+  oled.setCursor(68, 24);
+  printCompactVoltage(rightThrottleMv); oled.print(F("V"));
 
+  oled.setCursor(0, 32);
   oled.print(F("RV:")); oled.print(leftTrack.appliedSign < 0 ? 1 : 0); oled.print('/'); oled.print(rightTrack.appliedSign < 0 ? 1 : 0);
-  oled.print(F(" BK:")); oled.print(leftBrakeActive ? 1 : 0); oled.print('/'); oled.println(rightBrakeActive ? 1 : 0);
+  oled.setCursor(68, 32);
+  oled.print(F("BK:")); oled.print(leftBrakeActive ? 1 : 0); oled.print('/'); oled.print(rightBrakeActive ? 1 : 0);
 
-  oled.print(F("CH3:")); oled.print(lastRcSnapshot.actuatorUs); oled.print(F(" A:")); oled.print(actuatorName());
-  oled.print(F(" C5:")); oled.println(lastRcSnapshot.modeUs);
+  oled.setCursor(0, 40);
+  oled.print(F("CH3:")); oled.print(lastRcSnapshot.actuatorUs);
+  oled.setCursor(62, 40);
+  oled.print(F("A:")); oled.print(actuatorName());
+  oled.setCursor(92, 40);
+  oled.print(F("C5:")); oled.print(lastRcSnapshot.modeUs);
 
+  oled.setCursor(0, 48);
 #if ROBOTLIDAR_ENABLE_HALL
-  oled.print(F("HL:")); oled.print(static_cast<long long>(lt)); oled.print(F(" HR:")); oled.println(static_cast<long long>(rt));
+  oled.print(F("HL:")); oled.print(static_cast<long long>(lt));
+  oled.setCursor(66, 48);
+  oled.print(F("HR:")); oled.print(static_cast<long long>(rt));
 #else
-  oled.println(F("HL:OFF HR:OFF"));
+  oled.print(F("HL:OFF"));
+  oled.setCursor(66, 48);
+  oled.print(F("HR:OFF"));
 #endif
 
+  oled.setCursor(0, 56);
 #if ROBOTLIDAR_HW_PROFILE == ROBOTLIDAR_HW_MCP4725_HW399
   oled.print(F("MCP:"));
 #else
   oled.print(F("DAC:"));
 #endif
   oled.print(throttleBackendReady ? F("OK") : F("ERR"));
-  oled.print(F(" O:")); oled.print(oledAddress, HEX);
-  oled.print(actuatorTimeoutLatched ? F(" AT!") : F(" AT0"));
+  oled.setCursor(54, 56);
+  oled.print(F("O:")); oled.print(oledAddress, HEX);
+  oled.setCursor(88, 56);
+  oled.print(actuatorTimeoutLatched ? F("AT!") : F("AT0"));
 
   oled.display();
 }
@@ -702,8 +724,8 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR), onRcActuator, CHANGE);
   attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE), onRcMode, CHANGE);
   lastControlMs = lastTelemetryMs = lastTelemetryPulseMs = lastOledMs = millis();
-  String bootBody = String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,11,") + hardwareProfileName() +
-      ",30PIN_RC_CH3_GPIO14,RC_SAFE_ROS,OLED_SINGLE_SCREEN_CH1_CH2";
+  String bootBody = String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,12,") + hardwareProfileName() +
+      ",30PIN_RC_CH3_GPIO14,RC_SAFE_ROS,OLED_FIXED_COLUMNS";
 #if ROBOTLIDAR_ENABLE_HALL
   bootBody += ",HALL_HW399";
 #else
