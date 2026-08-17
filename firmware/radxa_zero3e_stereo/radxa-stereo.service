@@ -1,0 +1,25 @@
+[Unit]
+Description=Radxa ZERO 3E stereo camera and PTZ node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/radxa_stereo_node \
+  --server 192.168.1.100 \
+  --eth-if eth0 \
+  --camera /dev/video0 \
+  --ffmpeg /usr/bin/ffmpeg \
+  --video-port 5004 \
+  --control-port 6000 \
+  --telemetry-port 6001 \
+  --width 1280 --height 480 --fps 30 \
+  --bitrate 2000 --maxrate 3000 --gop 15 \
+  --pan-chip /sys/class/pwm/pwmchip0 --pan-channel 0 \
+  --tilt-chip /sys/class/pwm/pwmchip1 --tilt-channel 0
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
