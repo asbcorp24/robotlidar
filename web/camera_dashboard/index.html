@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Camera Control</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">◉</div>
+        <div><strong>Camera Hub</strong><span>Radxa ZERO 3E</span></div>
+      </div>
+
+      <div class="sidebar-head">
+        <span>Устройства</span>
+        <span id="deviceCount" class="badge">0</span>
+      </div>
+
+      <div id="deviceList" class="device-list"></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div id="cameraTitle" class="camera-title">Выберите камеру</div>
+          <div id="cameraSubtitle" class="muted">Нет активного устройства</div>
+        </div>
+        <div class="top-actions">
+          <button id="refreshBtn" class="btn secondary">Обновить</button>
+          <button id="idrBtn" class="btn secondary">IDR</button>
+        </div>
+      </header>
+
+      <section class="content-grid">
+        <div class="video-card panel">
+          <div class="video-toolbar">
+            <div class="status-row"><span id="onlineDot" class="dot offline"></span><span id="onlineText">Offline</span></div>
+            <div class="status-row"><span id="streamType">—</span></div>
+          </div>
+          <div class="video-stage">
+            <video id="video" autoplay playsinline muted></video>
+            <div id="videoPlaceholder" class="video-placeholder">
+              <div class="camera-glyph">◉</div>
+              <div>Видеопоток не подключён</div>
+              <small>Выберите устройство слева</small>
+            </div>
+            <div class="crosshair"><span></span><span></span></div>
+          </div>
+        </div>
+
+        <aside class="control-column">
+          <section class="panel control-panel">
+            <div class="panel-title">Управление камерой</div>
+            <div class="ptz-pad">
+              <button data-move="up" aria-label="Вверх">▲</button>
+              <button data-move="left" aria-label="Влево">◀</button>
+              <button id="centerBtn" class="center">●</button>
+              <button data-move="right" aria-label="Вправо">▶</button>
+              <button data-move="down" aria-label="Вниз">▼</button>
+            </div>
+
+            <div class="value-grid">
+              <label>Pan <strong id="panValue">0.0°</strong></label>
+              <input id="panRange" type="range" min="-90" max="90" step="0.5" value="0" />
+              <label>Tilt <strong id="tiltValue">0.0°</strong></label>
+              <input id="tiltRange" type="range" min="-45" max="45" step="0.5" value="0" />
+              <label>Скорость <strong id="speedValue">30°/с</strong></label>
+              <input id="speedRange" type="range" min="5" max="90" step="5" value="30" />
+            </div>
+            <div class="hint">Стрелки или WASD тоже управляют камерой</div>
+          </section>
+
+          <section class="panel telemetry-panel">
+            <div class="panel-title">Телеметрия</div>
+            <div class="metric"><span>FPS</span><strong id="fpsMetric">—</strong></div>
+            <div class="metric"><span>Битрейт</span><strong id="bitrateMetric">—</strong></div>
+            <div class="metric"><span>Задержка</span><strong id="latencyMetric">—</strong></div>
+            <div class="metric"><span>Ethernet</span><strong id="ethernetMetric">—</strong></div>
+            <div class="metric"><span>Uptime</span><strong id="uptimeMetric">—</strong></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
