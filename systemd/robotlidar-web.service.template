@@ -1,5 +1,5 @@
 [Unit]
-Description=RobotLidar offline web control panel
+Description=RobotLidar offline web control panel with ESP32 bridge
 After=network-online.target
 Wants=network-online.target
 
@@ -14,8 +14,9 @@ Environment=ROBOTLIDAR_WEB_HOST=0.0.0.0
 Environment=ROBOTLIDAR_WEB_PORT=8080
 Environment=ROBOTLIDAR_DATA_DIR=@HOME@/robotlidar_data
 Environment=ROBOTLIDAR_SERIAL_PORT=@SERIAL_PORT@
+Environment=ROBOTLIDAR_ESP32_PORT=/dev/esp32drive
 Environment=ROBOTLIDAR_GPS_PORT=@GPS_PORT@
-ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source @WORKSPACE@/install/setup.bash && exec ros2 run robotlidar robotlidar_web'
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source @WORKSPACE@/install/setup.bash && exec ros2 launch robotlidar web_stack.launch.py'
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
