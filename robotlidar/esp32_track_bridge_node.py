@@ -163,7 +163,23 @@ class Esp32TrackBridgeNode(Node):
             self.get_logger().error('python3-serial is not installed; ESP32 bridge remains offline')
             return
         try:
-            connection = serial.Serial(self.serial_port, self.baud_rate, timeout=0.10, write_timeout=0.20)
+            connection = serial.Serial(
+                self.serial_port,
+                self.baud_rate,
+                timeout=0.10,
+                write_timeout=0.20,
+            )
+
+            # Opening a USB-UART connection can leave an unfinished command in
+            # the ESP32 line buffer. Terminate that stale fragment before
+            # normal DRV/AUX/CFG traffic starts, then discard the expected
+            # ERR,CHECKSUM response (if there was a fragment to flush).
+            time.sleep(0.10)
+            connection.reset_input_buffer()
+            connection.write(b'\n')
+            connection.flush()
+            time.sleep(0.05)
+            connection.reset_input_buffer()
         except Exception as exc:
             self.get_logger().error(f'Cannot open ESP32 serial port {self.serial_port}: {exc}')
             return
