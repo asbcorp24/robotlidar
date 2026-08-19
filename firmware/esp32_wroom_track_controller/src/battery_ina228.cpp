@@ -2,34 +2,80 @@
 #include <Wire.h>
 #include <Adafruit_INA228.h>
 
-// OledWire is initialized by main.cpp on GPIO4/GPIO23. INA228 shares that I2C bus.
+// Shared ESP32 peripheral bus:
+// GPIO4 SDA / GPIO23 SCL, 100 kHz
+// 0x3C/0x3D OLED, 0x40 INA228, 0x60 brush MCP4725, 0x61 auxiliary MCP4725.
 extern TwoWire OledWire;
 
 namespace {
 Adafruit_INA228 ina228;
-bool online=false;
+bool initialized = false;
+bool online = false;
+uint32_t lastSampleMs = 0;
+constexpr uint8_t INA228_ADDRESS = 0x40;
+constexpr uint32_t SAMPLE_PERIOD_MS = 1000;
 
-uint8_t checksum(const char* text){uint8_t c=0;while(*text)c^=(uint8_t)*text++;return c;}
-
-void batteryTask(void*){
-  delay(1500);
-  for(;;){
-    if(!online){
-      online=ina228.begin(0x40,&OledWire);
-      if(online) Serial.println("EVT,INA228,ONLINE");
-    }
-    float v=0.0f,a=0.0f,w=0.0f,t=0.0f;
-    if(online){
-      v=ina228.getBusVoltage_V();a=ina228.getCurrent_mA()/1000.0f;w=ina228.getPower_mW()/1000.0f;t=ina228.readDieTemp();
-      if(!isfinite(v)||!isfinite(a)||!isfinite(w)||!isfinite(t)){online=false;v=a=w=t=0.0f;}
-    }
-    char body[112];char frame[120];
-    snprintf(body,sizeof(body),"BAT,%lu,%d,%.3f,%.3f,%.3f,%.2f",(unsigned long)millis(),online?1:0,v,a,w,t);
-    snprintf(frame,sizeof(frame),"%s*%02X",body,checksum(body));
-    Serial.println(frame);
-    delay(1000);
-  }
+uint8_t checksum(const char* text) {
+    uint8_t c = 0;
+    while (*text) c ^= static_cast<uint8_t>(*text++);
+    return c;
 }
 
-struct BatteryTaskBootstrap{BatteryTaskBootstrap(){xTaskCreatePinnedToCore(batteryTask,"ina228",4096,nullptr,1,nullptr,0);}} bootstrap;
+void publishBattery(uint32_t now, float voltage, float current, float power, float temperature) {
+    char body[112];
+    char frame[120];
+    snprintf(
+        body,
+        sizeof(body),
+        "BAT,%lu,%d,%.3f,%.3f,%.3f,%.2f",
+        static_cast<unsigned long>(now),
+        online ? 1 : 0,
+        voltage,
+        current,
+        power,
+        temperature
+    );
+    snprintf(frame, sizeof(frame), "%s*%02X", body, checksum(body));
+    Serial.println(frame);
+}
+}
+
+void initializeBatteryMonitor() {
+    if (initialized) return;
+    initialized = true;
+    online = ina228.begin(INA228_ADDRESS, &OledWire);
+    if (online) Serial.println("EVT,INA228,ONLINE,0x40");
+    else Serial.println("ERR,INA228_NOT_FOUND,0x40");
+    lastSampleMs = millis();
+}
+
+void updateBatteryMonitor() {
+    if (!initialized) return;
+    const uint32_t now = millis();
+    if (now - lastSampleMs < SAMPLE_PERIOD_MS) return;
+    lastSampleMs = now;
+
+    if (!online) {
+        online = ina228.begin(INA228_ADDRESS, &OledWire);
+        if (online) Serial.println("EVT,INA228,ONLINE,0x40");
+    }
+
+    float voltage = 0.0f;
+    float current = 0.0f;
+    float power = 0.0f;
+    float temperature = 0.0f;
+
+    if (online) {
+        voltage = ina228.getBusVoltage_V();
+        current = ina228.getCurrent_mA() / 1000.0f;
+        power = ina228.getPower_mW() / 1000.0f;
+        temperature = ina228.readDieTemp();
+        if (!isfinite(voltage) || !isfinite(current) || !isfinite(power) || !isfinite(temperature)) {
+            online = false;
+            voltage = current = power = temperature = 0.0f;
+            Serial.println("ERR,INA228_INVALID_DATA");
+        }
+    }
+
+    publishBattery(now, voltage, current, power, temperature);
 }
