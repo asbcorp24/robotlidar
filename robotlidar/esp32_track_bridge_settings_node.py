@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import time
+from collections import deque
 from typing import Optional
 
 import rclpy
@@ -39,10 +41,13 @@ class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
     def __init__(self) -> None:
         self._config_state: dict = {}
         self._config_publisher = None
+        self._config_queue: deque[int] = deque()
+        self._config_pause_until = 0.0
         super().__init__()
         self._config_publisher = self.create_publisher(String, '/esp32/config/state', 10)
         self.create_subscription(String, '/esp32/config/request', self._config_request_callback, 10)
-        self._send_config_get()
+        self.create_timer(0.12, self._config_tick)
+        self._queue_config_sequence(CFG_GET)
         self.get_logger().info('ESP32 persistent settings transport enabled')
 
     def _process_line(self, line: str) -> None:
@@ -88,19 +93,32 @@ class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
             return 1 if bool(value) else 0
         return max(0, min(65535, int(value)))
 
-    def _send_config_get(self) -> bool:
-        return self._write_body(f'PING,{CFG_GET}')
+    def _queue_config_sequence(self, sequence: int) -> None:
+        self._config_queue.append(int(sequence) & 0xFFFFFFFF)
 
-    def _send_config_reset(self) -> bool:
-        return self._write_body(f'PING,{CFG_RESET}')
+    def _config_tick(self) -> None:
+        if not self._config_queue:
+            return
+        sequence = self._config_queue.popleft()
+        # Give the ESP32 one short quiet interval so main.cpp leaves this PING
+        # sequence visible to serialEventRun/settings_controller.cpp. 50 ms is
+        # well below the 450 ms drive watchdog and normal drive traffic resumes
+        # between configuration packets.
+        self._config_pause_until = time.monotonic() + 0.05
+        if not self._write_body(f'PING,{sequence}'):
+            self.get_logger().warning('ESP32 config packet was not sent')
 
-    def _send_config_set(self, key: str, value) -> bool:
+    def _send_tick(self) -> None:
+        if time.monotonic() < self._config_pause_until:
+            return
+        super()._send_tick()
+
+    def _encoded_set_sequence(self, key: str, value) -> int:
         key_id = CFG_KEYS.get(key)
         if key_id is None:
             raise ValueError(f'unknown ESP32 setting: {key}')
         encoded_value = self._normalize_config_value(key, value)
-        sequence = CFG_SET | ((key_id & 0x3F) << 16) | (encoded_value & 0xFFFF)
-        return self._write_body(f'PING,{sequence}')
+        return CFG_SET | ((key_id & 0x3F) << 16) | (encoded_value & 0xFFFF)
 
     def _config_request_callback(self, message: String) -> None:
         try:
@@ -113,16 +131,17 @@ class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
         op = str(request.get('op', 'get')).lower()
         try:
             if op == 'get':
-                self._send_config_get()
+                self._queue_config_sequence(CFG_GET)
             elif op == 'reset':
-                self._send_config_reset()
+                self._queue_config_sequence(CFG_RESET)
+                self._queue_config_sequence(CFG_GET)
             elif op == 'set':
                 values = request.get('values') or {}
                 if not isinstance(values, dict):
                     raise ValueError('values must be an object')
                 for key, value in values.items():
-                    self._send_config_set(str(key), value)
-                self._send_config_get()
+                    self._queue_config_sequence(self._encoded_set_sequence(str(key), value))
+                self._queue_config_sequence(CFG_GET)
             else:
                 raise ValueError(f'unknown op: {op}')
         except Exception as exc:
