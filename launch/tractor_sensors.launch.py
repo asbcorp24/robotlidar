@@ -5,7 +5,12 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    EnvironmentVariable,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -34,7 +39,15 @@ def generate_launch_description() -> LaunchDescription:
     start_imu = LaunchConfiguration('start_imu')
     start_gps = LaunchConfiguration('start_gps')
     use_esp32_drive = LaunchConfiguration('use_esp32_drive')
+    external_esp32_drive = LaunchConfiguration('external_esp32_drive')
     laser_scan_dir = LaunchConfiguration('laser_scan_dir')
+
+    start_internal_esp32_bridge = IfCondition(
+        PythonExpression([
+            "'", use_esp32_drive, "' == 'true' and '",
+            external_esp32_drive, "' != 'true'",
+        ])
+    )
 
     actions = [
         DeclareLaunchArgument('config', default_value=default_config),
@@ -52,16 +65,22 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'start_gps',
             default_value='true',
-            description=(
-                'Start optional UART GPS. Loss of GPS never stops the robot.'
-            ),
+            description='Start optional UART GPS. Loss of GPS never stops the robot.',
         ),
         DeclareLaunchArgument(
             'use_esp32_drive',
             default_value='false',
             description=(
-                'true: ESP32 USB drive plus controller Hall ticks; '
+                'true: use ESP32 Hall odometry/drive path; '
                 'false: GPIO drive plus local/simulated Hall odometry'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'external_esp32_drive',
+            default_value='false',
+            description=(
+                'true: ESP32 serial bridge is already running externally '
+                '(for example from web_stack.launch.py); start only ESP32 odometry here'
             ),
         ),
         DeclareLaunchArgument(
@@ -94,7 +113,7 @@ def generate_launch_description() -> LaunchDescription:
             name='esp32_track_bridge_node',
             output='screen',
             parameters=[config, esp32_config],
-            condition=IfCondition(use_esp32_drive),
+            condition=start_internal_esp32_bridge,
             emulate_tty=True,
         ),
         Node(
@@ -133,8 +152,6 @@ def generate_launch_description() -> LaunchDescription:
             remappings=[('odometry/filtered', '/odometry/filtered')],
             emulate_tty=True,
         ),
-
-        # ВРЕМЕННЫЕ координаты: заменить после измерения места установки.
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -142,8 +159,7 @@ def generate_launch_description() -> LaunchDescription:
             arguments=[
                 '--x', '0.0', '--y', '0.0', '--z', '0.25',
                 '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
-                '--frame-id', 'base_link',
-                '--child-frame-id', 'imu_link',
+                '--frame-id', 'base_link', '--child-frame-id', 'imu_link',
             ],
             condition=IfCondition(start_imu),
         ),
@@ -154,8 +170,7 @@ def generate_launch_description() -> LaunchDescription:
             arguments=[
                 '--x', '0.0', '--y', '0.0', '--z', '0.75',
                 '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
-                '--frame-id', 'base_link',
-                '--child-frame-id', 'gps_link',
+                '--frame-id', 'base_link', '--child-frame-id', 'gps_link',
             ],
             condition=IfCondition(start_gps),
         ),
@@ -166,8 +181,7 @@ def generate_launch_description() -> LaunchDescription:
             arguments=[
                 '--x', '0.35', '--y', '0.0', '--z', '0.55',
                 '--roll', '0.0', '--pitch', '0.0', '--yaw', '0.0',
-                '--frame-id', 'base_link',
-                '--child-frame-id', 'laser',
+                '--frame-id', 'base_link', '--child-frame-id', 'laser',
             ],
             condition=IfCondition(start_lidar),
         ),
