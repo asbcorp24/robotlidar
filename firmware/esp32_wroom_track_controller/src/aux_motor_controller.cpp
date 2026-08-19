@@ -3,7 +3,7 @@
 
 // Bidirectional auxiliary motor for ESP32-WROOM 40-pin board.
 // RC CH6        -> GPIO36 (input-only; use external 10 kOhm pulldown to GND)
-// AUX REVERSE   -> GPIO2 -> HW-399 -> Reverse input of motor controller
+// AUX REVERSE   -> GPIO12 -> HW-399 -> Reverse input of motor controller
 // AUX THROTTLE  -> MCP4725 address 0x61 on shared OLED I2C SDA=GPIO4/SCL=GPIO23
 // Brake is not used.
 //
@@ -11,7 +11,8 @@
 //   ~1000 us -> -100%
 //   ~1500 us -> STOP
 //   ~2000 us -> +100%
-// ROS mode: setAuxMotorRosCommand(-1000..1000).
+// ROS mode: /aux_motor/command is encoded by the Raspberry bridge into the
+// sequence field of the existing AUX frame. main.cpp remains backward-compatible.
 // SAFE / E-STOP / disarm / command timeout / MCP error => throttle 0 V.
 // Direction changes are always performed at zero throttle with a guard delay.
 
@@ -20,10 +21,11 @@ extern ControlMode controlMode;
 extern bool armed;
 extern bool estopOkay();
 extern TwoWire OledWire;
+extern uint32_t lastSequence;
 
 namespace AuxMotorPins {
 constexpr uint8_t RC_CH6 = 36;
-constexpr uint8_t REVERSE = 2;
+constexpr uint8_t REVERSE = 12;
 }
 
 namespace AuxMotorConfig {
@@ -41,9 +43,13 @@ constexpr uint16_t RC_DEADBAND_US = 55;
 constexpr uint32_t RC_TIMEOUT_US = 160000;
 constexpr uint32_t ROS_TIMEOUT_MS = 500;
 constexpr uint32_t UPDATE_PERIOD_MS = 20;
+constexpr uint32_t TELEMETRY_PERIOD_MS = 200;
 constexpr uint32_t REVERSE_GUARD_MS = 350;
 constexpr int16_t RAMP_STEP = 25;
 constexpr bool REVERSE_ACTIVE_HIGH = true;
+constexpr uint32_t ROS_SEQUENCE_MAGIC = 0xA5000000UL;
+constexpr uint32_t ROS_SEQUENCE_MASK = 0xFFF00000UL;
+constexpr uint32_t ROS_VALUE_MASK = 0x000007FFUL;
 }
 
 struct AuxMotorRcCapture {
@@ -60,6 +66,7 @@ static bool auxMotorRcValid = false;
 static uint16_t auxMotorRcPulseUs = 0;
 static int16_t auxMotorRosCommand = 0;
 static uint32_t auxMotorRosCommandMs = 0;
+static uint32_t auxMotorLastEncodedSequence = 0;
 static int16_t auxMotorTarget = 0;
 static int16_t auxMotorActual = 0;
 static int8_t auxMotorAppliedSign = 1;
@@ -67,6 +74,21 @@ static int8_t auxMotorPendingSign = 0;
 static uint32_t auxMotorReverseReadyMs = 0;
 static uint16_t auxMotorThrottleMv = AuxMotorConfig::THROTTLE_SAFE_MV;
 static uint32_t auxMotorLastUpdateMs = 0;
+static uint32_t auxMotorLastTelemetryMs = 0;
+
+static uint8_t auxMotorChecksum(const char* text) {
+  uint8_t value = 0;
+  while (*text) value ^= static_cast<uint8_t>(*text++);
+  return value;
+}
+
+static void sendAuxMotorFrame(const String& body) {
+  Serial.print(body);
+  Serial.print('*');
+  const uint8_t checksum = auxMotorChecksum(body.c_str());
+  if (checksum < 16) Serial.print('0');
+  Serial.println(checksum, HEX);
+}
 
 static void IRAM_ATTR onAuxMotorRcEdge() {
   const uint32_t nowUs = micros();
@@ -156,6 +178,17 @@ static int16_t auxMotorMoveToward(int16_t current, int16_t target) {
   return current;
 }
 
+static void captureRosCommandFromSequence() {
+  const uint32_t sequence = lastSequence;
+  if (sequence == auxMotorLastEncodedSequence) return;
+  if ((sequence & AuxMotorConfig::ROS_SEQUENCE_MASK) != AuxMotorConfig::ROS_SEQUENCE_MAGIC) return;
+  auxMotorLastEncodedSequence = sequence;
+  const int32_t encoded = static_cast<int32_t>(sequence & AuxMotorConfig::ROS_VALUE_MASK);
+  const int32_t decoded = encoded - 1000;
+  auxMotorRosCommand = static_cast<int16_t>(constrain(decoded, -1000L, 1000L));
+  auxMotorRosCommandMs = millis();
+}
+
 void stopAuxMotorController() {
   auxMotorTarget = 0;
   auxMotorActual = 0;
@@ -180,6 +213,7 @@ void initializeAuxMotorController() {
   } else {
     Serial.println("ERR,AUXMOTOR_MCP4725_NOT_FOUND,0x61");
   }
+  Serial.println("EVT,BOARD,ESP32_40PIN,CH6_GPIO36,AUXREV_GPIO12");
   auxMotorInitialized = true;
 }
 
@@ -190,6 +224,8 @@ void setAuxMotorRosCommand(int16_t command) {
 
 void updateAuxMotorController() {
   if (!auxMotorInitialized) initializeAuxMotorController();
+  captureRosCommandFromSequence();
+
   const uint32_t nowMs = millis();
   if (nowMs - auxMotorLastUpdateMs < AuxMotorConfig::UPDATE_PERIOD_MS) return;
   auxMotorLastUpdateMs = nowMs;
@@ -200,51 +236,53 @@ void updateAuxMotorController() {
 
   if (!estopOkay() || !armed || !auxMotorMcpReady || controlMode == ControlMode::Safe) {
     stopAuxMotorController();
-    return;
-  }
-
-  bool commandValid = false;
-  int16_t requested = 0;
-  if (controlMode == ControlMode::RcManual) {
-    commandValid = auxMotorRcValid;
-    if (commandValid) requested = auxMotorPulseToCommand(ch6Us);
-  } else if (controlMode == ControlMode::RosAutonomous) {
-    commandValid = auxMotorRosCommandMs != 0 &&
-                   nowMs - auxMotorRosCommandMs <= AuxMotorConfig::ROS_TIMEOUT_MS;
-    if (commandValid) requested = auxMotorRosCommand;
-  }
-
-  if (!commandValid || requested == 0) {
-    stopAuxMotorController();
-    return;
-  }
-
-  auxMotorTarget = requested;
-  const int8_t requestedSign = auxMotorSign(requested);
-  if (requestedSign != auxMotorAppliedSign) {
-    auxMotorActual = 0;
-    writeAuxMotorThrottle(AuxMotorConfig::THROTTLE_SAFE_MV);
-    if (auxMotorPendingSign != requestedSign) {
-      auxMotorPendingSign = requestedSign;
-      auxMotorReverseReadyMs = nowMs + AuxMotorConfig::REVERSE_GUARD_MS;
-      return;
+  } else {
+    bool commandValid = false;
+    int16_t requested = 0;
+    if (controlMode == ControlMode::RcManual) {
+      commandValid = auxMotorRcValid;
+      if (commandValid) requested = auxMotorPulseToCommand(ch6Us);
+    } else if (controlMode == ControlMode::RosAutonomous) {
+      commandValid = auxMotorRosCommandMs != 0 &&
+                     nowMs - auxMotorRosCommandMs <= AuxMotorConfig::ROS_TIMEOUT_MS;
+      if (commandValid) requested = auxMotorRosCommand;
     }
-    if (static_cast<int32_t>(nowMs - auxMotorReverseReadyMs) < 0) return;
-    setAuxMotorReverse(requestedSign < 0);
-    auxMotorPendingSign = 0;
-    auxMotorReverseReadyMs = nowMs + AuxMotorConfig::REVERSE_GUARD_MS;
-    return;
+
+    if (!commandValid || requested == 0) {
+      stopAuxMotorController();
+    } else {
+      auxMotorTarget = requested;
+      const int8_t requestedSign = auxMotorSign(requested);
+      if (requestedSign != auxMotorAppliedSign) {
+        auxMotorActual = 0;
+        writeAuxMotorThrottle(AuxMotorConfig::THROTTLE_SAFE_MV);
+        if (auxMotorPendingSign != requestedSign) {
+          auxMotorPendingSign = requestedSign;
+          auxMotorReverseReadyMs = nowMs + AuxMotorConfig::REVERSE_GUARD_MS;
+        } else if (static_cast<int32_t>(nowMs - auxMotorReverseReadyMs) >= 0) {
+          setAuxMotorReverse(requestedSign < 0);
+          auxMotorPendingSign = 0;
+          auxMotorReverseReadyMs = nowMs + AuxMotorConfig::REVERSE_GUARD_MS;
+        }
+      } else if (auxMotorReverseReadyMs && static_cast<int32_t>(nowMs - auxMotorReverseReadyMs) < 0) {
+        writeAuxMotorThrottle(AuxMotorConfig::THROTTLE_SAFE_MV);
+      } else {
+        auxMotorReverseReadyMs = 0;
+        auxMotorPendingSign = 0;
+        auxMotorActual = auxMotorMoveToward(auxMotorActual, requested);
+        if (!writeAuxMotorThrottle(auxMotorCommandToThrottleMv(auxMotorActual))) auxMotorActual = 0;
+      }
+    }
   }
 
-  if (auxMotorReverseReadyMs && static_cast<int32_t>(nowMs - auxMotorReverseReadyMs) < 0) {
-    writeAuxMotorThrottle(AuxMotorConfig::THROTTLE_SAFE_MV);
-    return;
-  }
-  auxMotorReverseReadyMs = 0;
-  auxMotorPendingSign = 0;
-  auxMotorActual = auxMotorMoveToward(auxMotorActual, requested);
-  if (!writeAuxMotorThrottle(auxMotorCommandToThrottleMv(auxMotorActual))) {
-    auxMotorActual = 0;
+  if (nowMs - auxMotorLastTelemetryMs >= AuxMotorConfig::TELEMETRY_PERIOD_MS) {
+    auxMotorLastTelemetryMs = nowMs;
+    String body = String("AUXTEL,") + String(nowMs) + "," +
+                  String(auxMotorRcPulseUs) + "," + String(auxMotorRcValid ? 1 : 0) + "," +
+                  String(auxMotorRosCommand) + "," + String(auxMotorTarget) + "," +
+                  String(auxMotorActual) + "," + String(auxMotorAppliedSign) + "," +
+                  String(auxMotorThrottleMv) + "," + String(auxMotorMcpReady ? 1 : 0);
+    sendAuxMotorFrame(body);
   }
 }
 
@@ -256,3 +294,9 @@ int16_t getAuxMotorActual() { return auxMotorActual; }
 int8_t getAuxMotorDirection() { return auxMotorAppliedSign; }
 uint16_t getAuxMotorThrottleMv() { return auxMotorThrottleMv; }
 bool getAuxMotorMcpReady() { return auxMotorMcpReady; }
+
+// Arduino core calls serialEventRun() after every loop() iteration when present.
+// This lets the 40-pin extension run without breaking the existing main.cpp protocol.
+void serialEventRun(void) {
+  updateAuxMotorController();
+}
