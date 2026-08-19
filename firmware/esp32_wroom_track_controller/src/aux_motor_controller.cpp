@@ -23,6 +23,10 @@ extern bool estopOkay();
 extern TwoWire OledWire;
 extern uint32_t lastSequence;
 
+// RCWL-1655 extension is serviced from the same Arduino serialEventRun hook.
+void initializeUltrasonicController();
+void updateUltrasonicController();
+
 namespace AuxMotorPins {
 constexpr uint8_t RC_CH6 = 36;
 constexpr uint8_t REVERSE = 12;
@@ -296,7 +300,8 @@ uint16_t getAuxMotorThrottleMv() { return auxMotorThrottleMv; }
 bool getAuxMotorMcpReady() { return auxMotorMcpReady; }
 
 // Arduino core calls serialEventRun() after every loop() iteration when present.
-// This lets the 40-pin extension run without breaking the existing main.cpp protocol.
+// Service all 40-pin extensions here so main.cpp stays backward-compatible.
 void serialEventRun(void) {
   updateAuxMotorController();
+  updateUltrasonicController();
 }
