@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge ROS 2 drive, actuator and brush commands to the ESP32 controller."""
+"""Bridge ROS 2 drive, actuator, brush and auxiliary motor commands to ESP32."""
 
 from __future__ import annotations
 
@@ -26,6 +26,10 @@ try:
     import serial
 except ImportError:
     serial = None  # type: ignore[assignment]
+
+
+AUX_MOTOR_SEQUENCE_MAGIC = 0xA5000000
+AUX_MOTOR_VALUE_MASK = 0x7FF
 
 
 class Esp32TrackBridgeNode(Node):
@@ -78,10 +82,12 @@ class Esp32TrackBridgeNode(Node):
         self._requested_left = 0
         self._requested_right = 0
         self._requested_actuator = 0
-        self._requested_brush = 0  # 0..1000
+        self._requested_brush = 0
+        self._requested_aux_motor = 0  # -1000..1000
         self._last_cmd_time = 0.0
         self._last_actuator_cmd_time = 0.0
         self._last_brush_cmd_time = 0.0
+        self._last_aux_motor_cmd_time = 0.0
         self._armed_requested = False
         self._last_telemetry: dict = {}
         self._connected = False
@@ -104,6 +110,9 @@ class Esp32TrackBridgeNode(Node):
         self.brush_state_publisher = self.create_publisher(
             Float32MultiArray, '/brush/state', 20
         )
+        self.aux_motor_state_publisher = self.create_publisher(
+            Float32MultiArray, '/aux_motor/state', 20
+        )
 
         self.create_subscription(Twist, '/cmd_vel', self._cmd_vel_callback, 20)
         self.create_subscription(
@@ -111,6 +120,9 @@ class Esp32TrackBridgeNode(Node):
         )
         self.create_subscription(
             Float32, '/brush/command', self._brush_command_callback, 20
+        )
+        self.create_subscription(
+            Float32, '/aux_motor/command', self._aux_motor_command_callback, 20
         )
         self.create_service(SetBool, '/drive/arm', self._arm_service)
         self.create_service(Trigger, '/drive/estop', self._estop_service)
@@ -128,7 +140,7 @@ class Esp32TrackBridgeNode(Node):
 
         self.get_logger().info(
             'ESP32 bridge started in %s mode; port=%s, baud=%d; '
-            'aux topics=/actuator/command,/brush/command'
+            'aux topics=/actuator/command,/brush/command,/aux_motor/command'
             % (
                 'DRY-RUN' if self.dry_run else 'HARDWARE',
                 self.serial_port,
@@ -145,8 +157,13 @@ class Esp32TrackBridgeNode(Node):
 
     def _next_sequence(self) -> int:
         with self._lock:
-            self._sequence = (self._sequence + 1) & 0xFFFFFFFF
+            self._sequence = (self._sequence + 1) & 0x0FFFFFFF
             return self._sequence
+
+    @staticmethod
+    def _aux_motor_sequence(command: int) -> int:
+        command = max(-1000, min(1000, int(command)))
+        return AUX_MOTOR_SEQUENCE_MAGIC | ((command + 1000) & AUX_MOTOR_VALUE_MASK)
 
     def _write_body(self, body: str) -> bool:
         frame = f'{body}*{self._checksum(body):02X}\n'.encode('ascii')
@@ -186,7 +203,6 @@ class Esp32TrackBridgeNode(Node):
                 f'Cannot open ESP32 serial port {self.serial_port}: {exc}'
             )
             return
-
         with self._lock:
             self._serial = connection
             self._connected = True
@@ -262,6 +278,8 @@ class Esp32TrackBridgeNode(Node):
             return
         if fields[0] == 'TEL':
             self._handle_telemetry(fields)
+        elif fields[0] == 'AUXTEL':
+            self._handle_aux_motor_telemetry(fields)
         elif fields[0] == 'ACK':
             with self._lock:
                 self._last_telemetry['last_ack'] = fields[1:]
@@ -269,10 +287,40 @@ class Esp32TrackBridgeNode(Node):
         elif fields[0] == 'BOOT':
             self.get_logger().info(f'ESP32 boot: {body}')
 
+    def _handle_aux_motor_telemetry(self, fields: list[str]) -> None:
+        if len(fields) < 10:
+            raise ValueError(f'AUXTEL expected 10 fields, got {len(fields)}')
+        telemetry = {
+            'aux_motor_millis': int(fields[1]),
+            'aux_motor_rc_us': int(fields[2]),
+            'aux_motor_rc_valid': bool(int(fields[3])),
+            'aux_motor_ros_command': int(fields[4]),
+            'aux_motor_target': int(fields[5]),
+            'aux_motor_actual': int(fields[6]),
+            'aux_motor_direction': int(fields[7]),
+            'aux_motor_throttle_mv': int(fields[8]),
+            'aux_motor_mcp_ready': bool(int(fields[9])),
+            'aux_motor_received_at': time.time(),
+        }
+        with self._lock:
+            self._last_telemetry.update(telemetry)
+            self._connected = True
+        state = Float32MultiArray()
+        state.data = [
+            float(telemetry['aux_motor_ros_command']) / 1000.0,
+            float(telemetry['aux_motor_target']) / 1000.0,
+            float(telemetry['aux_motor_actual']) / 1000.0,
+            float(telemetry['aux_motor_direction']),
+            float(telemetry['aux_motor_throttle_mv']) / 1000.0,
+            1.0 if telemetry['aux_motor_mcp_ready'] else 0.0,
+            float(telemetry['aux_motor_rc_us']),
+            1.0 if telemetry['aux_motor_rc_valid'] else 0.0,
+        ]
+        self.aux_motor_state_publisher.publish(state)
+
     def _handle_telemetry(self, fields: list[str]) -> None:
         if len(fields) < 13:
             raise ValueError(f'TEL expected at least 13 fields, got {len(fields)}')
-
         telemetry = {
             'millis': int(fields[1]),
             'armed': bool(int(fields[2])),
@@ -288,7 +336,6 @@ class Esp32TrackBridgeNode(Node):
             'watchdog': bool(int(fields[12])),
             'received_at': time.time(),
         }
-
         if len(fields) >= 19:
             telemetry.update({
                 'control_mode': fields[13],
@@ -316,31 +363,30 @@ class Esp32TrackBridgeNode(Node):
                 'brush_brake': bool(int(fields[28])),
                 'brush_mcp_ready': bool(int(fields[29])),
             })
-
         with self._lock:
+            # Preserve AUXTEL fields that arrive independently.
+            aux_fields = {
+                key: value for key, value in self._last_telemetry.items()
+                if key.startswith('aux_motor_')
+            }
             self._last_telemetry = telemetry
+            self._last_telemetry.update(aux_fields)
             self._connected = True
 
         ticks = Int64MultiArray()
         ticks.data = [telemetry['ticks_left'], telemetry['ticks_right']]
         self.tick_publisher.publish(ticks)
-
         pps = Float32MultiArray()
         pps.data = [telemetry['pps_left'], telemetry['pps_right']]
         self.pulse_rate_publisher.publish(pps)
-
         direction = Int8MultiArray()
-        direction.data = [
-            self._sign(telemetry['actual_left']),
-            self._sign(telemetry['actual_right']),
-        ]
+        direction.data = [self._sign(telemetry['actual_left']), self._sign(telemetry['actual_right'])]
         self.direction_publisher.publish(direction)
 
         if 'actuator_direction' in telemetry:
             actuator = Int8()
             actuator.data = int(telemetry['actuator_direction'])
             self.actuator_state_publisher.publish(actuator)
-
         if 'brush_throttle_mv' in telemetry:
             brush = Float32MultiArray()
             brush.data = [
@@ -355,11 +401,7 @@ class Esp32TrackBridgeNode(Node):
 
     @staticmethod
     def _sign(value: int) -> int:
-        if value > 0:
-            return 1
-        if value < 0:
-            return -1
-        return 0
+        return 1 if value > 0 else (-1 if value < 0 else 0)
 
     def _cmd_vel_callback(self, message: Twist) -> None:
         linear = float(message.linear.x)
@@ -367,7 +409,6 @@ class Esp32TrackBridgeNode(Node):
         if not math.isfinite(linear) or not math.isfinite(angular):
             self.get_logger().error('Rejected non-finite /cmd_vel')
             return
-
         half_track = self.track_width_m / 2.0
         left_mps = linear - angular * half_track
         right_mps = linear + angular * half_track
@@ -392,6 +433,16 @@ class Esp32TrackBridgeNode(Node):
             self._requested_brush = int(round(value * 1000.0))
             self._last_brush_cmd_time = time.monotonic()
 
+    def _aux_motor_command_callback(self, message: Float32) -> None:
+        value = float(message.data)
+        if not math.isfinite(value):
+            self.get_logger().error('Rejected non-finite /aux_motor/command')
+            return
+        value = max(-1.0, min(1.0, value))
+        with self._lock:
+            self._requested_aux_motor = int(round(value * 1000.0))
+            self._last_aux_motor_cmd_time = time.monotonic()
+
     def _speed_to_command(self, speed_mps: float) -> int:
         normalized = max(-1.0, min(1.0, speed_mps / self.max_track_speed_mps))
         return int(round(normalized * 1000.0))
@@ -400,92 +451,57 @@ class Esp32TrackBridgeNode(Node):
         now = time.monotonic()
         with self._lock:
             drive_timed_out = now - self._last_cmd_time > self.command_timeout_sec
-            actuator_timed_out = (
-                self._last_actuator_cmd_time == 0.0
-                or now - self._last_actuator_cmd_time > self.aux_command_timeout_sec
-            )
-            brush_timed_out = (
-                self._last_brush_cmd_time == 0.0
-                or now - self._last_brush_cmd_time > self.aux_command_timeout_sec
-            )
+            actuator_timed_out = self._last_actuator_cmd_time == 0.0 or now - self._last_actuator_cmd_time > self.aux_command_timeout_sec
+            brush_timed_out = self._last_brush_cmd_time == 0.0 or now - self._last_brush_cmd_time > self.aux_command_timeout_sec
+            aux_motor_timed_out = self._last_aux_motor_cmd_time == 0.0 or now - self._last_aux_motor_cmd_time > self.aux_command_timeout_sec
             left = 0 if drive_timed_out else self._requested_left
             right = 0 if drive_timed_out else self._requested_right
             actuator = 0 if actuator_timed_out else self._requested_actuator
             brush = 0 if brush_timed_out else self._requested_brush
+            aux_motor = 0 if aux_motor_timed_out else self._requested_aux_motor
             arm_requested = self._armed_requested
 
         if not arm_requested:
-            left = 0
-            right = 0
-            actuator = 0
-            brush = 0
+            left = right = actuator = brush = aux_motor = 0
 
-        sequence = self._next_sequence()
-        self._write_body(f'DRV,{sequence},{left},{right}')
-        aux_sequence = self._next_sequence()
+        self._write_body(f'DRV,{self._next_sequence()},{left},{right}')
+        # Existing firmware consumes actuator/brush from AUX. The 40-pin extension
+        # decodes aux_motor from the encoded AUX sequence, so older main.cpp remains compatible.
+        aux_sequence = self._aux_motor_sequence(aux_motor)
         self._write_body(f'AUX,{aux_sequence},{actuator},{brush}')
 
     def _send_arm(self, value: bool) -> bool:
-        sequence = self._next_sequence()
-        return self._write_body(f'ARM,{sequence},{1 if value else 0}')
+        return self._write_body(f'ARM,{self._next_sequence()},{1 if value else 0}')
 
-    def _arm_service(
-        self,
-        request: SetBool.Request,
-        response: SetBool.Response,
-    ) -> SetBool.Response:
+    def _arm_service(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         with self._lock:
-            self._requested_left = 0
-            self._requested_right = 0
-            self._requested_actuator = 0
-            self._requested_brush = 0
+            self._requested_left = self._requested_right = 0
+            self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
             now = time.monotonic()
             self._last_cmd_time = now
             self._last_actuator_cmd_time = now
             self._last_brush_cmd_time = now
+            self._last_aux_motor_cmd_time = now
             self._armed_requested = bool(request.data)
         sent = self._send_arm(bool(request.data))
         response.success = sent
-        response.message = (
-            'ESP32 arm command sent'
-            if request.data
-            else 'ESP32 disarm command sent'
-        ) if sent else 'ESP32 is not connected'
+        response.message = ('ESP32 arm command sent' if request.data else 'ESP32 disarm command sent') if sent else 'ESP32 is not connected'
         return response
 
-    def _estop_service(
-        self,
-        _request: Trigger.Request,
-        response: Trigger.Response,
-    ) -> Trigger.Response:
+    def _estop_service(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         with self._lock:
             self._armed_requested = False
-            self._requested_left = 0
-            self._requested_right = 0
-            self._requested_actuator = 0
-            self._requested_brush = 0
-        sequence = self._next_sequence()
-        sent = self._write_body(f'STOP,{sequence}')
+            self._requested_left = self._requested_right = 0
+            self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
+        sent = self._write_body(f'STOP,{self._next_sequence()}')
         response.success = sent
-        response.message = (
-            'Emergency stop sent to ESP32'
-            if sent
-            else 'ESP32 is not connected'
-        )
+        response.message = 'Emergency stop sent to ESP32' if sent else 'ESP32 is not connected'
         return response
 
-    def _reconnect_service(
-        self,
-        _request: Trigger.Request,
-        response: Trigger.Response,
-    ) -> Trigger.Response:
+    def _reconnect_service(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         self._open_serial()
         response.success = self._connected
-        response.message = (
-            f'Connected to {self.serial_port}'
-            if self._connected
-            else f'Cannot connect to {self.serial_port}'
-        )
+        response.message = f'Connected to {self.serial_port}' if self._connected else f'Cannot connect to {self.serial_port}'
         return response
 
     def _publish_status(self) -> None:
@@ -494,11 +510,13 @@ class Esp32TrackBridgeNode(Node):
                 'connected': self._connected,
                 'dry_run': self.dry_run,
                 'serial_port': self.serial_port,
+                'board': 'ESP32_WROOM_40PIN',
                 'arm_requested': self._armed_requested,
                 'requested_left': self._requested_left,
                 'requested_right': self._requested_right,
                 'requested_actuator': self._requested_actuator,
                 'requested_brush': self._requested_brush,
+                'requested_aux_motor': self._requested_aux_motor,
                 'telemetry': dict(self._last_telemetry),
             }
         message = String()
@@ -508,9 +526,8 @@ class Esp32TrackBridgeNode(Node):
     def destroy_node(self) -> bool:
         try:
             self._armed_requested = False
-            self._requested_actuator = 0
-            self._requested_brush = 0
-            self._write_body(f'AUX,{self._next_sequence()},0,0')
+            self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
+            self._write_body(f'AUX,{self._aux_motor_sequence(0)},0,0')
             self._write_body(f'STOP,{self._next_sequence()}')
         except Exception:
             pass
