@@ -5,22 +5,20 @@
 // GND  -> GND
 // TRIG -> GPIO2
 // ECHO -> GPIO39 (input-only)
-//
-// GPIO0 is not used: it is not exposed on the user's 40-pin board.
-// GPIO2 is reassigned from the optional status LED to RCWL-1655 TRIG.
-// The ultrasonic safety controller owns GPIO2 while firmware is running.
-//
-// Safety zones:
-//   > 100 cm : clear
-//   50..100  : near warning
-//   <= 50 cm : confirmed obstacle -> controller DISARM / full stop
-//   <= 30 cm : emergency flag in telemetry
-//
-// Two consecutive dangerous measurements are required before STOP. The sensor
-// runs asynchronously: ECHO is measured by interrupt, without pulseIn().
+// Runtime thresholds and enable/disable state are stored in ESP32 NVS and can
+// be edited from the Raspberry Pi ESP32 settings page.
 
 extern bool armed;
 extern void disarmSystem(const char* reason);
+
+bool espSettingUltrasonicEnabled();
+uint16_t espSettingUltrasonicWarnMm();
+uint16_t espSettingUltrasonicStopMm();
+uint16_t espSettingUltrasonicEmergencyMm();
+uint16_t espSettingUltrasonicClearMm();
+uint8_t espSettingUltrasonicDangerSamples();
+uint8_t espSettingUltrasonicClearSamples();
+uint16_t espSettingUltrasonicSampleMs();
 
 namespace UltrasonicPins {
 constexpr uint8_t TRIG = 2;
@@ -28,17 +26,10 @@ constexpr uint8_t ECHO = 39;
 }
 
 namespace UltrasonicConfig {
-constexpr uint32_t SAMPLE_PERIOD_MS = 60;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 200;
 constexpr uint32_t ECHO_TIMEOUT_US = 30000;
 constexpr uint16_t MIN_VALID_MM = 190;
 constexpr uint16_t MAX_VALID_MM = 4000;
-constexpr uint16_t NEAR_MM = 1000;
-constexpr uint16_t STOP_MM = 500;
-constexpr uint16_t EMERGENCY_MM = 300;
-constexpr uint16_t CLEAR_HYSTERESIS_MM = 100;
-constexpr uint8_t VALID_SAMPLES_REQUIRED = 2;
-constexpr uint8_t CLEAR_SAMPLES_REQUIRED = 3;
 }
 
 static portMUX_TYPE ultrasonicMux = portMUX_INITIALIZER_UNLOCKED;
@@ -86,14 +77,24 @@ static void IRAM_ATTR onUltrasonicEcho() {
 }
 
 static void triggerUltrasonic() {
-  // GPIO2 is also named STATUS_LED in the older main.cpp. Force it low here on
-  // every measurement cycle so the ultrasonic module remains the effective owner.
   digitalWrite(UltrasonicPins::TRIG, LOW);
   delayMicroseconds(2);
   digitalWrite(UltrasonicPins::TRIG, HIGH);
   delayMicroseconds(10);
   digitalWrite(UltrasonicPins::TRIG, LOW);
   triggerStartedUs = micros();
+}
+
+static void clearSafetyStateForDisabledSensor() {
+  ultrasonicValid = false;
+  ultrasonicNear = false;
+  ultrasonicStop = false;
+  ultrasonicEmergency = false;
+  dangerConfirm = 0;
+  clearConfirm = 0;
+  stopEventReported = false;
+  triggerStartedUs = 0;
+  digitalWrite(UltrasonicPins::TRIG, LOW);
 }
 
 static void updateSafetyState(bool valid, uint16_t distanceMm) {
@@ -105,30 +106,30 @@ static void updateSafetyState(bool valid, uint16_t distanceMm) {
   }
 
   ultrasonicDistanceMm = distanceMm;
-  ultrasonicNear = distanceMm <= UltrasonicConfig::NEAR_MM;
-  const bool dangerNow = distanceMm <= UltrasonicConfig::STOP_MM;
+  ultrasonicNear = distanceMm <= espSettingUltrasonicWarnMm();
+  const bool dangerNow = distanceMm <= espSettingUltrasonicStopMm();
   const bool clearNow = distanceMm >
-      UltrasonicConfig::STOP_MM + UltrasonicConfig::CLEAR_HYSTERESIS_MM;
+      espSettingUltrasonicStopMm() + espSettingUltrasonicClearMm();
 
   if (dangerNow) {
-    dangerConfirm = min<uint8_t>(dangerConfirm + 1, 10);
+    dangerConfirm = min<uint8_t>(dangerConfirm + 1, 20);
     clearConfirm = 0;
   } else if (clearNow) {
-    clearConfirm = min<uint8_t>(clearConfirm + 1, 10);
+    clearConfirm = min<uint8_t>(clearConfirm + 1, 20);
     dangerConfirm = 0;
   }
 
-  if (dangerConfirm >= UltrasonicConfig::VALID_SAMPLES_REQUIRED) {
+  if (dangerConfirm >= espSettingUltrasonicDangerSamples()) {
     ultrasonicStop = true;
   }
-  if (clearConfirm >= UltrasonicConfig::CLEAR_SAMPLES_REQUIRED) {
+  if (clearConfirm >= espSettingUltrasonicClearSamples()) {
     ultrasonicStop = false;
     ultrasonicEmergency = false;
     stopEventReported = false;
   }
 
   ultrasonicEmergency = ultrasonicStop &&
-      distanceMm <= UltrasonicConfig::EMERGENCY_MM;
+      distanceMm <= espSettingUltrasonicEmergencyMm();
 
   if (ultrasonicStop && armed) {
     disarmSystem("ULTRASONIC_STOP");
@@ -151,7 +152,7 @@ void initializeUltrasonicController() {
       onUltrasonicEcho,
       CHANGE);
   ultrasonicInitialized = true;
-  Serial.println("EVT,RCWL1655,READY,TRIG2,ECHO39");
+  Serial.println("EVT,RCWL1655,READY,TRIG2,ECHO39,RUNTIME_CONFIG");
 }
 
 void updateUltrasonicController() {
@@ -159,36 +160,38 @@ void updateUltrasonicController() {
   const uint32_t nowMs = millis();
   const uint32_t nowUs = micros();
 
-  // Keep GPIO2 low between measurements. This also overrides the legacy status
-  // LED writes from main.cpp; the status LED is intentionally sacrificed.
-  if (triggerStartedUs == 0) digitalWrite(UltrasonicPins::TRIG, LOW);
+  if (!espSettingUltrasonicEnabled()) {
+    clearSafetyStateForDisabledSensor();
+  } else {
+    if (triggerStartedUs == 0) digitalWrite(UltrasonicPins::TRIG, LOW);
 
-  bool ready = false;
-  uint32_t widthUs = 0;
-  portENTER_CRITICAL(&ultrasonicMux);
-  if (echoReady) {
-    ready = true;
-    widthUs = echoWidthUs;
-    echoReady = false;
-  }
-  portEXIT_CRITICAL(&ultrasonicMux);
+    bool ready = false;
+    uint32_t widthUs = 0;
+    portENTER_CRITICAL(&ultrasonicMux);
+    if (echoReady) {
+      ready = true;
+      widthUs = echoWidthUs;
+      echoReady = false;
+    }
+    portEXIT_CRITICAL(&ultrasonicMux);
 
-  if (ready) {
-    const uint32_t distanceMm = (widthUs * 343UL) / 2000UL;
-    const bool valid = distanceMm >= UltrasonicConfig::MIN_VALID_MM &&
-                       distanceMm <= UltrasonicConfig::MAX_VALID_MM;
-    updateSafetyState(valid, static_cast<uint16_t>(distanceMm));
-    triggerStartedUs = 0;
-  } else if (triggerStartedUs != 0 &&
-             nowUs - triggerStartedUs > UltrasonicConfig::ECHO_TIMEOUT_US) {
-    triggerStartedUs = 0;
-    updateSafetyState(false, 0);
-  }
+    if (ready) {
+      const uint32_t distanceMm = (widthUs * 343UL) / 2000UL;
+      const bool valid = distanceMm >= UltrasonicConfig::MIN_VALID_MM &&
+                         distanceMm <= UltrasonicConfig::MAX_VALID_MM;
+      updateSafetyState(valid, static_cast<uint16_t>(distanceMm));
+      triggerStartedUs = 0;
+    } else if (triggerStartedUs != 0 &&
+               nowUs - triggerStartedUs > UltrasonicConfig::ECHO_TIMEOUT_US) {
+      triggerStartedUs = 0;
+      updateSafetyState(false, 0);
+    }
 
-  if (triggerStartedUs == 0 &&
-      nowMs - lastTriggerMs >= UltrasonicConfig::SAMPLE_PERIOD_MS) {
-    lastTriggerMs = nowMs;
-    triggerUltrasonic();
+    if (triggerStartedUs == 0 &&
+        nowMs - lastTriggerMs >= espSettingUltrasonicSampleMs()) {
+      lastTriggerMs = nowMs;
+      triggerUltrasonic();
+    }
   }
 
   if (nowMs - lastTelemetryMs >= UltrasonicConfig::TELEMETRY_PERIOD_MS) {
@@ -198,7 +201,8 @@ void updateUltrasonicController() {
         String(ultrasonicValid ? 1 : 0) + "," +
         String(ultrasonicNear ? 1 : 0) + "," +
         String(ultrasonicStop ? 1 : 0) + "," +
-        String(ultrasonicEmergency ? 1 : 0);
+        String(ultrasonicEmergency ? 1 : 0) + "," +
+        String(espSettingUltrasonicEnabled() ? 1 : 0);
     sendUltrasonicFrame(body);
   }
 }
