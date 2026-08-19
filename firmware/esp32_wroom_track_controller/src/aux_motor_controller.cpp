@@ -6,15 +6,6 @@
 // AUX REVERSE   -> GPIO12 -> HW-399 -> Reverse input of motor controller
 // AUX THROTTLE  -> MCP4725 address 0x61 on shared OLED I2C SDA=GPIO4/SCL=GPIO23
 // Brake is not used.
-//
-// RC mode: CH6 is centered at ~1500 us:
-//   ~1000 us -> -100%
-//   ~1500 us -> STOP
-//   ~2000 us -> +100%
-// ROS mode: /aux_motor/command is encoded by the Raspberry bridge into the
-// sequence field of the existing AUX frame. main.cpp remains backward-compatible.
-// SAFE / E-STOP / disarm / command timeout / MCP error => throttle 0 V.
-// Direction changes are always performed at zero throttle with a guard delay.
 
 enum class ControlMode : uint8_t { Safe, RcManual, RosAutonomous };
 extern ControlMode controlMode;
@@ -23,9 +14,10 @@ extern bool estopOkay();
 extern TwoWire OledWire;
 extern uint32_t lastSequence;
 
-// RCWL-1655 extension is serviced from the same Arduino serialEventRun hook.
 void initializeUltrasonicController();
 void updateUltrasonicController();
+void initializeEsp32SettingsController();
+void updateEsp32SettingsController();
 
 namespace AuxMotorPins {
 constexpr uint8_t RC_CH6 = 36;
@@ -204,7 +196,6 @@ void stopAuxMotorController() {
 
 void initializeAuxMotorController() {
   if (auxMotorInitialized) return;
-  // GPIO36 has no internal pull-up/pull-down on classic ESP32.
   pinMode(AuxMotorPins::RC_CH6, INPUT);
   pinMode(AuxMotorPins::REVERSE, OUTPUT);
   setAuxMotorReverse(false);
@@ -300,8 +291,11 @@ uint16_t getAuxMotorThrottleMv() { return auxMotorThrottleMv; }
 bool getAuxMotorMcpReady() { return auxMotorMcpReady; }
 
 // Arduino core calls serialEventRun() after every loop() iteration when present.
-// Service all 40-pin extensions here so main.cpp stays backward-compatible.
+// Keep all 40-pin extensions and NVS settings service here without disturbing
+// the legacy main.cpp control loop.
 void serialEventRun(void) {
+  initializeEsp32SettingsController();
+  updateEsp32SettingsController();
   updateAuxMotorController();
   updateUltrasonicController();
 }
