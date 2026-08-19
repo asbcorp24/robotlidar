@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111d">
+  <title>RobotLidar — настройки ESP32</title>
+  <link rel="stylesheet" href="/esp32-settings.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">RobotLidar • ESP32-WROOM 40-pin</div>
+      <h1>Настройки ESP32</h1>
+      <p>Параметры хранятся непосредственно во flash/NVS ESP32 и сохраняются после выключения питания.</p>
+    </div>
+    <div class="top-actions">
+      <span id="statusBadge" class="badge offline">нет данных</span>
+      <a href="/radar">Радар</a>
+      <a href="/">Панель</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="card-head">
+        <div><div class="eyebrow">RCWL-1655</div><h2>Ультразвуковая защита</h2></div>
+        <label class="switch"><input id="us_enabled" type="checkbox"><span></span>Включена</label>
+      </div>
+      <div class="grid">
+        <label>Предупреждение, мм<input id="us_warn_mm" type="number" min="250" max="4000" step="10"></label>
+        <label>STOP, мм<input id="us_stop_mm" type="number" min="250" max="3000" step="10"></label>
+        <label>Аварийная зона, мм<input id="us_emergency_mm" type="number" min="190" max="3000" step="10"></label>
+        <label>Гистерезис снятия STOP, мм<input id="us_clear_mm" type="number" min="20" max="1000" step="10"></label>
+        <label>Измерений до STOP<input id="us_danger_samples" type="number" min="1" max="10"></label>
+        <label>Измерений до снятия STOP<input id="us_clear_samples" type="number" min="1" max="10"></label>
+        <label>Период измерения, мс<input id="us_sample_ms" type="number" min="40" max="500" step="10"></label>
+      </div>
+      <div class="hint">Отключение датчика снимает локальный ультразвуковой STOP. Физический E-STOP остаётся независимым и не отключается этой настройкой.</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div><div class="eyebrow">GPIO34 / GPIO35</div><h2>Датчики Холла</h2></div>
+        <label class="switch"><input id="hall_enabled" type="checkbox"><span></span>Включены</label>
+      </div>
+      <div class="grid">
+        <label class="checkline"><input id="hall_left_inverted" type="checkbox"> LEFT инвертирован</label>
+        <label class="checkline"><input id="hall_right_inverted" type="checkbox"> RIGHT инвертирован</label>
+        <label>Импульсов на оборот<input id="hall_ppr" type="number" min="1" max="10000"></label>
+        <label>Путь/окружность ведущего колеса, мм<input id="wheel_circ_mm" type="number" min="10" max="10000"></label>
+        <label>Ширина между гусеницами, мм<input id="track_width_mm" type="number" min="50" max="5000"></label>
+      </div>
+      <div class="hint">Инверсия применяется сразу на ESP32. Калибровочные значения PPR, путь колеса и ширина колеи также хранятся на ESP32 и доступны Raspberry Pi.</div>
+    </section>
+
+    <section class="card actions-card">
+      <div>
+        <strong>Версия конфигурации: <span id="configVersion">—</span></strong>
+        <small id="lastUpdate">ESP32 ещё не ответила</small>
+      </div>
+      <div class="buttons">
+        <button id="reloadButton" class="secondary">Считать с ESP32</button>
+        <button id="saveButton" class="primary">Сохранить в ESP32</button>
+        <button id="resetButton" class="danger">Сбросить настройки</button>
+      </div>
+    </section>
+
+    <div id="message" class="message"></div>
+  </main>
+
+  <script src="/esp32-settings.js"></script>
+</body>
+</html>
