@@ -1,149 +1,24 @@
 <!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#111827">
-  <title>RobotLidar — управление трактором</title>
-  <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-  <header class="topbar">
-    <div>
-      <div class="eyebrow">Локальная панель Raspberry Pi</div>
-      <h1>RobotLidar</h1>
-    </div>
-    <div class="connection" id="connectionBadge">Подключение…</div>
-  </header>
-
-  <main class="layout">
-    <section class="card status-card">
-      <div class="card-head">
-        <div>
-          <div class="eyebrow">Состояние</div>
-          <h2 id="modeTitle">Остановлено</h2>
-        </div>
-        <button class="danger" id="emergencyStop">СТОП</button>
-      </div>
-
-      <div class="sensor-grid">
-        <div class="sensor"><span class="dot" id="lidarDot"></span><b>Лидар</b><small id="lidarAge">—</small></div>
-        <div class="sensor"><span class="dot" id="imuDot"></span><b>MPU6500</b><small id="imuAge">—</small></div>
-        <div class="sensor"><span class="dot" id="hallDot"></span><b>Холлы</b><small id="hallAge">—</small></div>
-        <div class="sensor"><span class="dot" id="odomDot"></span><b>Одометрия</b><small id="odomAge">—</small></div>
-        <div class="sensor"><span class="dot" id="gpsDot"></span><b>GPS</b><small id="gpsAge">—</small></div>
-        <div class="sensor"><span class="dot" id="ultrasonicDot"></span><b>RCWL-1655</b><small id="ultrasonicAge">—</small></div>
-      </div>
-
-      <div class="telemetry">
-        <div><span>X</span><strong id="poseX">0.000</strong><small>м</small></div>
-        <div><span>Y</span><strong id="poseY">0.000</strong><small>м</small></div>
-        <div><span>Угол</span><strong id="poseYaw">0.0</strong><small>°</small></div>
-        <div><span>Маршрут</span><strong id="routeState">—</strong></div>
-      </div>
-
-      <div class="gps-block">
-        <div class="gps-block-head">
-          <div>
-            <div class="eyebrow">Передняя зона безопасности</div>
-            <h3>RCWL-1655</h3>
-          </div>
-          <strong id="ultrasonicSummary">нет данных</strong>
-        </div>
-        <div class="gps-grid">
-          <div><span>Расстояние</span><strong id="ultrasonicDistance">—</strong><small>см</small></div>
-          <div><span>Датчик</span><strong id="ultrasonicValid">нет данных</strong></div>
-          <div><span>Зона</span><strong id="ultrasonicZone">—</strong></div>
-          <div><span>STOP</span><strong id="ultrasonicStop">нет</strong></div>
-          <div><span>Авария</span><strong id="ultrasonicEmergency">нет</strong></div>
-        </div>
-        <p class="muted gps-note">RCWL-1655 — независимая ближняя защита ESP32. При подтверждённом препятствии ≤ 50 см ESP32 останавливает привод без ожидания Raspberry Pi.</p>
-      </div>
-
-      <div class="gps-block">
-        <div class="gps-block-head">
-          <div>
-            <div class="eyebrow">Дополнительная коррекция</div>
-            <h3>GPS NEO-6M</h3>
-          </div>
-          <button class="ghost small" id="resetGpsAssist">Сбросить привязку GPS</button>
-        </div>
-        <div class="gps-grid">
-          <div><span>Фикс</span><strong id="gpsFix">нет</strong></div>
-          <div><span>Широта</span><strong id="gpsLatitude">—</strong></div>
-          <div><span>Долгота</span><strong id="gpsLongitude">—</strong></div>
-          <div><span>Спутники</span><strong id="gpsSatellites">0</strong></div>
-          <div><span>HDOP</span><strong id="gpsHdop">—</strong></div>
-          <div><span>Скорость</span><strong id="gpsSpeed">—</strong><small>м/с</small></div>
-          <div><span>Курс GPS</span><strong id="gpsCourse">—</strong><small>°</small></div>
-          <div><span>Помощь EKF</span><strong id="gpsAssist">ожидание</strong></div>
-        </div>
-        <p class="muted gps-note" id="gpsReason">GPS не является обязательным: при потере спутников робот продолжает работать по LiDAR, Холлам и IMU.</p>
-      </div>
-    </section>
-
-    <section class="card drive-card">
-      <div class="card-head compact"><div><div class="eyebrow">Ручной режим</div><h2>Управление гусеницами</h2></div></div>
-      <div class="notice">Кнопку нужно удерживать. При потере связи команда автоматически сбрасывается в «Стоп».</div>
-      <div class="drive-pad" aria-label="Управление движением">
-        <button class="drive-button forward" data-drive="forward">▲<span>Вперёд</span></button>
-        <button class="drive-button left" data-drive="left">◀<span>Влево</span></button>
-        <button class="drive-button stop" data-drive="stop">■<span>Стоп</span></button>
-        <button class="drive-button right" data-drive="right">▶<span>Вправо</span></button>
-        <button class="drive-button reverse" data-drive="reverse">▼<span>Назад</span></button>
-      </div>
-    </section>
-
-    <section class="card mode-card">
-      <div class="card-head compact"><div><div class="eyebrow">Режим работы</div><h2>Карта и автономный проезд</h2></div></div>
-      <div class="mode-actions">
-        <button class="primary" id="startMapping">Начать картографирование</button>
-        <button class="secondary" id="startNavigation">Запустить выбранную карту</button>
-        <button class="ghost" id="stopMode">Остановить ROS-режим</button>
-      </div>
-      <div class="route-actions">
-        <h3>Маршрут первого проезда</h3>
-        <div class="button-row">
-          <button id="routeClear">Очистить</button>
-          <button id="routeStart">Начать запись</button>
-          <button id="routeStop">Остановить и сохранить</button>
-          <button id="routePlay">Запустить маршрут</button>
-          <button id="routeCancel">Отменить маршрут</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card maps-card">
-      <div class="card-head compact"><div><div class="eyebrow">Хранилище</div><h2>Карты площадок</h2></div><button class="ghost small" id="refreshMaps">Обновить</button></div>
-      <div class="save-map">
-        <input id="newMapName" maxlength="64" placeholder="Например: склад_1">
-        <label class="check"><input type="checkbox" id="saveAsDefault" checked> Сделать основной</label>
-        <button class="primary" id="saveMap">Сохранить текущую карту</button>
-      </div>
-      <div id="mapsList" class="maps-list"></div>
-    </section>
-
-    <section class="card settings-card">
-      <div class="card-head compact"><div><div class="eyebrow">Автозапуск</div><h2>Поведение после включения Raspberry Pi</h2></div></div>
-      <div class="settings-row">
-        <label class="switch-line"><input type="checkbox" id="autoStart"> Автоматически запускать рабочий режим</label>
-        <select id="startupMode">
-          <option value="navigation">Автономный проезд по основной карте</option>
-          <option value="mapping">Картографирование</option>
-          <option value="stopped">Только веб-панель</option>
-        </select>
-        <button class="primary" id="saveSettings">Сохранить настройки</button>
-      </div>
-      <p class="muted">Сама веб-панель запускается системой автоматически. Эта настройка определяет, запускать ли вместе с ней ROS-навигацию.</p>
-    </section>
-
-    <section class="card logs-card">
-      <div class="card-head compact"><div><div class="eyebrow">Диагностика</div><h2>Журнал запуска</h2></div></div>
-      <pre id="logs">Журнал пока пуст.</pre>
-    </section>
-  </main>
-
-  <div class="toast" id="toast"></div>
-  <script src="/static/app.js"></script>
-</body>
-</html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#111827"><title>RobotLidar — управление трактором</title><link rel="stylesheet" href="/static/style.css"></head><body>
+<header class="topbar"><div><div class="eyebrow">Локальная панель Raspberry Pi</div><h1>RobotLidar</h1></div><div class="connection" id="connectionBadge">Подключение…</div></header>
+<main class="layout">
+<section class="card status-card"><div class="card-head"><div><div class="eyebrow">Состояние</div><h2 id="modeTitle">Остановлено</h2></div><button class="danger" id="emergencyStop">СТОП</button></div>
+<div class="sensor-grid"><div class="sensor"><span class="dot" id="lidarDot"></span><b>Лидар</b><small id="lidarAge">—</small></div><div class="sensor"><span class="dot" id="imuDot"></span><b>MPU6500</b><small id="imuAge">—</small></div><div class="sensor"><span class="dot" id="hallDot"></span><b>Холлы</b><small id="hallAge">—</small></div><div class="sensor"><span class="dot" id="odomDot"></span><b>Одометрия</b><small id="odomAge">—</small></div><div class="sensor"><span class="dot" id="gpsDot"></span><b>GPS</b><small id="gpsAge">—</small></div><div class="sensor"><span class="dot" id="ultrasonicDot"></span><b>RCWL-1655</b><small id="ultrasonicAge">—</small></div></div>
+<div class="telemetry"><div><span>X</span><strong id="poseX">0.000</strong><small>м</small></div><div><span>Y</span><strong id="poseY">0.000</strong><small>м</small></div><div><span>Угол</span><strong id="poseYaw">0.0</strong><small>°</small></div><div><span>Маршрут</span><strong id="routeState">—</strong></div></div>
+<div class="gps-block"><div class="gps-block-head"><div><div class="eyebrow">Передняя зона безопасности</div><h3>RCWL-1655</h3></div><strong id="ultrasonicSummary">нет данных</strong></div><div class="gps-grid"><div><span>Расстояние</span><strong id="ultrasonicDistance">—</strong><small>см</small></div><div><span>Датчик</span><strong id="ultrasonicValid">нет данных</strong></div><div><span>Зона</span><strong id="ultrasonicZone">—</strong></div><div><span>STOP</span><strong id="ultrasonicStop">нет</strong></div><div><span>Авария</span><strong id="ultrasonicEmergency">нет</strong></div></div></div>
+<div class="gps-block"><div class="gps-block-head"><div><div class="eyebrow">Дополнительная коррекция</div><h3>GPS NEO-6M</h3></div><button class="ghost small" id="resetGpsAssist">Сбросить привязку GPS</button></div><div class="gps-grid"><div><span>Фикс</span><strong id="gpsFix">нет</strong></div><div><span>Широта</span><strong id="gpsLatitude">—</strong></div><div><span>Долгота</span><strong id="gpsLongitude">—</strong></div><div><span>Спутники</span><strong id="gpsSatellites">0</strong></div><div><span>HDOP</span><strong id="gpsHdop">—</strong></div><div><span>Скорость</span><strong id="gpsSpeed">—</strong><small>м/с</small></div><div><span>Курс GPS</span><strong id="gpsCourse">—</strong><small>°</small></div><div><span>Помощь EKF</span><strong id="gpsAssist">ожидание</strong></div></div><p class="muted gps-note" id="gpsReason">GPS не является обязательным.</p></div></section>
+<section class="card drive-card"><div class="card-head compact"><div><div class="eyebrow">Ручной режим</div><h2>Управление гусеницами</h2></div></div><div class="notice">Кнопку нужно удерживать. При потере связи команда сбрасывается в «Стоп».</div><div class="drive-pad"><button class="drive-button forward" data-drive="forward">▲<span>Вперёд</span></button><button class="drive-button left" data-drive="left">◀<span>Влево</span></button><button class="drive-button stop" data-drive="stop">■<span>Стоп</span></button><button class="drive-button right" data-drive="right">▶<span>Вправо</span></button><button class="drive-button reverse" data-drive="reverse">▼<span>Назад</span></button></div></section>
+<section class="card mode-card"><div class="card-head compact"><div><div class="eyebrow">Режим работы</div><h2>Карта и автономный проезд</h2></div></div><div class="mode-actions"><button class="primary" id="startMapping">Начать картографирование</button><button class="secondary" id="startNavigation">Запустить выбранную карту</button><button class="ghost" id="stopMode">Остановить ROS-режим</button></div><div class="route-actions"><h3>Маршрут первого проезда</h3><div class="button-row"><button id="routeClear">Очистить</button><button id="routeStart">Начать запись</button><button id="routeStop">Остановить и сохранить</button><button id="routePlay">Запустить маршрут</button><button id="routeCancel">Отменить маршрут</button></div></div></section>
+<section class="card maps-card"><div class="card-head compact"><div><div class="eyebrow">Хранилище</div><h2>Карты площадок</h2></div><button class="ghost small" id="refreshMaps">Обновить</button></div><div class="save-map"><input id="newMapName" maxlength="64" placeholder="Например: склад_1"><label class="check"><input type="checkbox" id="saveAsDefault" checked> Сделать основной</label><button class="primary" id="saveMap">Сохранить текущую карту</button></div><div id="mapsList" class="maps-list"></div></section>
+<section class="card settings-card"><div class="card-head compact"><div><div class="eyebrow">Автозапуск</div><h2>Поведение после включения Raspberry Pi</h2></div></div><div class="settings-row"><label class="switch-line"><input type="checkbox" id="autoStart"> Автоматически запускать рабочий режим</label><select id="startupMode"><option value="navigation">Автономный проезд по основной карте</option><option value="mapping">Картографирование</option><option value="stopped">Только веб-панель</option></select><button class="primary" id="saveSettings">Сохранить настройки</button></div></section>
+<section class="card charging-card"><div class="card-head compact"><div><div class="eyebrow">Энергия и автозарядка</div><h2>INA228 / точка зарядки</h2></div><strong id="batterySummary">нет данных</strong></div><div class="gps-grid"><div><span>Заряд</span><strong id="batteryPercent">—</strong><small>%</small></div><div><span>Напряжение</span><strong id="batteryVoltage">—</strong><small>В</small></div><div><span>Ток</span><strong id="batteryCurrent">—</strong><small>А</small></div><div><span>Мощность</span><strong id="batteryPower">—</strong><small>Вт</small></div><div><span>Состояние</span><strong id="chargingState">—</strong></div><div><span>Точка зарядки</span><strong id="dockState">не задана</strong></div></div><div class="settings-row"><label>Пустой, В <input id="batteryEmptyV" type="number" step="0.1" value="20.0"></label><label>Полный, В <input id="batteryFullV" type="number" step="0.1" value="25.2"></label><label>Возврат при, % <input id="batteryLowPct" type="number" min="1" max="99" step="1" value="25"></label><label>Сброс тревоги, % <input id="batteryRearmPct" type="number" min="1" max="100" step="1" value="35"></label><button class="primary" id="saveChargingSettings">Сохранить</button></div><div class="button-row"><button class="secondary" id="markChargingDock" disabled>Отметить зарядку здесь</button><button id="goChargingDock">Ехать к зарядке</button></div><p class="muted" id="chargingHint">Кнопка метки доступна только во время картографирования. При низком заряде автоматический возврат выполняется в режиме ESP32 «по карте».</p></section>
+<section class="card logs-card"><div class="card-head compact"><div><div class="eyebrow">Диагностика</div><h2>Журнал запуска</h2></div></div><pre id="logs">Журнал пока пуст.</pre></section>
+</main><div class="toast" id="toast"></div><script src="/static/app.js"></script>
+<script>
+let chargingRuntimeMode='stopped';
+async function refreshCharging(){try{const d=await request('/api/charging/status');const c=d.charging||{},b=c.battery||{},s=c.settings||{};chargingRuntimeMode=(await request('/api/status')).runtime?.mode||'stopped';document.querySelector('#markChargingDock').disabled=chargingRuntimeMode!=='mapping';document.querySelector('#batteryPercent').textContent=b.percent==null?'—':Number(b.percent).toFixed(1);document.querySelector('#batteryVoltage').textContent=b.voltage_v==null?'—':Number(b.voltage_v).toFixed(2);document.querySelector('#batteryCurrent').textContent=b.current_a==null?'—':Number(b.current_a).toFixed(2);document.querySelector('#batteryPower').textContent=b.power_w==null?'—':Number(b.power_w).toFixed(1);document.querySelector('#batterySummary').textContent=b.online?`${Number(b.percent||0).toFixed(0)}% / ${Number(b.voltage_v||0).toFixed(2)} В`:'INA228: нет связи';document.querySelector('#chargingState').textContent=c.state||'idle';document.querySelector('#dockState').textContent=c.dock?`X ${Number(c.dock.x).toFixed(2)}, Y ${Number(c.dock.y).toFixed(2)}`:'не задана';if(s.empty_voltage!=null)document.querySelector('#batteryEmptyV').value=s.empty_voltage;if(s.full_voltage!=null)document.querySelector('#batteryFullV').value=s.full_voltage;if(s.low_percent!=null)document.querySelector('#batteryLowPct').value=s.low_percent;if(s.rearm_percent!=null)document.querySelector('#batteryRearmPct').value=s.rearm_percent;}catch(e){}}
+document.querySelector('#markChargingDock').addEventListener('click',async()=>{try{const r=await request('/api/charging/set-dock',{method:'POST'});toast(r.message||'Точка зарядки сохранена','success');refreshCharging();}catch(e){toast(e.message,'error')}});
+document.querySelector('#goChargingDock').addEventListener('click',async()=>{try{const r=await request('/api/charging/go-home',{method:'POST'});toast(r.message||'Возврат запрошен','success');}catch(e){toast(e.message,'error')}});
+document.querySelector('#saveChargingSettings').addEventListener('click',async()=>{try{await request('/api/charging/config',{method:'POST',body:JSON.stringify({empty_voltage:Number(document.querySelector('#batteryEmptyV').value),full_voltage:Number(document.querySelector('#batteryFullV').value),low_percent:Number(document.querySelector('#batteryLowPct').value),rearm_percent:Number(document.querySelector('#batteryRearmPct').value),low_samples:5})});toast('Настройки автозарядки сохранены','success');}catch(e){toast(e.message,'error')}});
+refreshCharging();setInterval(refreshCharging,1500);
+</script></body></html>
