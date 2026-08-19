@@ -42,7 +42,6 @@ def _find_static_directory() -> Path:
     except Exception:
         pass
 
-    # systemd starts the application with the ROS workspace as WorkingDirectory.
     candidates.append(Path.cwd() / 'src' / 'robotlidar' / 'web' / 'static')
 
     module_path = Path(__file__).resolve()
@@ -76,12 +75,13 @@ def _find_static_directory() -> Path:
 STATIC_DIR = _find_static_directory()
 web_app.static_dir = STATIC_DIR
 
-# Remove the old root route and mounted StaticFiles handler. Explicit routes are
-# more reliable in colcon --symlink-install workspaces.
+# Remove routes that this wrapper serves explicitly. In particular /radar must
+# not be handled by web_app.py, where a compatibility route may point at the
+# main index page instead of the dedicated lidar/IMU screen.
 web_app.app.routes[:] = [
     route
     for route in web_app.app.routes
-    if getattr(route, 'path', None) not in ('/', '/static')
+    if getattr(route, 'path', None) not in ('/', '/static', '/radar', '/radar/')
 ]
 
 _stream_lock = threading.RLock()
@@ -127,8 +127,6 @@ _stream_state = {
 
 def _scan_stream_callback(message: LaserScan) -> None:
     ranges = list(message.ranges)
-    # The STL-19P normally publishes about 500 values per revolution. Sending
-    # at most 360 valid points keeps a smooth radar while reducing JSON traffic.
     step = max(1, math.ceil(len(ranges) / 360))
     points: list[list[float]] = []
     range_min = float(message.range_min)
@@ -147,9 +145,7 @@ def _scan_stream_callback(message: LaserScan) -> None:
         _stream_state['scan'] = {
             'points': points,
             'range_min': round(range_min, 3),
-            'range_max': round(range_max, 3)
-            if math.isfinite(range_max)
-            else 20.0,
+            'range_max': round(range_max, 3) if math.isfinite(range_max) else 20.0,
             'source_count': len(ranges),
             'received_at': time.time(),
         }
@@ -159,9 +155,6 @@ def _imu_stream_callback(message: Imu) -> None:
     ax = float(message.linear_acceleration.x)
     ay = float(message.linear_acceleration.y)
     az = float(message.linear_acceleration.z)
-
-    # MPU6500 publishes no absolute orientation. Roll and pitch here are
-    # gravity-vector estimates and are most useful while moving slowly.
     roll = math.degrees(math.atan2(ay, az))
     pitch = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
 
@@ -238,8 +231,6 @@ def _gps_snapshot() -> dict:
     return gps
 
 
-# Add GPS to the bridge status used by both HTTP and WebSocket APIs without
-# duplicating the original control-panel implementation.
 _original_bridge_status = web_app.bridge.status
 
 
@@ -258,32 +249,17 @@ def _bridge_status_with_gps() -> dict:
 
 web_app.bridge.status = _bridge_status_with_gps  # type: ignore[method-assign]
 
-# Keep references so rclpy does not garbage-collect the subscriptions.
 _stream_subscriptions = [
     web_app.bridge.create_subscription(
-        LaserScan,
-        '/scan',
-        _scan_stream_callback,
-        qos_profile_sensor_data,
+        LaserScan, '/scan', _scan_stream_callback, qos_profile_sensor_data
     ),
     web_app.bridge.create_subscription(
-        Imu,
-        '/imu/data_raw',
-        _imu_stream_callback,
-        qos_profile_sensor_data,
+        Imu, '/imu/data_raw', _imu_stream_callback, qos_profile_sensor_data
     ),
     web_app.bridge.create_subscription(
-        NavSatFix,
-        '/gps/fix',
-        _gps_fix_callback,
-        qos_profile_sensor_data,
+        NavSatFix, '/gps/fix', _gps_fix_callback, qos_profile_sensor_data
     ),
-    web_app.bridge.create_subscription(
-        String,
-        '/gps/status',
-        _gps_status_callback,
-        10,
-    ),
+    web_app.bridge.create_subscription(String, '/gps/status', _gps_status_callback, 10),
 ]
 
 
@@ -311,18 +287,14 @@ def _radar_payload() -> dict:
             'range_max': scan['range_max'],
             'source_count': scan['source_count'],
             'received_at': scan['received_at'],
-            'age_sec': round(now - scan['received_at'], 3)
-            if scan['received_at']
-            else None,
+            'age_sec': round(now - scan['received_at'], 3) if scan['received_at'] else None,
         }
         payload['imu'] = {
             'gyro': dict(imu['gyro']),
             'accel': dict(imu['accel']),
             'tilt': dict(imu['tilt']),
             'received_at': imu['received_at'],
-            'age_sec': round(now - imu['received_at'], 3)
-            if imu['received_at']
-            else None,
+            'age_sec': round(now - imu['received_at'], 3) if imu['received_at'] else None,
         }
         payload['gps'] = _gps_snapshot()
     return payload
@@ -342,13 +314,11 @@ def index_page() -> HTMLResponse:
   <script src="/static/ws-client.js"></script>
 </head>''',
     )
-    connection = (
-        '<div class="connection" id="connectionBadge">Подключение…</div>'
-    )
+    connection = '<div class="connection" id="connectionBadge">Подключение…</div>'
     html = html.replace(
         connection,
         '<div class="topbar-live-actions">'
-        '<a class="radar-page-link" href="/radar">Радар, IMU и GPS</a>'
+        '<a class="radar-page-link" href="/radar">Радар, IMU, GPS и RCWL</a>'
         + connection
         + '</div>',
     )
@@ -365,20 +335,13 @@ def radar_page() -> FileResponse:
 @web_app.app.get('/static/{filename}', include_in_schema=False)
 def static_file(filename: str) -> FileResponse:
     allowed = {
-        'style.css',
-        'app.js',
-        'ws-client.js',
-        'radar.css',
-        'radar.js',
+        'style.css', 'app.js', 'ws-client.js', 'radar.css', 'radar.js'
     }
     if filename not in allowed:
         raise HTTPException(status_code=404, detail='Static file not found')
     path = STATIC_DIR / filename
     if not path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f'Static file missing: {filename}',
-        )
+        raise HTTPException(status_code=404, detail=f'Static file missing: {filename}')
     return FileResponse(path)
 
 
@@ -423,13 +386,8 @@ async def websocket_radar(websocket: WebSocket) -> None:
 @web_app.app.get('/api/debug/static', include_in_schema=False)
 def debug_static() -> dict:
     filenames = (
-        'index.html',
-        'style.css',
-        'app.js',
-        'ws-client.js',
-        'radar.html',
-        'radar.css',
-        'radar.js',
+        'index.html', 'style.css', 'app.js', 'ws-client.js',
+        'radar.html', 'radar.css', 'radar.js',
     )
     return {
         'static_dir': str(STATIC_DIR),
@@ -437,8 +395,7 @@ def debug_static() -> dict:
             name: {
                 'exists': (STATIC_DIR / name).is_file(),
                 'size': (STATIC_DIR / name).stat().st_size
-                if (STATIC_DIR / name).is_file()
-                else None,
+                if (STATIC_DIR / name).is_file() else None,
             }
             for name in filenames
         },
