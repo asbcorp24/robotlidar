@@ -118,3 +118,7 @@ route_player_node:
     route_file: ~/robotlidar_data/routes/cleaning_route.yaml
     action_name: navigate_through_poses
     server_wait_timeout_sec: 3.0
+    start_from_nearest_point: true
+    robot_base_frame: base_link
+    localization_timeout_sec: 3.0
+    nearest_start_max_distance_m: 5.0
