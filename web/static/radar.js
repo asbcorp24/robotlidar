@@ -246,6 +246,28 @@
     }
   }
 
+  function renderUltrasonic(ultrasonic, state) {
+    const online = Boolean(state?.online);
+    const valid = Boolean(ultrasonic?.valid) && online;
+    const distance = nullableNumber(ultrasonic?.distance_cm);
+    const stop = Boolean(ultrasonic?.stop);
+    const emergency = Boolean(ultrasonic?.emergency);
+    const near = Boolean(ultrasonic?.near);
+
+    let zone = 'нет данных';
+    if (valid) {
+      if (emergency) zone = 'EMERGENCY';
+      else if (stop) zone = 'STOP';
+      else if (near) zone = 'NEAR';
+      else zone = 'OK';
+    }
+
+    setText('#ultrasonicDistance', valid && distance != null ? distance.toFixed(1) : '—');
+    setText('#ultrasonicZone', zone);
+    setText('#ultrasonicStop', stop ? 'ДА' : 'нет');
+    setText('#ultrasonicEmergency', emergency ? 'ДА' : 'нет');
+  }
+
   function render(payload) {
     latestPayload = payload;
     drawRadar(payload);
@@ -258,12 +280,14 @@
     const tilt = imu.tilt || {};
     const scan = payload?.scan || {};
     const gps = payload?.gps || ros.gps || {};
+    const ultrasonic = ros.ultrasonic || {};
 
     setText('#coordX', finite(pose.x).toFixed(3));
     setText('#coordY', finite(pose.y).toFixed(3));
     setText('#coordYaw', `${(finite(pose.yaw) * 180 / Math.PI).toFixed(1)}`);
     setText('#linearSpeed', finite(velocity.linear).toFixed(3));
 
+    renderUltrasonic(ultrasonic, ros.sensors?.ultrasonic);
     renderGps(gps);
 
     setText('#gyroX', finite(gyro.x).toFixed(4));
@@ -297,6 +321,7 @@
     sensor('#wheelDot', '#wheelText', ros.sensors?.wheel_odom);
     sensor('#odomDot', '#odomText', ros.sensors?.odom);
     sensor('#gpsDot', '#gpsText', ros.sensors?.gps);
+    sensor('#ultrasonicDot', '#ultrasonicText', ros.sensors?.ultrasonic);
   }
 
   function scheduleReconnect() {
