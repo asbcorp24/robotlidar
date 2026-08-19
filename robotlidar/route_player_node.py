@@ -15,7 +15,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
-from std_msgs.msg import Float32, Int8, String
+from std_msgs.msg import Bool, Float32, Int8, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -34,6 +34,7 @@ class RoutePlayerNode(Node):
         self.declare_parameter('robot_base_frame', 'base_link')
         self.declare_parameter('localization_timeout_sec', 3.0)
         self.declare_parameter('nearest_start_max_distance_m', 5.0)
+        self.declare_parameter('require_localization_ready', True)
 
         self.route_file = Path(str(self.get_parameter('route_file').value)).expanduser()
         action_name = str(self.get_parameter('action_name').value)
@@ -42,15 +43,15 @@ class RoutePlayerNode(Node):
         self.start_from_nearest_point = bool(self.get_parameter('start_from_nearest_point').value)
         self.robot_base_frame = str(self.get_parameter('robot_base_frame').value)
         self.localization_timeout = float(self.get_parameter('localization_timeout_sec').value)
-        self.nearest_start_max_distance = float(
-            self.get_parameter('nearest_start_max_distance_m').value
-        )
+        self.nearest_start_max_distance = float(self.get_parameter('nearest_start_max_distance_m').value)
+        self.require_localization_ready = bool(self.get_parameter('require_localization_ready').value)
 
         self.action_client = ActionClient(self, NavigateThroughPoses, action_name)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.goal_handle = None
         self.state = 'idle'
+        self.localization_ready = not self.require_localization_ready
         self._active_point_index = -1
         self._active_route_points: list[dict] = []
         self._active_source_indices: list[int] = []
@@ -59,6 +60,7 @@ class RoutePlayerNode(Node):
         self.actuator_publisher = self.create_publisher(Int8, '/actuator/command', 20)
         self.brush_publisher = self.create_publisher(Float32, '/brush/command', 20)
         self.aux_motor_publisher = self.create_publisher(Float32, '/aux_motor/command', 20)
+        self.create_subscription(Bool, '/localization/ready', self._localization_ready_callback, 10)
 
         self.create_service(Trigger, '/route/play', self._play)
         self.create_service(Trigger, '/route/cancel', self._cancel)
@@ -68,6 +70,9 @@ class RoutePlayerNode(Node):
         self._load_route(log_missing=False)
         self._publish_state('idle')
         self._stop_auxiliaries()
+
+    def _localization_ready_callback(self, message: Bool) -> None:
+        self.localization_ready = bool(message.data)
 
     def _load_route(self, log_missing: bool = True) -> None:
         if not self.route_file.exists():
@@ -123,10 +128,7 @@ class RoutePlayerNode(Node):
             raise RuntimeError(
                 f'Robot is not localized yet: no TF {frame_id}->{self.robot_base_frame}: {exc}'
             ) from exc
-        return (
-            float(transform.transform.translation.x),
-            float(transform.transform.translation.y),
-        )
+        return float(transform.transform.translation.x), float(transform.transform.translation.y)
 
     @staticmethod
     def _nearest_point_index(points: list[dict], x: float, y: float) -> tuple[int, float]:
@@ -145,6 +147,12 @@ class RoutePlayerNode(Node):
         if self.goal_handle is not None or self.state in ('sending', 'running'):
             response.success = False
             response.message = 'A route is already active'
+            return response
+
+        if self.require_localization_ready and not self.localization_ready:
+            response.success = False
+            response.message = 'AMCL localization is not refined yet'
+            self._publish_state('waiting_localization')
             return response
 
         try:
@@ -173,13 +181,8 @@ class RoutePlayerNode(Node):
                 self._publish_state('waiting_localization')
                 return response
 
-            start_index, nearest_distance = self._nearest_point_index(
-                all_points, robot_x, robot_y
-            )
-            if (
-                self.nearest_start_max_distance > 0.0
-                and nearest_distance > self.nearest_start_max_distance
-            ):
+            start_index, nearest_distance = self._nearest_point_index(all_points, robot_x, robot_y)
+            if self.nearest_start_max_distance > 0.0 and nearest_distance > self.nearest_start_max_distance:
                 response.success = False
                 response.message = (
                     f'Nearest route point is {nearest_distance:.2f} m away, '
@@ -196,11 +199,7 @@ class RoutePlayerNode(Node):
             return response
 
         now = self.get_clock().now().to_msg()
-        poses = [
-            self._make_pose(frame_id, now, point)
-            for point in self._active_route_points
-        ]
-
+        poses = [self._make_pose(frame_id, now, point) for point in self._active_route_points]
         self._stop_auxiliaries()
         self._active_point_index = -1
 
@@ -251,7 +250,6 @@ class RoutePlayerNode(Node):
         poses_remaining = getattr(feedback, 'number_of_poses_remaining', None)
         if poses_remaining is None or not self._active_route_points:
             return
-
         active_index = len(self._active_route_points) - int(poses_remaining)
         active_index = max(0, min(len(self._active_route_points) - 1, active_index))
         if active_index != self._active_point_index:
@@ -265,11 +263,8 @@ class RoutePlayerNode(Node):
 
     def _apply_actions_for_source_point(self, point_index: int) -> None:
         points = self.route_data.get('points', [])
-        if not points or point_index < 0 or point_index >= len(points):
+        if not points or point_index < 0 or point_index >= len(points) or not self.replay_auxiliary_actions:
             return
-        if not self.replay_auxiliary_actions:
-            return
-
         actions = points[point_index].get('actions')
         if not isinstance(actions, dict):
             self._stop_auxiliaries()
@@ -295,15 +290,9 @@ class RoutePlayerNode(Node):
         self.aux_motor_publisher.publish(aux)
 
     def _stop_auxiliaries(self) -> None:
-        actuator = Int8()
-        actuator.data = 0
-        self.actuator_publisher.publish(actuator)
-        brush = Float32()
-        brush.data = 0.0
-        self.brush_publisher.publish(brush)
-        aux = Float32()
-        aux.data = 0.0
-        self.aux_motor_publisher.publish(aux)
+        actuator = Int8(); actuator.data = 0; self.actuator_publisher.publish(actuator)
+        brush = Float32(); brush.data = 0.0; self.brush_publisher.publish(brush)
+        aux = Float32(); aux.data = 0.0; self.aux_motor_publisher.publish(aux)
 
     def _result(self, future) -> None:
         try:
