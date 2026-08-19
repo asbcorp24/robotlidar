@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Local offline web control panel for RobotLidar.
-
-The process runs on Raspberry Pi, publishes manual /cmd_vel commands, calls the
-route services and starts/stops the mapping or navigation ROS 2 launch files.
-No cloud services or internet connection are used.
-"""
+"""Local offline web control panel for RobotLidar."""
 
 from __future__ import annotations
 
@@ -41,19 +36,15 @@ try:
 except ImportError:
     Image = None  # type: ignore[assignment]
 
-
 HOST = os.environ.get('ROBOTLIDAR_WEB_HOST', '0.0.0.0')
 PORT = int(os.environ.get('ROBOTLIDAR_WEB_PORT', '8080'))
 SERIAL_PORT = os.environ.get('ROBOTLIDAR_SERIAL_PORT', '/dev/ttyUSB0')
-DATA_DIR = Path(
-    os.environ.get('ROBOTLIDAR_DATA_DIR', '~/robotlidar_data')
-).expanduser()
+DATA_DIR = Path(os.environ.get('ROBOTLIDAR_DATA_DIR', '~/robotlidar_data')).expanduser()
 MAPS_DIR = DATA_DIR / 'maps'
 ROUTES_DIR = DATA_DIR / 'routes'
 CONFIG_DIR = DATA_DIR / 'config'
 SETTINGS_FILE = CONFIG_DIR / 'web_settings.json'
 ROUTE_FILE = ROUTES_DIR / 'cleaning_route.yaml'
-
 MAP_NAME_RE = re.compile(r'^[A-Za-zА-Яа-яЁё0-9_-]{1,64}$')
 
 
@@ -80,8 +71,6 @@ class SettingsRequest(BaseModel):
 
 
 class RosWebBridge(Node):
-    """ROS 2 bridge used by the HTTP application."""
-
     DRIVE_VALUES = {
         'forward': (0.25, 0.0),
         'reverse': (-0.20, 0.0),
@@ -96,36 +85,36 @@ class RosWebBridge(Node):
         self._state_lock = threading.RLock()
         self._clients_lock = threading.Lock()
         self._trigger_clients: dict[str, Any] = {}
-
         self._drive_action = 'stop'
         self._drive_deadline = 0.0
         self._stop_sent_after_timeout = True
-
         self.route_recording = False
         self.route_player_state = 'unknown'
         self.pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
         self.velocity = {'linear': 0.0, 'angular': 0.0}
+        self.ultrasonic = {
+            'distance_mm': 0,
+            'distance_cm': 0.0,
+            'valid': False,
+            'near': False,
+            'stop': False,
+            'emergency': False,
+        }
         self.last_seen = {
             'odom': 0.0,
             'imu': 0.0,
             'lidar': 0.0,
             'wheel_odom': 0.0,
+            'ultrasonic': 0.0,
         }
 
-        self.create_subscription(
-            Bool, '/route/recording', self._route_recording_callback, 10
-        )
-        self.create_subscription(
-            String, '/route/player_state', self._route_state_callback, 10
-        )
-        self.create_subscription(
-            Odometry, '/odometry/filtered', self._odom_callback, 20
-        )
-        self.create_subscription(
-            Odometry, '/wheel/odom', self._wheel_odom_callback, 20
-        )
+        self.create_subscription(Bool, '/route/recording', self._route_recording_callback, 10)
+        self.create_subscription(String, '/route/player_state', self._route_state_callback, 10)
+        self.create_subscription(Odometry, '/odometry/filtered', self._odom_callback, 20)
+        self.create_subscription(Odometry, '/wheel/odom', self._wheel_odom_callback, 20)
         self.create_subscription(Imu, '/imu/data_raw', self._imu_callback, 20)
         self.create_subscription(LaserScan, '/scan', self._scan_callback, 10)
+        self.create_subscription(String, '/safety/ultrasonic_status', self._ultrasonic_callback, 20)
         self.create_timer(0.10, self._drive_timer)
 
     def set_drive(self, action: str, hold_sec: float = 0.45) -> None:
@@ -133,15 +122,12 @@ class RosWebBridge(Node):
             raise ValueError(f'unsupported drive action: {action}')
         with self._state_lock:
             self._drive_action = action
-            self._drive_deadline = (
-                time.monotonic() + hold_sec if action != 'stop' else 0.0
-            )
+            self._drive_deadline = time.monotonic() + hold_sec if action != 'stop' else 0.0
             self._stop_sent_after_timeout = action == 'stop'
         self._publish_drive(action)
 
     def emergency_stop(self) -> None:
         self.set_drive('stop')
-        # Publish more than once because DDS discovery may be in progress.
         for _ in range(2):
             time.sleep(0.03)
             self._publish_drive('stop')
@@ -152,24 +138,18 @@ class RosWebBridge(Node):
             if client is None:
                 client = self.create_client(Trigger, service_name)
                 self._trigger_clients[service_name] = client
-
         if not client.wait_for_service(timeout_sec=min(timeout_sec, 2.0)):
             raise RuntimeError(f'ROS service unavailable: {service_name}')
-
         future = client.call_async(Trigger.Request())
         deadline = time.monotonic() + timeout_sec
         while not future.done():
             if time.monotonic() >= deadline:
                 raise TimeoutError(f'ROS service timeout: {service_name}')
             time.sleep(0.02)
-
         response = future.result()
         if response is None:
             raise RuntimeError(f'ROS service failed: {service_name}')
-        return {
-            'success': bool(response.success),
-            'message': str(response.message),
-        }
+        return {'success': bool(response.success), 'message': str(response.message)}
 
     def status(self) -> dict:
         now = time.monotonic()
@@ -180,14 +160,11 @@ class RosWebBridge(Node):
                 'route_player_state': self.route_player_state,
                 'pose': dict(self.pose),
                 'velocity': dict(self.velocity),
+                'ultrasonic': dict(self.ultrasonic),
                 'sensors': {
                     key: {
                         'online': timestamp > 0.0 and now - timestamp < 2.0,
-                        'age_sec': (
-                            round(now - timestamp, 2)
-                            if timestamp > 0.0
-                            else None
-                        ),
+                        'age_sec': round(now - timestamp, 2) if timestamp > 0.0 else None,
                     }
                     for key, timestamp in self.last_seen.items()
                 },
@@ -196,19 +173,13 @@ class RosWebBridge(Node):
     def _drive_timer(self) -> None:
         with self._state_lock:
             action = self._drive_action
-            expired = (
-                action != 'stop'
-                and self._drive_deadline > 0.0
-                and time.monotonic() > self._drive_deadline
-            )
+            expired = action != 'stop' and self._drive_deadline > 0.0 and time.monotonic() > self._drive_deadline
             if expired:
                 self._drive_action = 'stop'
                 self._drive_deadline = 0.0
                 action = 'stop'
-
             if action == 'stop' and self._stop_sent_after_timeout:
                 return
-
         self._publish_drive(action)
         if action == 'stop':
             with self._state_lock:
@@ -229,28 +200,30 @@ class RosWebBridge(Node):
         with self._state_lock:
             self.route_player_state = str(message.data)
 
-    def _odom_callback(self, message: Odometry) -> None:
-        orientation = message.pose.pose.orientation
-        yaw = math.atan2(
-            2.0 * (
-                orientation.w * orientation.z
-                + orientation.x * orientation.y
-            ),
-            1.0 - 2.0 * (
-                orientation.y * orientation.y
-                + orientation.z * orientation.z
-            ),
-        )
+    def _ultrasonic_callback(self, message: String) -> None:
+        try:
+            data = json.loads(message.data)
+            if not isinstance(data, dict):
+                return
+        except Exception:
+            return
         with self._state_lock:
-            self.pose = {
-                'x': round(float(message.pose.pose.position.x), 3),
-                'y': round(float(message.pose.pose.position.y), 3),
-                'yaw': round(float(yaw), 3),
+            self.ultrasonic = {
+                'distance_mm': int(data.get('distance_mm', 0)),
+                'distance_cm': float(data.get('distance_cm', 0.0)),
+                'valid': bool(data.get('valid', False)),
+                'near': bool(data.get('near', False)),
+                'stop': bool(data.get('stop', False)),
+                'emergency': bool(data.get('emergency', False)),
             }
-            self.velocity = {
-                'linear': round(float(message.twist.twist.linear.x), 3),
-                'angular': round(float(message.twist.twist.angular.z), 3),
-            }
+            self.last_seen['ultrasonic'] = time.monotonic()
+
+    def _odom_callback(self, message: Odometry) -> None:
+        o = message.pose.pose.orientation
+        yaw = math.atan2(2.0 * (o.w * o.z + o.x * o.y), 1.0 - 2.0 * (o.y * o.y + o.z * o.z))
+        with self._state_lock:
+            self.pose = {'x': round(float(message.pose.pose.position.x), 3), 'y': round(float(message.pose.pose.position.y), 3), 'yaw': round(float(yaw), 3)}
+            self.velocity = {'linear': round(float(message.twist.twist.linear.x), 3), 'angular': round(float(message.twist.twist.angular.z), 3)}
             self.last_seen['odom'] = time.monotonic()
 
     def _wheel_odom_callback(self, _message: Odometry) -> None:
@@ -267,8 +240,6 @@ class RosWebBridge(Node):
 
 
 class LaunchProcessManager:
-    """Manage one active RobotLidar launch process."""
-
     def __init__(self, bridge: RosWebBridge) -> None:
         self.bridge = bridge
         self._lock = threading.RLock()
@@ -278,19 +249,10 @@ class LaunchProcessManager:
         self._logs: deque[str] = deque(maxlen=250)
 
     def start_mapping(self) -> None:
-        command = [
-            'ros2', 'launch', 'robotlidar', 'mapping.launch.py',
-            f'serial_port:={SERIAL_PORT}',
-        ]
-        self._replace_process(command, 'mapping', None)
+        self._replace_process(['ros2', 'launch', 'robotlidar', 'mapping.launch.py', f'serial_port:={SERIAL_PORT}'], 'mapping', None)
 
     def start_navigation(self, map_path: Path) -> None:
-        command = [
-            'ros2', 'launch', 'robotlidar', 'navigation.launch.py',
-            f'map:={map_path}',
-            f'serial_port:={SERIAL_PORT}',
-        ]
-        self._replace_process(command, 'navigation', map_path.stem)
+        self._replace_process(['ros2', 'launch', 'robotlidar', 'navigation.launch.py', f'map:={map_path}', f'serial_port:={SERIAL_PORT}'], 'navigation', map_path.stem)
 
     def stop(self) -> None:
         self.bridge.emergency_stop()
@@ -299,10 +261,8 @@ class LaunchProcessManager:
             self._process = None
             self._mode = 'stopped'
             self._selected_map = None
-
         if process is None or process.poll() is not None:
             return
-
         self._append_log('WEB: stopping ROS launch process')
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
@@ -318,78 +278,42 @@ class LaunchProcessManager:
             process = self._process
             mode = self._mode
             selected_map = self._selected_map
-
         running = process is not None and process.poll() is None
         exit_code = None if process is None or running else process.returncode
         if process is not None and not running and mode != 'stopped':
             with self._lock:
                 self._mode = 'error'
                 mode = 'error'
+        return {'mode': mode, 'process_running': running, 'pid': process.pid if running else None, 'exit_code': exit_code, 'selected_map': selected_map, 'logs': list(self._logs)[-80:]}
 
-        return {
-            'mode': mode,
-            'process_running': running,
-            'pid': process.pid if running else None,
-            'exit_code': exit_code,
-            'selected_map': selected_map,
-            'logs': list(self._logs)[-80:],
-        }
-
-    def _replace_process(
-        self,
-        command: list[str],
-        mode: str,
-        selected_map: Optional[str],
-    ) -> None:
+    def _replace_process(self, command: list[str], mode: str, selected_map: Optional[str]) -> None:
         self.stop()
         self._append_log('WEB: ' + ' '.join(command))
-
         try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid,
-            )
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, preexec_fn=os.setsid)
         except Exception:
             self._append_log('WEB: failed to start ROS launch process')
             raise
-
         with self._lock:
             self._process = process
             self._mode = mode
             self._selected_map = selected_map
-
-        reader = threading.Thread(
-            target=self._read_output,
-            args=(process,),
-            name='robotlidar-launch-log',
-            daemon=True,
-        )
-        reader.start()
+        threading.Thread(target=self._read_output, args=(process,), name='robotlidar-launch-log', daemon=True).start()
 
     def _read_output(self, process: subprocess.Popen[str]) -> None:
         if process.stdout is None:
             return
         for line in process.stdout:
             self._append_log(line.rstrip())
-        return_code = process.wait()
-        self._append_log(f'WEB: ROS launch exited with code {return_code}')
+        self._append_log(f'WEB: ROS launch exited with code {process.wait()}')
 
     def _append_log(self, line: str) -> None:
-        timestamp = time.strftime('%H:%M:%S')
         with self._lock:
-            self._logs.append(f'[{timestamp}] {line}')
+            self._logs.append(f'[{time.strftime("%H:%M:%S")}] {line}')
 
 
 class RuntimeSettings:
-    DEFAULTS = {
-        'default_map': None,
-        'auto_start': False,
-        'startup_mode': 'navigation',
-    }
+    DEFAULTS = {'default_map': None, 'auto_start': False, 'startup_mode': 'navigation'}
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -413,10 +337,7 @@ class RuntimeSettings:
             self._normalize()
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             temporary = SETTINGS_FILE.with_suffix('.json.tmp')
-            temporary.write_text(
-                json.dumps(self.data, ensure_ascii=False, indent=2),
-                encoding='utf-8',
-            )
+            temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
             temporary.replace(SETTINGS_FILE)
 
     def update(self, **values: Any) -> dict:
@@ -430,9 +351,7 @@ class RuntimeSettings:
             return dict(self.data)
 
     def _normalize(self) -> None:
-        if self.data.get('startup_mode') not in (
-            'stopped', 'mapping', 'navigation'
-        ):
+        if self.data.get('startup_mode') not in ('stopped', 'mapping', 'navigation'):
             self.data['startup_mode'] = 'navigation'
         self.data['auto_start'] = bool(self.data.get('auto_start', False))
         default_map = self.data.get('default_map')
@@ -441,22 +360,18 @@ class RuntimeSettings:
 
 def _static_directory() -> Path:
     try:
-        share = Path(get_package_share_directory('robotlidar'))
-        installed = share / 'web' / 'static'
+        installed = Path(get_package_share_directory('robotlidar')) / 'web' / 'static'
         if installed.exists():
             return installed
     except Exception:
         pass
-    source = Path(__file__).resolve().parents[1] / 'web' / 'static'
-    return source
+    return Path(__file__).resolve().parents[1] / 'web' / 'static'
 
 
 def _safe_map_name(raw_name: str) -> str:
     name = raw_name.strip().replace(' ', '_')
     if not MAP_NAME_RE.fullmatch(name):
-        raise ValueError(
-            'Имя карты: только буквы, цифры, подчёркивание и дефис'
-        )
+        raise ValueError('Имя карты: только буквы, цифры, подчёркивание и дефис')
     return name
 
 
@@ -469,15 +384,7 @@ def _map_yaml_path(name: str) -> Path:
 
 
 def _read_map_info(path: Path, default_name: Optional[str]) -> dict:
-    result = {
-        'name': path.stem,
-        'yaml_path': str(path),
-        'default': path.stem == default_name,
-        'modified_at': path.stat().st_mtime,
-        'image_exists': False,
-        'resolution': None,
-        'origin': None,
-    }
+    result = {'name': path.stem, 'yaml_path': str(path), 'default': path.stem == default_name, 'modified_at': path.stat().st_mtime, 'image_exists': False, 'resolution': None, 'origin': None}
     try:
         data = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
         image_value = data.get('image')
@@ -496,11 +403,7 @@ def _read_map_info(path: Path, default_name: Optional[str]) -> dict:
 def _list_maps(settings: RuntimeSettings) -> list[dict]:
     MAPS_DIR.mkdir(parents=True, exist_ok=True)
     default_name = settings.snapshot().get('default_map')
-    maps = [
-        _read_map_info(path, default_name)
-        for path in MAPS_DIR.glob('*.yaml')
-        if path.is_file()
-    ]
+    maps = [_read_map_info(path, default_name) for path in MAPS_DIR.glob('*.yaml') if path.is_file()]
     maps.sort(key=lambda item: item['modified_at'], reverse=True)
     return maps
 
@@ -525,20 +428,13 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 MAPS_DIR.mkdir(parents=True, exist_ok=True)
 ROUTES_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
 rclpy.init(args=None)
 bridge = RosWebBridge()
-ros_thread = threading.Thread(
-    target=rclpy.spin,
-    args=(bridge,),
-    name='robotlidar-ros-spin',
-    daemon=True,
-)
+ros_thread = threading.Thread(target=rclpy.spin, args=(bridge,), name='robotlidar-ros-spin', daemon=True)
 ros_thread.start()
-
 settings = RuntimeSettings()
 process_manager = LaunchProcessManager(bridge)
-app = FastAPI(title='RobotLidar Control', version='0.1.0')
+app = FastAPI(title='RobotLidar Control', version='0.2.0')
 static_dir = _static_directory()
 app.mount('/static', StaticFiles(directory=str(static_dir)), name='static')
 
@@ -557,20 +453,15 @@ def startup_event() -> None:
             elif mode == 'navigation':
                 map_name = current.get('default_map')
                 if not map_name:
-                    process_manager._append_log(
-                        'WEB: auto-start skipped: default map is not selected'
-                    )
+                    process_manager._append_log('WEB: auto-start skipped: default map is not selected')
                     return
                 map_path = _map_yaml_path(map_name)
                 if not map_path.exists():
-                    process_manager._append_log(
-                        f'WEB: auto-start skipped: map not found: {map_path}'
-                    )
+                    process_manager._append_log(f'WEB: auto-start skipped: map not found: {map_path}')
                     return
                 process_manager.start_navigation(map_path)
         except Exception as exc:
             process_manager._append_log(f'WEB: auto-start failed: {exc}')
-
     threading.Thread(target=delayed_start, daemon=True).start()
 
 
@@ -584,6 +475,11 @@ def shutdown_event() -> None:
 
 @app.get('/')
 def index() -> FileResponse:
+    return FileResponse(static_dir / 'index.html')
+
+
+@app.get('/radar')
+def radar() -> FileResponse:
     return FileResponse(static_dir / 'index.html')
 
 
@@ -602,10 +498,7 @@ def api_status() -> dict:
 
 @app.get('/api/maps')
 def api_maps() -> dict:
-    return {
-        'maps': _list_maps(settings),
-        'settings': settings.snapshot(),
-    }
+    return {'maps': _list_maps(settings), 'settings': settings.snapshot()}
 
 
 @app.get('/api/maps/{name}/preview.png')
@@ -615,22 +508,14 @@ def api_map_preview(name: str):
         image_path = _map_image_path(map_yaml)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
     if image_path.suffix.lower() == '.png':
         return FileResponse(image_path, media_type='image/png')
     if Image is None:
-        raise HTTPException(
-            status_code=503,
-            detail='python3-pil is required for map previews',
-        )
-
+        raise HTTPException(status_code=503, detail='python3-pil is required for map previews')
     preview_dir = DATA_DIR / 'cache'
     preview_dir.mkdir(parents=True, exist_ok=True)
     preview_path = preview_dir / f'{map_yaml.stem}.png'
-    if (
-        not preview_path.exists()
-        or preview_path.stat().st_mtime < image_path.stat().st_mtime
-    ):
+    if not preview_path.exists() or preview_path.stat().st_mtime < image_path.stat().st_mtime:
         with Image.open(image_path) as image:
             image.convert('L').save(preview_path, format='PNG')
     return FileResponse(preview_path, media_type='image/png')
@@ -680,55 +565,25 @@ def api_stop_mode() -> dict:
 @app.post('/api/maps/save')
 def api_save_map(request: MapSaveRequest) -> dict:
     if process_manager.status()['mode'] != 'mapping':
-        raise HTTPException(
-            status_code=409,
-            detail='Сохранение карты доступно в режиме картографирования',
-        )
+        raise HTTPException(status_code=409, detail='Сохранение карты доступно в режиме картографирования')
     try:
         name = _safe_map_name(request.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     output_base = MAPS_DIR / name
-    command = [
-        'ros2', 'run', 'nav2_map_server', 'map_saver_cli',
-        '-f', str(output_base),
-    ]
     try:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=25.0,
-        )
+        result = subprocess.run(['ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', str(output_base)], check=False, capture_output=True, text=True, timeout=25.0)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    process_manager._append_log(
-        'WEB MAP SAVE: ' + (result.stdout + result.stderr).strip()
-    )
+    process_manager._append_log('WEB MAP SAVE: ' + (result.stdout + result.stderr).strip())
     if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=(result.stdout + result.stderr).strip()
-            or f'map_saver_cli returned {result.returncode}',
-        )
-
+        raise HTTPException(status_code=500, detail=(result.stdout + result.stderr).strip() or f'map_saver_cli returned {result.returncode}')
     yaml_path = output_base.with_suffix('.yaml')
     if not yaml_path.exists():
-        raise HTTPException(
-            status_code=500,
-            detail='map_saver_cli завершился, но YAML карты не создан',
-        )
+        raise HTTPException(status_code=500, detail='map_saver_cli завершился, но YAML карты не создан')
     if request.set_default:
         settings.update(default_map=name)
-    return {
-        'success': True,
-        'map': _read_map_info(
-            yaml_path, settings.snapshot().get('default_map')
-        ),
-    }
+    return {'success': True, 'map': _read_map_info(yaml_path, settings.snapshot().get('default_map'))}
 
 
 @app.post('/api/maps/default')
@@ -739,19 +594,14 @@ def api_set_default_map(request: MapSelectionRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not map_path.exists():
         raise HTTPException(status_code=404, detail='Карта не найдена')
-    updated = settings.update(default_map=map_path.stem)
-    return {'success': True, 'settings': updated}
+    return {'success': True, 'settings': settings.update(default_map=map_path.stem)}
 
 
 @app.post('/api/settings')
 def api_settings(request: SettingsRequest) -> dict:
     if request.startup_mode not in ('stopped', 'mapping', 'navigation'):
         raise HTTPException(status_code=400, detail='Неизвестный режим автозапуска')
-    updated = settings.update(
-        auto_start=request.auto_start,
-        startup_mode=request.startup_mode,
-    )
-    return {'success': True, 'settings': updated}
+    return {'success': True, 'settings': settings.update(auto_start=request.auto_start, startup_mode=request.startup_mode)}
 
 
 ROUTE_SERVICES = {
@@ -774,8 +624,7 @@ async def api_route_operation(operation: str) -> JSONResponse:
         result = await asyncio.to_thread(bridge.call_trigger, service_name)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    status_code = 200 if result['success'] else 409
-    return JSONResponse(result, status_code=status_code)
+    return JSONResponse(result, status_code=200 if result['success'] else 409)
 
 
 def main(args: Optional[list[str]] = None) -> None:
