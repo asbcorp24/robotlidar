@@ -32,6 +32,7 @@
         <div class="sensor"><span class="dot" id="hallDot"></span><b>Холлы</b><small id="hallAge">—</small></div>
         <div class="sensor"><span class="dot" id="odomDot"></span><b>Одометрия</b><small id="odomAge">—</small></div>
         <div class="sensor"><span class="dot" id="gpsDot"></span><b>GPS</b><small id="gpsAge">—</small></div>
+        <div class="sensor"><span class="dot" id="ultrasonicDot"></span><b>RCWL-1655</b><small id="ultrasonicAge">—</small></div>
       </div>
 
       <div class="telemetry">
@@ -39,6 +40,24 @@
         <div><span>Y</span><strong id="poseY">0.000</strong><small>м</small></div>
         <div><span>Угол</span><strong id="poseYaw">0.0</strong><small>°</small></div>
         <div><span>Маршрут</span><strong id="routeState">—</strong></div>
+      </div>
+
+      <div class="gps-block">
+        <div class="gps-block-head">
+          <div>
+            <div class="eyebrow">Передняя зона безопасности</div>
+            <h3>RCWL-1655</h3>
+          </div>
+          <strong id="ultrasonicSummary">нет данных</strong>
+        </div>
+        <div class="gps-grid">
+          <div><span>Расстояние</span><strong id="ultrasonicDistance">—</strong><small>см</small></div>
+          <div><span>Датчик</span><strong id="ultrasonicValid">нет данных</strong></div>
+          <div><span>Зона</span><strong id="ultrasonicZone">—</strong></div>
+          <div><span>STOP</span><strong id="ultrasonicStop">нет</strong></div>
+          <div><span>Авария</span><strong id="ultrasonicEmergency">нет</strong></div>
+        </div>
+        <p class="muted gps-note">RCWL-1655 — независимая ближняя защита ESP32. При подтверждённом препятствии ≤ 50 см ESP32 останавливает привод без ожидания Raspberry Pi.</p>
       </div>
 
       <div class="gps-block">
@@ -64,12 +83,7 @@
     </section>
 
     <section class="card drive-card">
-      <div class="card-head compact">
-        <div>
-          <div class="eyebrow">Ручной режим</div>
-          <h2>Управление гусеницами</h2>
-        </div>
-      </div>
+      <div class="card-head compact"><div><div class="eyebrow">Ручной режим</div><h2>Управление гусеницами</h2></div></div>
       <div class="notice">Кнопку нужно удерживать. При потере связи команда автоматически сбрасывается в «Стоп».</div>
       <div class="drive-pad" aria-label="Управление движением">
         <button class="drive-button forward" data-drive="forward">▲<span>Вперёд</span></button>
@@ -81,19 +95,12 @@
     </section>
 
     <section class="card mode-card">
-      <div class="card-head compact">
-        <div>
-          <div class="eyebrow">Режим работы</div>
-          <h2>Карта и автономный проезд</h2>
-        </div>
-      </div>
-
+      <div class="card-head compact"><div><div class="eyebrow">Режим работы</div><h2>Карта и автономный проезд</h2></div></div>
       <div class="mode-actions">
         <button class="primary" id="startMapping">Начать картографирование</button>
         <button class="secondary" id="startNavigation">Запустить выбранную карту</button>
         <button class="ghost" id="stopMode">Остановить ROS-режим</button>
       </div>
-
       <div class="route-actions">
         <h3>Маршрут первого проезда</h3>
         <div class="button-row">
@@ -107,30 +114,17 @@
     </section>
 
     <section class="card maps-card">
-      <div class="card-head compact">
-        <div>
-          <div class="eyebrow">Хранилище</div>
-          <h2>Карты площадок</h2>
-        </div>
-        <button class="ghost small" id="refreshMaps">Обновить</button>
-      </div>
-
+      <div class="card-head compact"><div><div class="eyebrow">Хранилище</div><h2>Карты площадок</h2></div><button class="ghost small" id="refreshMaps">Обновить</button></div>
       <div class="save-map">
         <input id="newMapName" maxlength="64" placeholder="Например: склад_1">
         <label class="check"><input type="checkbox" id="saveAsDefault" checked> Сделать основной</label>
         <button class="primary" id="saveMap">Сохранить текущую карту</button>
       </div>
-
       <div id="mapsList" class="maps-list"></div>
     </section>
 
     <section class="card settings-card">
-      <div class="card-head compact">
-        <div>
-          <div class="eyebrow">Автозапуск</div>
-          <h2>Поведение после включения Raspberry Pi</h2>
-        </div>
-      </div>
+      <div class="card-head compact"><div><div class="eyebrow">Автозапуск</div><h2>Поведение после включения Raspberry Pi</h2></div></div>
       <div class="settings-row">
         <label class="switch-line"><input type="checkbox" id="autoStart"> Автоматически запускать рабочий режим</label>
         <select id="startupMode">
@@ -144,12 +138,7 @@
     </section>
 
     <section class="card logs-card">
-      <div class="card-head compact">
-        <div>
-          <div class="eyebrow">Диагностика</div>
-          <h2>Журнал запуска</h2>
-        </div>
-      </div>
+      <div class="card-head compact"><div><div class="eyebrow">Диагностика</div><h2>Журнал запуска</h2></div></div>
       <pre id="logs">Журнал пока пуст.</pre>
     </section>
   </main>
