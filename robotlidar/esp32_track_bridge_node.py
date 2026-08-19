@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge ROS 2 /cmd_vel to the ESP32-WROOM dual-track controller."""
+"""Bridge ROS 2 drive, actuator and brush commands to the ESP32 controller."""
 
 from __future__ import annotations
 
@@ -12,7 +12,14 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray, Int8MultiArray, Int64MultiArray, String
+from std_msgs.msg import (
+    Float32,
+    Float32MultiArray,
+    Int8,
+    Int8MultiArray,
+    Int64MultiArray,
+    String,
+)
 from std_srvs.srv import SetBool, Trigger
 
 try:
@@ -22,7 +29,7 @@ except ImportError:
 
 
 class Esp32TrackBridgeNode(Node):
-    """Send signed track commands and receive Hall/RC telemetry over USB."""
+    """Send ROS commands and receive ESP32 track/Hall/RC/aux telemetry."""
 
     def __init__(self) -> None:
         super().__init__('esp32_track_bridge_node')
@@ -33,6 +40,7 @@ class Esp32TrackBridgeNode(Node):
         self.declare_parameter('track_width_m', 0.60)
         self.declare_parameter('max_track_speed_mps', 0.50)
         self.declare_parameter('command_timeout_sec', 0.50)
+        self.declare_parameter('aux_command_timeout_sec', 0.50)
         self.declare_parameter('send_rate_hz', 20.0)
         self.declare_parameter('auto_arm', False)
 
@@ -46,6 +54,9 @@ class Esp32TrackBridgeNode(Node):
         self.command_timeout_sec = float(
             self.get_parameter('command_timeout_sec').value
         )
+        self.aux_command_timeout_sec = float(
+            self.get_parameter('aux_command_timeout_sec').value
+        )
         send_rate_hz = float(self.get_parameter('send_rate_hz').value)
         self.auto_arm = bool(self.get_parameter('auto_arm').value)
 
@@ -53,6 +64,7 @@ class Esp32TrackBridgeNode(Node):
             ('track_width_m', self.track_width_m),
             ('max_track_speed_mps', self.max_track_speed_mps),
             ('command_timeout_sec', self.command_timeout_sec),
+            ('aux_command_timeout_sec', self.aux_command_timeout_sec),
             ('send_rate_hz', send_rate_hz),
         ):
             if value <= 0.0:
@@ -65,7 +77,11 @@ class Esp32TrackBridgeNode(Node):
         self._sequence = 0
         self._requested_left = 0
         self._requested_right = 0
+        self._requested_actuator = 0
+        self._requested_brush = 0  # 0..1000
         self._last_cmd_time = 0.0
+        self._last_actuator_cmd_time = 0.0
+        self._last_brush_cmd_time = 0.0
         self._armed_requested = False
         self._last_telemetry: dict = {}
         self._connected = False
@@ -82,8 +98,20 @@ class Esp32TrackBridgeNode(Node):
         self.direction_publisher = self.create_publisher(
             Int8MultiArray, '/drive/direction', 20
         )
+        self.actuator_state_publisher = self.create_publisher(
+            Int8, '/actuator/state', 20
+        )
+        self.brush_state_publisher = self.create_publisher(
+            Float32MultiArray, '/brush/state', 20
+        )
 
         self.create_subscription(Twist, '/cmd_vel', self._cmd_vel_callback, 20)
+        self.create_subscription(
+            Int8, '/actuator/command', self._actuator_command_callback, 20
+        )
+        self.create_subscription(
+            Float32, '/brush/command', self._brush_command_callback, 20
+        )
         self.create_service(SetBool, '/drive/arm', self._arm_service)
         self.create_service(Trigger, '/drive/estop', self._estop_service)
         self.create_service(Trigger, '/drive/reconnect', self._reconnect_service)
@@ -99,7 +127,8 @@ class Esp32TrackBridgeNode(Node):
             self._send_arm(True)
 
         self.get_logger().info(
-            'ESP32 track bridge started in %s mode; port=%s, baud=%d'
+            'ESP32 bridge started in %s mode; port=%s, baud=%d; '
+            'aux topics=/actuator/command,/brush/command'
             % (
                 'DRY-RUN' if self.dry_run else 'HARDWARE',
                 self.serial_port,
@@ -260,7 +289,6 @@ class Esp32TrackBridgeNode(Node):
             'received_at': time.time(),
         }
 
-        # Firmware v2+ appends RC data. Keep compatibility with older frames.
         if len(fields) >= 19:
             telemetry.update({
                 'control_mode': fields[13],
@@ -272,6 +300,22 @@ class Esp32TrackBridgeNode(Node):
             })
         if len(fields) >= 20:
             telemetry['rc_input_mode'] = fields[19]
+        if len(fields) >= 24:
+            telemetry.update({
+                'actuator_rc_us': int(fields[20]),
+                'actuator_rc_valid': bool(int(fields[21])),
+                'actuator_direction': int(fields[22]),
+                'actuator_timeout': bool(int(fields[23])),
+            })
+        if len(fields) >= 30:
+            telemetry.update({
+                'brush_rc_us': int(fields[24]),
+                'brush_rc_valid': bool(int(fields[25])),
+                'brush_ros_command': int(fields[26]),
+                'brush_throttle_mv': int(fields[27]),
+                'brush_brake': bool(int(fields[28])),
+                'brush_mcp_ready': bool(int(fields[29])),
+            })
 
         with self._lock:
             self._last_telemetry = telemetry
@@ -291,6 +335,23 @@ class Esp32TrackBridgeNode(Node):
             self._sign(telemetry['actual_right']),
         ]
         self.direction_publisher.publish(direction)
+
+        if 'actuator_direction' in telemetry:
+            actuator = Int8()
+            actuator.data = int(telemetry['actuator_direction'])
+            self.actuator_state_publisher.publish(actuator)
+
+        if 'brush_throttle_mv' in telemetry:
+            brush = Float32MultiArray()
+            brush.data = [
+                float(telemetry.get('brush_ros_command', 0)) / 1000.0,
+                float(telemetry['brush_throttle_mv']) / 1000.0,
+                1.0 if telemetry.get('brush_brake', True) else 0.0,
+                1.0 if telemetry.get('brush_mcp_ready', False) else 0.0,
+                float(telemetry.get('brush_rc_us', 0)),
+                1.0 if telemetry.get('brush_rc_valid', False) else 0.0,
+            ]
+            self.brush_state_publisher.publish(brush)
 
     @staticmethod
     def _sign(value: int) -> int:
@@ -315,26 +376,54 @@ class Esp32TrackBridgeNode(Node):
             self._requested_right = self._speed_to_command(right_mps)
             self._last_cmd_time = time.monotonic()
 
+    def _actuator_command_callback(self, message: Int8) -> None:
+        value = int(message.data)
+        with self._lock:
+            self._requested_actuator = 1 if value > 0 else (-1 if value < 0 else 0)
+            self._last_actuator_cmd_time = time.monotonic()
+
+    def _brush_command_callback(self, message: Float32) -> None:
+        value = float(message.data)
+        if not math.isfinite(value):
+            self.get_logger().error('Rejected non-finite /brush/command')
+            return
+        value = max(0.0, min(1.0, value))
+        with self._lock:
+            self._requested_brush = int(round(value * 1000.0))
+            self._last_brush_cmd_time = time.monotonic()
+
     def _speed_to_command(self, speed_mps: float) -> int:
-        normalized = max(
-            -1.0,
-            min(1.0, speed_mps / self.max_track_speed_mps),
-        )
+        normalized = max(-1.0, min(1.0, speed_mps / self.max_track_speed_mps))
         return int(round(normalized * 1000.0))
 
     def _send_tick(self) -> None:
         now = time.monotonic()
         with self._lock:
-            timed_out = now - self._last_cmd_time > self.command_timeout_sec
-            left = 0 if timed_out else self._requested_left
-            right = 0 if timed_out else self._requested_right
+            drive_timed_out = now - self._last_cmd_time > self.command_timeout_sec
+            actuator_timed_out = (
+                self._last_actuator_cmd_time == 0.0
+                or now - self._last_actuator_cmd_time > self.aux_command_timeout_sec
+            )
+            brush_timed_out = (
+                self._last_brush_cmd_time == 0.0
+                or now - self._last_brush_cmd_time > self.aux_command_timeout_sec
+            )
+            left = 0 if drive_timed_out else self._requested_left
+            right = 0 if drive_timed_out else self._requested_right
+            actuator = 0 if actuator_timed_out else self._requested_actuator
+            brush = 0 if brush_timed_out else self._requested_brush
             arm_requested = self._armed_requested
 
         if not arm_requested:
             left = 0
             right = 0
+            actuator = 0
+            brush = 0
+
         sequence = self._next_sequence()
         self._write_body(f'DRV,{sequence},{left},{right}')
+        aux_sequence = self._next_sequence()
+        self._write_body(f'AUX,{aux_sequence},{actuator},{brush}')
 
     def _send_arm(self, value: bool) -> bool:
         sequence = self._next_sequence()
@@ -348,7 +437,12 @@ class Esp32TrackBridgeNode(Node):
         with self._lock:
             self._requested_left = 0
             self._requested_right = 0
-            self._last_cmd_time = time.monotonic()
+            self._requested_actuator = 0
+            self._requested_brush = 0
+            now = time.monotonic()
+            self._last_cmd_time = now
+            self._last_actuator_cmd_time = now
+            self._last_brush_cmd_time = now
             self._armed_requested = bool(request.data)
         sent = self._send_arm(bool(request.data))
         response.success = sent
@@ -368,6 +462,8 @@ class Esp32TrackBridgeNode(Node):
             self._armed_requested = False
             self._requested_left = 0
             self._requested_right = 0
+            self._requested_actuator = 0
+            self._requested_brush = 0
         sequence = self._next_sequence()
         sent = self._write_body(f'STOP,{sequence}')
         response.success = sent
@@ -401,6 +497,8 @@ class Esp32TrackBridgeNode(Node):
                 'arm_requested': self._armed_requested,
                 'requested_left': self._requested_left,
                 'requested_right': self._requested_right,
+                'requested_actuator': self._requested_actuator,
+                'requested_brush': self._requested_brush,
                 'telemetry': dict(self._last_telemetry),
             }
         message = String()
@@ -410,6 +508,9 @@ class Esp32TrackBridgeNode(Node):
     def destroy_node(self) -> bool:
         try:
             self._armed_requested = False
+            self._requested_actuator = 0
+            self._requested_brush = 0
+            self._write_body(f'AUX,{self._next_sequence()},0,0')
             self._write_body(f'STOP,{self._next_sequence()}')
         except Exception:
             pass
