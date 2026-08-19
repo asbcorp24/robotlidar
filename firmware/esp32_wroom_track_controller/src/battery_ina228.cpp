@@ -13,6 +13,7 @@ bool initialized = false;
 bool online = false;
 uint32_t lastSampleMs = 0;
 constexpr uint8_t INA228_ADDRESS = 0x40;
+constexpr uint32_t SHARED_I2C_HZ = 100000;
 constexpr uint32_t SAMPLE_PERIOD_MS = 1000;
 
 uint8_t checksum(const char* text) {
@@ -43,7 +44,9 @@ void publishBattery(uint32_t now, float voltage, float current, float power, flo
 void initializeBatteryMonitor() {
     if (initialized) return;
     initialized = true;
+    OledWire.setClock(SHARED_I2C_HZ);
     online = ina228.begin(INA228_ADDRESS, &OledWire);
+    OledWire.setClock(SHARED_I2C_HZ);
     if (online) Serial.println("EVT,INA228,ONLINE,0x40");
     else Serial.println("ERR,INA228_NOT_FOUND,0x40");
     lastSampleMs = millis();
@@ -55,8 +58,10 @@ void updateBatteryMonitor() {
     if (now - lastSampleMs < SAMPLE_PERIOD_MS) return;
     lastSampleMs = now;
 
+    OledWire.setClock(SHARED_I2C_HZ);
     if (!online) {
         online = ina228.begin(INA228_ADDRESS, &OledWire);
+        OledWire.setClock(SHARED_I2C_HZ);
         if (online) Serial.println("EVT,INA228,ONLINE,0x40");
     }
 
@@ -77,5 +82,6 @@ void updateBatteryMonitor() {
         }
     }
 
+    OledWire.setClock(SHARED_I2C_HZ);
     publishBattery(now, voltage, current, power, temperature);
 }
