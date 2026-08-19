@@ -67,8 +67,10 @@ struct PersistentSettings {
   bool hallEnabled = false;
   bool hallLeftInverted = true;
   bool hallRightInverted = true;
-  uint16_t hallPulsesPerRev = 1;
-  uint16_t wheelCircumferenceMm = 1000;
+  // Existing ROS defaults were 6 motor pulses * 30:1 reduction = 180 ticks
+  // per drive-sprocket revolution, 400 mm sprocket circumference.
+  uint16_t hallPulsesPerRev = 180;
+  uint16_t wheelCircumferenceMm = 400;
   uint16_t trackWidthMm = 600;
 };
 
@@ -93,9 +95,7 @@ static void sendFrame(const String& body) {
   Serial.println(value, HEX);
 }
 
-static void loadDefaults() {
-  settings = PersistentSettings{};
-}
+static void loadDefaults() { settings = PersistentSettings{}; }
 
 static void normalizeSettings() {
   settings.usStopMm = constrain(settings.usStopMm, 250, 3000);
@@ -168,7 +168,10 @@ static void IRAM_ATTR onSettingsHallRight() {
 static void configureHallInputs() {
   pinMode(HallPins::LEFT, INPUT);
   pinMode(HallPins::RIGHT, INPUT);
-  // CHANGE allows inversion to be changed at runtime without reattaching ISR.
+  detachInterrupt(digitalPinToInterrupt(HallPins::LEFT));
+  detachInterrupt(digitalPinToInterrupt(HallPins::RIGHT));
+  if (!settings.hallEnabled) return;
+  // CHANGE lets inversion change at runtime while counting one selected edge.
   attachInterrupt(digitalPinToInterrupt(HallPins::LEFT), onSettingsHallLeft, CHANGE);
   attachInterrupt(digitalPinToInterrupt(HallPins::RIGHT), onSettingsHallRight, CHANGE);
 }
@@ -195,6 +198,7 @@ static void sendSettingsFrame() {
 }
 
 static bool setSetting(uint8_t key, uint16_t value) {
+  bool reconfigureHall = false;
   switch (key) {
     case KEY_US_ENABLED: settings.usEnabled = value != 0; break;
     case KEY_US_WARN_MM: settings.usWarnMm = value; break;
@@ -204,9 +208,9 @@ static bool setSetting(uint8_t key, uint16_t value) {
     case KEY_US_DANGER_SAMPLES: settings.usDangerSamples = static_cast<uint8_t>(value); break;
     case KEY_US_CLEAR_SAMPLES: settings.usClearSamples = static_cast<uint8_t>(value); break;
     case KEY_US_SAMPLE_MS: settings.usSampleMs = value; break;
-    case KEY_HALL_ENABLED: settings.hallEnabled = value != 0; break;
-    case KEY_HALL_LEFT_INV: settings.hallLeftInverted = value != 0; break;
-    case KEY_HALL_RIGHT_INV: settings.hallRightInverted = value != 0; break;
+    case KEY_HALL_ENABLED: settings.hallEnabled = value != 0; reconfigureHall = true; break;
+    case KEY_HALL_LEFT_INV: settings.hallLeftInverted = value != 0; reconfigureHall = true; break;
+    case KEY_HALL_RIGHT_INV: settings.hallRightInverted = value != 0; reconfigureHall = true; break;
     case KEY_HALL_PPR: settings.hallPulsesPerRev = value; break;
     case KEY_WHEEL_CIRC_MM: settings.wheelCircumferenceMm = value; break;
     case KEY_TRACK_WIDTH_MM: settings.trackWidthMm = value; break;
@@ -214,6 +218,7 @@ static bool setSetting(uint8_t key, uint16_t value) {
   }
   normalizeSettings();
   saveSettings();
+  if (reconfigureHall) configureHallInputs();
   configDirty = true;
   return true;
 }
@@ -230,7 +235,6 @@ void initializeEsp32SettingsController() {
 
 void updateEsp32SettingsController() {
   if (!settingsInitialized) initializeEsp32SettingsController();
-
   const uint32_t sequence = lastSequence;
   if (sequence != lastHandledSequence &&
       (sequence & SettingsProtocol::MAGIC_MASK) == SettingsProtocol::MAGIC) {
@@ -248,14 +252,12 @@ void updateEsp32SettingsController() {
     } else if (op == SettingsProtocol::OP_RESET) {
       loadDefaults();
       saveSettings();
+      configureHallInputs();
       configDirty = true;
       Serial.println("EVT,ESP32_CONFIG,DEFAULTS_RESTORED");
     }
   }
-
-  if (configDirty || millis() - lastConfigTelemetryMs >= 5000) {
-    sendSettingsFrame();
-  }
+  if (configDirty || millis() - lastConfigTelemetryMs >= 5000) sendSettingsFrame();
 }
 
 bool espSettingUltrasonicEnabled() { return settings.usEnabled; }
