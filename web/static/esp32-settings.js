@@ -1,113 +1,12 @@
-(() => {
-  'use strict';
-
-  const ids = [
-    'us_enabled','us_warn_mm','us_stop_mm','us_emergency_mm','us_clear_mm',
-    'us_danger_samples','us_clear_samples','us_sample_ms','hall_enabled',
-    'hall_left_inverted','hall_right_inverted','hall_ppr','wheel_circ_mm','track_width_mm'
-  ];
-
-  const $ = (id) => document.getElementById(id);
-  const statusBadge = $('statusBadge');
-  const message = $('message');
-  let loaded = false;
-
-  function showMessage(text, kind='') {
-    message.textContent = text;
-    message.className = `message ${kind}`;
-  }
-
-  function setOnline(online) {
-    statusBadge.textContent = online ? 'ESP32 подключена' : 'ESP32 нет данных';
-    statusBadge.className = `badge ${online ? 'online' : 'offline'}`;
-  }
-
-  function applyConfig(config) {
-    if (!config || !config.version) return;
-    for (const id of ids) {
-      if (!(id in config)) continue;
-      const el = $(id);
-      if (!el) continue;
-      if (el.type === 'checkbox') el.checked = Boolean(config[id]);
-      else el.value = config[id];
-    }
-    $('configVersion').textContent = String(config.version ?? '—');
-    $('lastUpdate').textContent = config.received_at
-      ? `Последний ответ: ${new Date(config.received_at * 1000).toLocaleTimeString()}`
-      : 'Ответ получен';
-    setOnline(Boolean(config.online));
-    loaded = true;
-  }
-
-  async function loadConfig(show=true) {
-    try {
-      const response = await fetch('/api/esp32/config', {cache:'no-store'});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Ошибка чтения настроек');
-      applyConfig(data.config);
-      if (show && data.config?.online) showMessage('Настройки считаны с ESP32.', 'ok');
-    } catch (error) {
-      setOnline(false);
-      if (show) showMessage(error.message, 'error');
-    }
-  }
-
-  function collectValues() {
-    const values = {};
-    for (const id of ids) {
-      const el = $(id);
-      if (el.type === 'checkbox') values[id] = el.checked;
-      else {
-        const value = Number(el.value);
-        if (!Number.isFinite(value)) throw new Error(`Неверное значение: ${id}`);
-        values[id] = Math.round(value);
-      }
-    }
-    if (values.us_emergency_mm > values.us_stop_mm) {
-      throw new Error('Аварийная дистанция должна быть не больше дистанции STOP.');
-    }
-    if (values.us_warn_mm < values.us_stop_mm) {
-      throw new Error('Предупреждение должно быть не ближе, чем STOP.');
-    }
-    return values;
-  }
-
-  async function saveConfig() {
-    try {
-      const values = collectValues();
-      const response = await fetch('/api/esp32/config', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({values}),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Ошибка сохранения');
-      showMessage('Команда сохранения отправлена. ESP32 записывает параметры в NVS…', 'ok');
-      setTimeout(() => loadConfig(false), 500);
-      setTimeout(() => loadConfig(false), 1200);
-    } catch (error) {
-      showMessage(error.message, 'error');
-    }
-  }
-
-  async function resetConfig() {
-    if (!confirm('Сбросить настройки ESP32 к значениям по умолчанию?')) return;
-    try {
-      const response = await fetch('/api/esp32/config/reset', {method:'POST'});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Ошибка сброса');
-      showMessage('Сброс отправлен на ESP32.', 'ok');
-      setTimeout(() => loadConfig(false), 700);
-    } catch (error) {
-      showMessage(error.message, 'error');
-    }
-  }
-
-  $('reloadButton').addEventListener('click', () => loadConfig(true));
-  $('saveButton').addEventListener('click', saveConfig);
-  $('resetButton').addEventListener('click', resetConfig);
-
-  loadConfig(false);
-  setInterval(() => loadConfig(false), 3000);
-  setTimeout(() => { if (!loaded) showMessage('Ожидание ответа от ESP32…'); }, 1200);
+(() => {'use strict';
+const baseIds=['us_enabled','us_warn_mm','us_stop_mm','us_emergency_mm','us_clear_mm','us_danger_samples','us_clear_samples','us_sample_ms','hall_enabled','hall_left_inverted','hall_right_inverted','hall_ppr','wheel_circ_mm','track_width_mm','rc_deadband_us','rc_timeout_ms','throttle_idle_mv','throttle_max_mv','reverse_brake_ms','reverse_settle_ms','ramp_step','track_reverse_active_high','actuator_timeout_ms','actuator_guard_ms','actuator_reversed','brush_idle_mv','brush_max_mv','brush_stop_us','brush_brake_active_high','aux_idle_mv','aux_max_mv','aux_reverse_guard_ms','aux_ramp_step','ros_aux_timeout_ms','aux_reverse_active_high'];
+const rcIds=[];for(let ch=1;ch<=6;ch++)for(const p of ['min','center','max'])rcIds.push(`rc${ch}_${p}_us`);const ids=[...baseIds,...rcIds];const $=id=>document.getElementById(id);const badge=$('statusBadge'),message=$('message');let loaded=false;
+const rcGrid=$('rcGrid');for(let ch=1;ch<=6;ch++){for(const [p,label] of [['min','MIN'],['center','CENTER'],['max','MAX']]){const l=document.createElement('label');l.textContent=`CH${ch} ${label}, мкс`;const i=document.createElement('input');i.type='number';i.id=`rc${ch}_${p}_us`;i.min=p==='min'?'800':p==='center'?'1200':'1600';i.max=p==='min'?'1400':p==='center'?'1800':'2200';i.step='1';l.appendChild(i);rcGrid.appendChild(l);}}
+function msg(t,k=''){message.textContent=t;message.className=`message ${k}`}function online(v){badge.textContent=v?'ESP32 подключена':'ESP32 нет данных';badge.className=`badge ${v?'online':'offline'}`}
+function apply(c){if(!c||!c.version)return;for(const id of ids){if(!(id in c))continue;const e=$(id);if(!e)continue;if(e.type==='checkbox')e.checked=Boolean(c[id]);else e.value=c[id]}$('configVersion').textContent=String(c.version??'—');$('lastUpdate').textContent=c.received_at?`Последний ответ: ${new Date(c.received_at*1000).toLocaleTimeString()}`:'Ответ получен';online(Boolean(c.online));loaded=true}
+async function load(show=true){try{const r=await fetch('/api/esp32/config',{cache:'no-store'}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Ошибка чтения настроек');apply(d.config);if(show&&d.config?.online)msg('Настройки считаны с ESP32.','ok')}catch(e){online(false);if(show)msg(e.message,'error')}}
+function collect(){const v={};for(const id of ids){const e=$(id);if(!e)continue;if(e.type==='checkbox')v[id]=e.checked;else{const n=Number(e.value);if(!Number.isFinite(n))throw new Error(`Неверное значение: ${id}`);v[id]=Math.round(n)}}if(v.us_emergency_mm>v.us_stop_mm)throw new Error('Аварийная дистанция должна быть не больше STOP.');if(v.us_warn_mm<v.us_stop_mm)throw new Error('Предупреждение должно быть не ближе STOP.');if(v.throttle_max_mv<v.throttle_idle_mv)throw new Error('MAX газа ходовых должен быть не меньше IDLE.');if(v.brush_max_mv<v.brush_idle_mv)throw new Error('MAX щётки должен быть не меньше IDLE.');if(v.aux_max_mv<v.aux_idle_mv)throw new Error('MAX дополнительного мотора должен быть не меньше IDLE.');for(let ch=1;ch<=6;ch++){if(!(v[`rc${ch}_min_us`]<v[`rc${ch}_center_us`]&&v[`rc${ch}_center_us`]<v[`rc${ch}_max_us`]))throw new Error(`CH${ch}: должно быть MIN < CENTER < MAX.`)}return v}
+async function save(){try{const values=collect(),r=await fetch('/api/esp32/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({values})}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Ошибка сохранения');msg('Настройки отправлены. ESP32 сохраняет их в NVS…','ok');setTimeout(()=>load(false),900);setTimeout(()=>load(false),1800)}catch(e){msg(e.message,'error')}}
+async function reset(){if(!confirm('Сбросить все настройки ESP32 к значениям по умолчанию?'))return;try{const r=await fetch('/api/esp32/config/reset',{method:'POST'}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Ошибка сброса');msg('Сброс отправлен на ESP32.','ok');setTimeout(()=>load(false),900)}catch(e){msg(e.message,'error')}}
+$('reloadButton').addEventListener('click',()=>load(true));$('saveButton').addEventListener('click',save);$('resetButton').addEventListener('click',reset);load(false);setInterval(()=>load(false),3000);setTimeout(()=>{if(!loaded)msg('Ожидание ответа от ESP32…')},1200);
 })();
