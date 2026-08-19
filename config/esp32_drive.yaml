@@ -1,7 +1,7 @@
 esp32_track_bridge_node:
   ros__parameters:
-    # Оставить true до прошивки ESP32 и проверки аварийной петли.
-    dry_run: true
+    # Реальный ESP32 по USB; dry-run оставлять false на рабочем роботе.
+    dry_run: false
     serial_port: /dev/esp32drive
     baud_rate: 115200
 
