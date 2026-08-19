@@ -11,22 +11,11 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     robot_share = FindPackageShare('robotlidar')
-    sensors_launch = PathJoinSubstitution(
-        [robot_share, 'launch', 'tractor_sensors.launch.py']
-    )
-    nav2_launch = PathJoinSubstitution(
-        [FindPackageShare('nav2_bringup'), 'launch', 'bringup_launch.py']
-    )
-
-    default_config = PathJoinSubstitution(
-        [robot_share, 'config', 'tractor.yaml']
-    )
-    default_ekf = PathJoinSubstitution(
-        [robot_share, 'config', 'ekf.yaml']
-    )
-    default_nav2 = PathJoinSubstitution(
-        [robot_share, 'config', 'nav2.yaml']
-    )
+    sensors_launch = PathJoinSubstitution([robot_share, 'launch', 'tractor_sensors.launch.py'])
+    nav2_launch = PathJoinSubstitution([FindPackageShare('nav2_bringup'), 'launch', 'bringup_launch.py'])
+    default_config = PathJoinSubstitution([robot_share, 'config', 'tractor.yaml'])
+    default_ekf = PathJoinSubstitution([robot_share, 'config', 'ekf.yaml'])
+    default_nav2 = PathJoinSubstitution([robot_share, 'config', 'nav2.yaml'])
 
     config = LaunchConfiguration('config')
     ekf_config = LaunchConfiguration('ekf_config')
@@ -36,26 +25,18 @@ def generate_launch_description() -> LaunchDescription:
     gps_port = LaunchConfiguration('gps_port')
     start_gps = LaunchConfiguration('start_gps')
     use_esp32_drive = LaunchConfiguration('use_esp32_drive')
+    external_esp32_drive = LaunchConfiguration('external_esp32_drive')
 
     return LaunchDescription([
         DeclareLaunchArgument('config', default_value=default_config),
         DeclareLaunchArgument('ekf_config', default_value=default_ekf),
         DeclareLaunchArgument('nav2_config', default_value=default_nav2),
-        DeclareLaunchArgument(
-            'map',
-            default_value='',
-            description='Absolute path to the saved map YAML',
-        ),
+        DeclareLaunchArgument('map', default_value='', description='Absolute path to the saved map YAML'),
         DeclareLaunchArgument('serial_port', default_value='/dev/ldlidar'),
-        DeclareLaunchArgument(
-            'gps_port',
-            default_value=EnvironmentVariable(
-                'ROBOTLIDAR_GPS_PORT', default_value='/dev/ttyS0'
-            ),
-        ),
+        DeclareLaunchArgument('gps_port', default_value=EnvironmentVariable('ROBOTLIDAR_GPS_PORT', default_value='/dev/ttyS0')),
         DeclareLaunchArgument('start_gps', default_value='true'),
         DeclareLaunchArgument('use_esp32_drive', default_value='false'),
-
+        DeclareLaunchArgument('external_esp32_drive', default_value='false'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch),
             launch_arguments={
@@ -67,27 +48,16 @@ def generate_launch_description() -> LaunchDescription:
                 'start_imu': 'true',
                 'start_gps': start_gps,
                 'use_esp32_drive': use_esp32_drive,
+                'external_esp32_drive': external_esp32_drive,
             }.items(),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(nav2_launch),
             launch_arguments={
-                'slam': 'false',
-                'map': map_file,
-                'use_sim_time': 'false',
-                'params_file': nav2_config,
-                'autostart': 'true',
-                'use_composition': 'false',
-                'use_respawn': 'true',
-                'use_localization': 'true',
+                'slam': 'false', 'map': map_file, 'use_sim_time': 'false',
+                'params_file': nav2_config, 'autostart': 'true',
+                'use_composition': 'false', 'use_respawn': 'true', 'use_localization': 'true',
             }.items(),
         ),
-        Node(
-            package='robotlidar',
-            executable='route_player_node',
-            name='route_player_node',
-            output='screen',
-            parameters=[config],
-            emulate_tty=True,
-        ),
+        Node(package='robotlidar', executable='route_player_node', name='route_player_node', output='screen', parameters=[config], emulate_tty=True),
     ])
