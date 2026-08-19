@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ESP32 track bridge with persistent runtime configuration transport."""
+"""ESP32 track bridge with persistent runtime configuration and battery transport."""
 from __future__ import annotations
 import json,time
 from collections import deque
@@ -12,14 +12,23 @@ CFG_KEYS={'us_enabled':1,'us_warn_mm':2,'us_stop_mm':3,'us_emergency_mm':4,'us_c
 BOOL_KEYS={'us_enabled','hall_enabled','hall_left_inverted','hall_right_inverted','actuator_reversed','brush_brake_active_high','aux_reverse_active_high','track_reverse_active_high'}
 class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
  def __init__(self):
-  self._config_state={};self._config_publisher=None;self._config_queue=deque();self._config_pause_until=0.0;super().__init__();self._config_publisher=self.create_publisher(String,'/esp32/config/state',10);self.create_subscription(String,'/esp32/config/request',self._config_request_callback,10);self.create_timer(0.12,self._config_tick);self._queue_config_sequence(CFG_GET);self.get_logger().info('ESP32 persistent settings transport V2 enabled')
+  self._config_state={};self._config_publisher=None;self._config_queue=deque();self._config_pause_until=0.0;super().__init__();self._config_publisher=self.create_publisher(String,'/esp32/config/state',10);self._battery_publisher=self.create_publisher(String,'/battery/status',20);self.create_subscription(String,'/esp32/config/request',self._config_request_callback,10);self.create_timer(0.12,self._config_tick);self._queue_config_sequence(CFG_GET);self.get_logger().info('ESP32 persistent settings transport V2 + battery telemetry enabled')
  def _process_line(self,line):
   if line and '*' in line:
    body,cs=line.rsplit('*',1)
-   try: valid=len(cs)==2 and int(cs,16)==self._checksum(body)
-   except ValueError: valid=False
-   if valid and body.startswith('CFG,'): self._handle_config_frame(body.split(','));return
+   try:valid=len(cs)==2 and int(cs,16)==self._checksum(body)
+   except ValueError:valid=False
+   if valid and body.startswith('CFG,'):self._handle_config_frame(body.split(','));return
+   if valid and body.startswith('BAT,'):self._handle_battery_frame(body.split(','));return
   super()._process_line(line)
+ def _handle_battery_frame(self,fields):
+  if len(fields)<7:return
+  try:
+   state={'online':bool(int(fields[2])),'millis':int(fields[1]),'voltage_v':float(fields[3]),'current_a':float(fields[4]),'power_w':float(fields[5]),'temperature_c':float(fields[6]),'received_at':time.time()}
+  except Exception:return
+  with self._lock:
+   self._last_telemetry.update({'battery_'+k:v for k,v in state.items() if k!='received_at'});self._last_telemetry['battery_received_at']=state['received_at']
+  m=String();m.data=json.dumps(state,ensure_ascii=False);self._battery_publisher.publish(m)
  def _handle_config_frame(self,fields):
   if len(fields)<4:return
   state={'connected':True,'millis':int(fields[1]),'version':int(fields[2])}
@@ -34,8 +43,8 @@ class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
   if self._config_publisher is not None:
    m=String();m.data=json.dumps(state,ensure_ascii=False);self._config_publisher.publish(m)
  @staticmethod
- def _normalize_config_value(key,value): return 1 if key in BOOL_KEYS and bool(value) else (0 if key in BOOL_KEYS else max(0,min(65535,int(value))))
- def _queue_config_sequence(self,sequence): self._config_queue.append(int(sequence)&0xFFFFFFFF)
+ def _normalize_config_value(key,value):return 1 if key in BOOL_KEYS and bool(value) else (0 if key in BOOL_KEYS else max(0,min(65535,int(value))))
+ def _queue_config_sequence(self,sequence):self._config_queue.append(int(sequence)&0xFFFFFFFF)
  def _config_tick(self):
   if not self._config_queue:return
   sequence=self._config_queue.popleft();self._config_pause_until=time.monotonic()+0.05
