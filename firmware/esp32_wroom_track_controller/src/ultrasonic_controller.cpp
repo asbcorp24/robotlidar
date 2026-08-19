@@ -3,11 +3,12 @@
 // RCWL-1655 front ultrasonic safety sensor for ESP32-WROOM 40-pin.
 // VCC  -> 3.3V
 // GND  -> GND
-// TRIG -> GPIO0
+// TRIG -> GPIO2
 // ECHO -> GPIO39 (input-only)
 //
-// GPIO0 is a boot strapping pin. RCWL-1655 TRIG is an input, therefore it must
-// not pull GPIO0 LOW during reset. Do not add an external pull-down on TRIG.
+// GPIO0 is not used: it is not exposed on the user's 40-pin board.
+// GPIO2 is reassigned from the optional status LED to RCWL-1655 TRIG.
+// The ultrasonic safety controller owns GPIO2 while firmware is running.
 //
 // Safety zones:
 //   > 100 cm : clear
@@ -22,7 +23,7 @@ extern bool armed;
 extern void disarmSystem(const char* reason);
 
 namespace UltrasonicPins {
-constexpr uint8_t TRIG = 0;
+constexpr uint8_t TRIG = 2;
 constexpr uint8_t ECHO = 39;
 }
 
@@ -85,6 +86,8 @@ static void IRAM_ATTR onUltrasonicEcho() {
 }
 
 static void triggerUltrasonic() {
+  // GPIO2 is also named STATUS_LED in the older main.cpp. Force it low here on
+  // every measurement cycle so the ultrasonic module remains the effective owner.
   digitalWrite(UltrasonicPins::TRIG, LOW);
   delayMicroseconds(2);
   digitalWrite(UltrasonicPins::TRIG, HIGH);
@@ -96,8 +99,6 @@ static void triggerUltrasonic() {
 static void updateSafetyState(bool valid, uint16_t distanceMm) {
   ultrasonicValid = valid;
   if (!valid) {
-    // One missed echo is not treated as an obstacle. Navigation lidar remains
-    // the primary obstacle sensor; RCWL-1655 is the close-range backup.
     dangerConfirm = 0;
     ultrasonicNear = false;
     return;
@@ -130,7 +131,6 @@ static void updateSafetyState(bool valid, uint16_t distanceMm) {
       distanceMm <= UltrasonicConfig::EMERGENCY_MM;
 
   if (ultrasonicStop && armed) {
-    // Independent local stop: no Raspberry Pi / ROS decision is required.
     disarmSystem("ULTRASONIC_STOP");
   }
 
@@ -151,13 +151,17 @@ void initializeUltrasonicController() {
       onUltrasonicEcho,
       CHANGE);
   ultrasonicInitialized = true;
-  Serial.println("EVT,RCWL1655,READY,TRIG0,ECHO39");
+  Serial.println("EVT,RCWL1655,READY,TRIG2,ECHO39");
 }
 
 void updateUltrasonicController() {
   if (!ultrasonicInitialized) initializeUltrasonicController();
   const uint32_t nowMs = millis();
   const uint32_t nowUs = micros();
+
+  // Keep GPIO2 low between measurements. This also overrides the legacy status
+  // LED writes from main.cpp; the status LED is intentionally sacrificed.
+  if (triggerStartedUs == 0) digitalWrite(UltrasonicPins::TRIG, LOW);
 
   bool ready = false;
   uint32_t widthUs = 0;
@@ -170,7 +174,6 @@ void updateUltrasonicController() {
   portEXIT_CRITICAL(&ultrasonicMux);
 
   if (ready) {
-    // Round trip: distance_mm = echo_us * 0.343 / 2.
     const uint32_t distanceMm = (widthUs * 343UL) / 2000UL;
     const bool valid = distanceMm >= UltrasonicConfig::MIN_VALID_MM &&
                        distanceMm <= UltrasonicConfig::MAX_VALID_MM;
