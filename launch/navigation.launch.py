@@ -59,5 +59,20 @@ def generate_launch_description() -> LaunchDescription:
                 'use_composition': 'false', 'use_respawn': 'true', 'use_localization': 'true',
             }.items(),
         ),
-        Node(package='robotlidar', executable='route_player_node', name='route_player_node', output='screen', parameters=[config], emulate_tty=True),
+        Node(
+            package='robotlidar',
+            executable='localization_bootstrap_node',
+            name='localization_bootstrap_node',
+            output='screen',
+            parameters=[config],
+            emulate_tty=True,
+        ),
+        Node(
+            package='robotlidar',
+            executable='route_player_node',
+            name='route_player_node',
+            output='screen',
+            parameters=[config],
+            emulate_tty=True,
+        ),
     ])
