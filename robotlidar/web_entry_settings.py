@@ -11,7 +11,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from std_msgs.msg import String
 
@@ -56,6 +56,37 @@ def _publish_config_request(payload: dict) -> None:
     message = String()
     message.data = json.dumps(payload, ensure_ascii=False)
     _config_publisher.publish(message)
+
+
+# Replace web_entry's root handler so the new settings page is discoverable from
+# the normal control panel while preserving the WebSocket status client.
+app.routes[:] = [route for route in app.routes if getattr(route, 'path', None) != '/']
+
+
+@app.get('/', include_in_schema=False)
+def index_page_with_settings() -> HTMLResponse:
+    html = (STATIC_DIR / 'index.html').read_text(encoding='utf-8')
+    html = html.replace(
+        '</head>',
+        '''
+  <style>
+    .topbar-live-actions { display:flex; align-items:center; gap:.65rem; flex-wrap:wrap; justify-content:flex-end; }
+    .radar-page-link { display:inline-flex; align-items:center; padding:.6rem .85rem; border-radius:999px; border:1px solid rgba(148,163,184,.32); color:inherit; text-decoration:none; font-weight:700; }
+    .radar-page-link:hover { border-color:#38bdf8; }
+  </style>
+  <script src="/static/ws-client.js"></script>
+</head>''',
+    )
+    connection = '<div class="connection" id="connectionBadge">Подключение…</div>'
+    html = html.replace(
+        connection,
+        '<div class="topbar-live-actions">'
+        '<a class="radar-page-link" href="/radar">Радар, IMU и GPS</a>'
+        '<a class="radar-page-link" href="/esp32-settings">Настройки ESP32</a>'
+        + connection
+        + '</div>',
+    )
+    return HTMLResponse(html)
 
 
 @app.get('/esp32-settings', include_in_schema=False)
