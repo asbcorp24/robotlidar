@@ -23,9 +23,7 @@ bridge = web_app.bridge
 STATIC_DIR: Path = web_entry.STATIC_DIR
 
 
-# The ESP32 serial bridge is permanently owned by web_stack.launch.py. Mapping and
-# navigation use its topics and start only ESP32 odometry, never a second serial
-# bridge and never the legacy GPIO drive backend.
+# ESP32 bridge/odometry and GPS are permanently owned by web_stack.launch.py.
 def _start_mapping_with_external_esp32() -> None:
     web_app.process_manager._replace_process(
         [
@@ -33,6 +31,7 @@ def _start_mapping_with_external_esp32() -> None:
             f'serial_port:={web_app.SERIAL_PORT}',
             'use_esp32_drive:=true',
             'external_esp32_drive:=true',
+            'start_gps:=false',
         ],
         'mapping',
         None,
@@ -47,6 +46,7 @@ def _start_navigation_with_external_esp32(map_path: Path) -> None:
             f'serial_port:={web_app.SERIAL_PORT}',
             'use_esp32_drive:=true',
             'external_esp32_drive:=true',
+            'start_gps:=false',
         ],
         'navigation',
         map_path.stem,
@@ -56,11 +56,9 @@ def _start_navigation_with_external_esp32(map_path: Path) -> None:
 web_app.process_manager.start_mapping = _start_mapping_with_external_esp32
 web_app.process_manager.start_navigation = _start_navigation_with_external_esp32
 
-
 _config_lock = threading.RLock()
 _config_state = {'connected': False, 'received_at': None}
 _config_publisher = bridge.create_publisher(String, '/esp32/config/request', 10)
-
 _mode_lock = threading.RLock()
 _esp32_mode: Optional[str] = None
 _mode_generation = 0
@@ -84,9 +82,7 @@ def _config_state_callback(message: String) -> None:
         _config_state.update(data)
 
 
-_config_subscription = bridge.create_subscription(
-    String, '/esp32/config/state', _config_state_callback, 10
-)
+_config_subscription = bridge.create_subscription(String, '/esp32/config/state', _config_state_callback, 10)
 
 
 def _publish_config_request(payload: dict) -> None:
@@ -135,47 +131,31 @@ def _start_saved_route_for_ros_mode(generation: int) -> None:
         current = web_app.settings.snapshot()
         map_name = current.get('default_map')
         if not map_name:
-            web_app.process_manager._append_log(
-                'ESP32 MAP: start skipped: default map is not selected'
-            )
+            web_app.process_manager._append_log('ESP32 MAP: start skipped: default map is not selected')
             return
         map_path = web_app._map_yaml_path(str(map_name))
         if not map_path.exists():
-            web_app.process_manager._append_log(
-                f'ESP32 MAP: start skipped: map not found: {map_path}'
-            )
+            web_app.process_manager._append_log(f'ESP32 MAP: start skipped: map not found: {map_path}')
             return
         if not web_app.ROUTE_FILE.exists():
-            web_app.process_manager._append_log(
-                f'ESP32 MAP: start skipped: saved route not found: {web_app.ROUTE_FILE}'
-            )
+            web_app.process_manager._append_log(f'ESP32 MAP: start skipped: saved route not found: {web_app.ROUTE_FILE}')
             return
         if not _current_mode_is_ros(generation):
             return
 
         runtime = web_app.process_manager.status()
-        if (
-            runtime.get('mode') != 'navigation'
-            or not runtime.get('process_running')
-            or runtime.get('selected_map') != map_path.stem
-        ):
-            web_app.process_manager._append_log(
-                f'ESP32 MAP: ROS mode selected, loading navigation map {map_path.stem}'
-            )
+        if runtime.get('mode') != 'navigation' or not runtime.get('process_running') or runtime.get('selected_map') != map_path.stem:
+            web_app.process_manager._append_log(f'ESP32 MAP: ROS mode selected, loading navigation map {map_path.stem}')
             web_app.process_manager.start_navigation(map_path)
 
         if not _wait_for_route_service(generation):
-            web_app.process_manager._append_log(
-                'ESP32 MAP: route service did not become ready while ROS mode was selected'
-            )
+            web_app.process_manager._append_log('ESP32 MAP: route service did not become ready while ROS mode was selected')
             return
         if not _current_mode_is_ros(generation):
             return
 
         armed, arm_message = _set_esp32_arm(True)
-        web_app.process_manager._append_log(
-            f'ESP32 MAP: ARM={armed}: {arm_message}'
-        )
+        web_app.process_manager._append_log(f'ESP32 MAP: ARM={armed}: {arm_message}')
         if not armed or not _current_mode_is_ros(generation):
             return
 
@@ -184,22 +164,16 @@ def _start_saved_route_for_ros_mode(generation: int) -> None:
             try:
                 result = bridge.call_trigger('/route/play', timeout_sec=5.0)
             except Exception as exc:
-                web_app.process_manager._append_log(
-                    f'ESP32 MAP: waiting for Nav2 route start: {exc}'
-                )
+                web_app.process_manager._append_log(f'ESP32 MAP: waiting for Nav2 route start: {exc}')
                 time.sleep(0.7)
                 continue
             if result.get('success'):
-                web_app.process_manager._append_log(
-                    'ESP32 MAP: saved route started by ESP32 ROS/map mode'
-                )
+                web_app.process_manager._append_log('ESP32 MAP: saved route started by ESP32 ROS/map mode')
                 return
             message = str(result.get('message', 'route start rejected'))
             if 'already active' in message.lower():
                 return
-            web_app.process_manager._append_log(
-                f'ESP32 MAP: route not ready yet: {message}'
-            )
+            web_app.process_manager._append_log(f'ESP32 MAP: route not ready yet: {message}')
             time.sleep(0.7)
 
         web_app.process_manager._append_log('ESP32 MAP: route start timed out')
@@ -221,9 +195,7 @@ def _stop_saved_route_after_ros_mode() -> None:
         _set_esp32_arm(False, timeout_sec=2.0)
     except Exception:
         pass
-    web_app.process_manager._append_log(
-        'ESP32 MAP: ROS/map mode left; route canceled and drive disarmed'
-    )
+    web_app.process_manager._append_log('ESP32 MAP: ROS/map mode left; route canceled and drive disarmed')
 
 
 def _esp32_status_callback(message: String) -> None:
@@ -245,28 +217,14 @@ def _esp32_status_callback(message: String) -> None:
         _mode_generation += 1
         generation = _mode_generation
 
-    web_app.process_manager._append_log(
-        f'ESP32 MODE: {previous or "UNKNOWN"} -> {mode}'
-    )
+    web_app.process_manager._append_log(f'ESP32 MODE: {previous or "UNKNOWN"} -> {mode}')
     if mode == 'ROS':
-        threading.Thread(
-            target=_start_saved_route_for_ros_mode,
-            args=(generation,),
-            name='esp32-map-autorun',
-            daemon=True,
-        ).start()
+        threading.Thread(target=_start_saved_route_for_ros_mode, args=(generation,), name='esp32-map-autorun', daemon=True).start()
     elif previous == 'ROS':
-        threading.Thread(
-            target=_stop_saved_route_after_ros_mode,
-            name='esp32-map-stop',
-            daemon=True,
-        ).start()
+        threading.Thread(target=_stop_saved_route_after_ros_mode, name='esp32-map-stop', daemon=True).start()
 
 
-_esp32_status_subscription = bridge.create_subscription(
-    String, '/drive/esp32_status', _esp32_status_callback, 10
-)
-
+_esp32_status_subscription = bridge.create_subscription(String, '/drive/esp32_status', _esp32_status_callback, 10)
 
 app.routes[:] = [r for r in app.routes if getattr(r, 'path', None) != '/']
 
@@ -274,19 +232,9 @@ app.routes[:] = [r for r in app.routes if getattr(r, 'path', None) != '/']
 @app.get('/', include_in_schema=False)
 def index_page_with_settings() -> HTMLResponse:
     html = (STATIC_DIR / 'index.html').read_text(encoding='utf-8')
-    html = html.replace(
-        '</head>',
-        '<style>.topbar-live-actions{display:flex;align-items:center;gap:.65rem;flex-wrap:wrap;justify-content:flex-end}'
-        '.radar-page-link{display:inline-flex;align-items:center;padding:.6rem .85rem;border-radius:999px;'
-        'border:1px solid rgba(148,163,184,.32);color:inherit;text-decoration:none;font-weight:700}'
-        '.radar-page-link:hover{border-color:#38bdf8}</style><script src="/static/ws-client.js"></script></head>',
-    )
+    html = html.replace('</head>', '<style>.topbar-live-actions{display:flex;align-items:center;gap:.65rem;flex-wrap:wrap;justify-content:flex-end}.radar-page-link{display:inline-flex;align-items:center;padding:.6rem .85rem;border-radius:999px;border:1px solid rgba(148,163,184,.32);color:inherit;text-decoration:none;font-weight:700}.radar-page-link:hover{border-color:#38bdf8}</style><script src="/static/ws-client.js"></script></head>')
     marker = '<div class="connection" id="connectionBadge">Подключение…</div>'
-    html = html.replace(
-        marker,
-        '<div class="topbar-live-actions"><a class="radar-page-link" href="/radar">Радар, IMU и GPS</a>'
-        '<a class="radar-page-link" href="/esp32-settings">Настройки ESP32</a>' + marker + '</div>',
-    )
+    html = html.replace(marker, '<div class="topbar-live-actions"><a class="radar-page-link" href="/radar">Радар, IMU и GPS</a><a class="radar-page-link" href="/esp32-settings">Настройки ESP32</a>' + marker + '</div>')
     return HTMLResponse(html)
 
 
@@ -331,15 +279,10 @@ def api_set_esp32_config(request: Esp32ConfigRequest) -> dict:
         'ros_aux_timeout_ms',
     }
     for channel in range(1, 7):
-        allowed.update({
-            f'rc{channel}_min_us', f'rc{channel}_center_us', f'rc{channel}_max_us'
-        })
+        allowed.update({f'rc{channel}_min_us', f'rc{channel}_center_us', f'rc{channel}_max_us'})
     unknown = sorted(set(request.values) - allowed)
     if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail='Неизвестные параметры: ' + ', '.join(unknown),
-        )
+        raise HTTPException(status_code=400, detail='Неизвестные параметры: ' + ', '.join(unknown))
     _publish_config_request({'op': 'set', 'values': request.values})
     return {'ok': True, 'message': 'Настройки отправлены на ESP32 и сохраняются в NVS'}
 
