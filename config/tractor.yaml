@@ -100,6 +100,26 @@ gps_node:
     status_rate_hz: 2.0
     reconnect_interval_sec: 2.0
 
+localization_bootstrap_node:
+  ros__parameters:
+    route_file: ~/robotlidar_data/routes/cleaning_route.yaml
+    gps_topic: /gps/fix
+    amcl_pose_topic: /amcl_pose
+    initialpose_topic: /initialpose
+    map_frame: map
+
+    # GPS используется только для грубой привязки к GPS-точкам записанного маршрута.
+    max_gps_sigma_m: 8.0
+    max_gps_route_distance_m: 25.0
+    initial_xy_sigma_floor_m: 3.0
+    # Направление берём из ближайшей точки маршрута, но оставляем AMCL большой допуск.
+    initial_yaw_sigma_rad: 1.57
+
+    # Движение разрешаем только после нескольких устойчивых оценок AMCL.
+    amcl_ready_sigma_m: 1.0
+    amcl_ready_samples: 5
+    republish_initialpose_sec: 2.0
+
 route_recorder_node:
   ros__parameters:
     route_file: ~/robotlidar_data/routes/cleaning_route.yaml
@@ -122,3 +142,4 @@ route_player_node:
     robot_base_frame: base_link
     localization_timeout_sec: 3.0
     nearest_start_max_distance_m: 5.0
+    require_localization_ready: true
