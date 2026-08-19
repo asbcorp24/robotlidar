@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07111d">
-  <title>RobotLidar — радар, IMU и GPS</title>
+  <title>RobotLidar — радар, IMU, GPS и RCWL</title>
   <link rel="stylesheet" href="/static/radar.css">
 </head>
 <body>
@@ -60,6 +60,19 @@
         <article><span>Y</span><strong id="coordY">0.000</strong><small>м</small></article>
         <article><span>Курс</span><strong id="coordYaw">0.0</strong><small>°</small></article>
         <article><span>Скорость</span><strong id="linearSpeed">0.000</strong><small>м/с</small></article>
+      </div>
+
+      <div class="panel-head compact">
+        <div>
+          <div class="eyebrow">RCWL-1655 • /safety/ultrasonic_status</div>
+          <h2>Передняя зона безопасности</h2>
+        </div>
+      </div>
+      <div class="coordinate-grid">
+        <article><span>Расстояние</span><strong id="ultrasonicDistance">—</strong><small>см</small></article>
+        <article><span>Зона</span><strong id="ultrasonicZone">—</strong></article>
+        <article><span>STOP</span><strong id="ultrasonicStop">нет</strong></article>
+        <article><span>Авария</span><strong id="ultrasonicEmergency">нет</strong></article>
       </div>
 
       <div class="panel-head compact">
@@ -124,6 +137,7 @@
         <div><span class="dot" id="wheelDot"></span>Холлы <small id="wheelText">нет данных</small></div>
         <div><span class="dot" id="odomDot"></span>Одометрия <small id="odomText">нет данных</small></div>
         <div><span class="dot" id="gpsDot"></span>GPS <small id="gpsText">нет данных</small></div>
+        <div><span class="dot" id="ultrasonicDot"></span>RCWL-1655 <small id="ultrasonicText">нет данных</small></div>
       </div>
     </section>
   </main>
