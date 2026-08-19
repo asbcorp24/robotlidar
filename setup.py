@@ -39,7 +39,7 @@ setup(
             'motor_gpio_node = robotlidar.motor_gpio_node:main',
             'hall_odometry_node = robotlidar.hall_odometry_node:main',
             'esp32_track_bridge_node = robotlidar.esp32_track_bridge_settings_node:main',
-            'esp32_track_odometry_node = robotlidar.esp32_track_odometry_node:main',
+            'esp32_track_odometry_node = robotlidar.esp32_track_odometry_settings_node:main',
             'mpu6050_node = robotlidar.mpu6050_node:main',
             'gps_node = robotlidar.gps_node:main',
             'route_recorder_node = robotlidar.route_recorder_node:main',
