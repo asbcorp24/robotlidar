@@ -1,25 +1,17 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-// Brush controller extension for the current 30-pin ESP32 LEGACY wiring.
+// Brush controller extension for the 30-pin ESP32 LEGACY wiring.
+// RC CH4       -> GPIO5
+// BRUSH BRAKE   -> GPIO15 -> HW-399 -> brush controller Brake
+// MCP4725       -> shared OLED I2C bus SDA=GPIO4, SCL=GPIO23, address 0x60
 //
-// RC CH4          -> GPIO5
-// BRUSH BRAKE      -> GPIO15 -> HW-399 input -> brush controller Brake
-// MCP4725 BRUSH    -> shared OLED I2C bus: SDA=GPIO4, SCL=GPIO23, address 0x60
-//
-// CH4 is an analog knob/stick:
-//   ~1000 us -> STOP, brake ON
-//   ~1500 us -> ~50%
-//   ~2000 us -> 100%
-//
-// Safety:
-//   E-STOP open, SAFE mode, RC not armed, lost/invalid CH4 -> throttle 0 V + brake ON.
-//   Brush is intentionally RC-only for now; ROS mode keeps the brush stopped.
+// RC mode: CH4 1000..2000 us controls 0..100%.
+// ROS mode: setBrushRosCommand(0..1000) controls 0..100%.
+// SAFE / E-STOP / lost RC or ROS command / MCP error => 0 V + brake ON.
 
 #include <Adafruit_SSD1306.h>
 
-// These symbols are defined in main.cpp and are intentionally reused here so
-// the brush follows the same global safety state as the tracks.
 enum class ControlMode : uint8_t { Safe, RcManual, RosAutonomous };
 extern ControlMode controlMode;
 extern bool armed;
@@ -44,6 +36,7 @@ constexpr uint16_t RC_ISR_MAX_US = 2250;
 constexpr uint16_t RC_STOP_MAX_US = 1050;
 constexpr uint16_t RC_FULL_US = 2000;
 constexpr uint32_t RC_TIMEOUT_US = 160000;
+constexpr uint32_t ROS_TIMEOUT_MS = 500;
 constexpr uint32_t UPDATE_PERIOD_MS = 20;
 constexpr bool BRAKE_ACTIVE_HIGH = true;
 }
@@ -59,7 +52,11 @@ static BrushRcCapture brushRc;
 static bool brushInitialized = false;
 static bool brushMcpReady = false;
 static bool brushBrakeActive = true;
+static bool brushRcValid = false;
+static uint16_t brushRcPulseUs = 0;
 static uint16_t brushThrottleMv = BrushConfig::THROTTLE_SAFE_MV;
+static uint16_t brushRosCommand = 0;  // 0..1000
+static uint32_t brushRosCommandMs = 0;
 static uint32_t brushLastUpdateMs = 0;
 
 static void IRAM_ATTR onBrushRcEdge() {
@@ -96,6 +93,7 @@ static bool writeBrushThrottle(uint16_t mv) {
   OledWire.write(static_cast<uint8_t>(value & 0xFF));
   if (OledWire.endTransmission() != 0) {
     brushMcpReady = false;
+    brushThrottleMv = BrushConfig::THROTTLE_SAFE_MV;
     return false;
   }
   brushThrottleMv = mv;
@@ -108,7 +106,7 @@ static void setBrushBrake(bool active) {
   digitalWrite(BrushPins::BRAKE, level ? HIGH : LOW);
 }
 
-static void stopBrush() {
+void stopBrushController() {
   setBrushBrake(true);
   if (brushMcpReady) writeBrushThrottle(BrushConfig::THROTTLE_SAFE_MV);
   else brushThrottleMv = BrushConfig::THROTTLE_SAFE_MV;
@@ -131,24 +129,30 @@ static bool readBrushRc(uint16_t& pulseUs) {
   return valid;
 }
 
-static uint16_t brushPulseToThrottleMv(uint16_t pulseUs) {
-  if (pulseUs <= BrushConfig::RC_STOP_MAX_US) return BrushConfig::THROTTLE_SAFE_MV;
+static uint16_t percentCommandToThrottleMv(uint16_t command) {
+  if (command == 0) return BrushConfig::THROTTLE_SAFE_MV;
+  const uint32_t limited = min<uint32_t>(command, 1000U);
+  const uint32_t spanMv = BrushConfig::THROTTLE_MAX_MV - BrushConfig::THROTTLE_IDLE_MV;
+  return static_cast<uint16_t>(BrushConfig::THROTTLE_IDLE_MV + (limited * spanMv) / 1000U);
+}
+
+static uint16_t brushPulseToCommand(uint16_t pulseUs) {
+  if (pulseUs <= BrushConfig::RC_STOP_MAX_US) return 0;
   const uint32_t clamped = constrain(static_cast<uint32_t>(pulseUs),
                                      static_cast<uint32_t>(BrushConfig::RC_STOP_MAX_US),
                                      static_cast<uint32_t>(BrushConfig::RC_FULL_US));
-  const uint32_t spanUs = BrushConfig::RC_FULL_US - BrushConfig::RC_STOP_MAX_US;
-  const uint32_t spanMv = BrushConfig::THROTTLE_MAX_MV - BrushConfig::THROTTLE_IDLE_MV;
-  return static_cast<uint16_t>(BrushConfig::THROTTLE_IDLE_MV +
-      ((clamped - BrushConfig::RC_STOP_MAX_US) * spanMv) / spanUs);
+  return static_cast<uint16_t>(((clamped - BrushConfig::RC_STOP_MAX_US) * 1000U) /
+                               (BrushConfig::RC_FULL_US - BrushConfig::RC_STOP_MAX_US));
 }
 
-static void initializeBrush() {
+void initializeBrushController() {
+  if (brushInitialized) return;
   pinMode(BrushPins::RC_CH4, INPUT_PULLDOWN);
   pinMode(BrushPins::BRAKE, OUTPUT);
   setBrushBrake(true);
   attachInterrupt(digitalPinToInterrupt(BrushPins::RC_CH4), onBrushRcEdge, CHANGE);
 
-  // OledWire is already initialized by main.cpp on GPIO4/GPIO23.
+  // OledWire is initialized by main.cpp on GPIO4/GPIO23 before this call.
   brushMcpReady = brushMcpPresent();
   if (brushMcpReady) {
     writeBrushThrottle(BrushConfig::THROTTLE_SAFE_MV);
@@ -159,37 +163,54 @@ static void initializeBrush() {
   brushInitialized = true;
 }
 
-static void updateBrush() {
-  if (!brushInitialized) initializeBrush();
+void setBrushRosCommand(uint16_t command) {
+  brushRosCommand = min<uint16_t>(command, 1000U);
+  brushRosCommandMs = millis();
+}
+
+void updateBrushController() {
+  if (!brushInitialized) initializeBrushController();
 
   const uint32_t nowMs = millis();
   if (nowMs - brushLastUpdateMs < BrushConfig::UPDATE_PERIOD_MS) return;
   brushLastUpdateMs = nowMs;
 
   uint16_t ch4Us = 0;
-  const bool ch4Valid = readBrushRc(ch4Us);
+  brushRcValid = readBrushRc(ch4Us);
+  brushRcPulseUs = ch4Us;
 
-  // Brush is RC-only in this version and always follows global safety.
-  if (!estopOkay() || !armed || controlMode != ControlMode::RcManual || !ch4Valid || !brushMcpReady) {
-    stopBrush();
+  if (!estopOkay() || !armed || !brushMcpReady || controlMode == ControlMode::Safe) {
+    stopBrushController();
     return;
   }
 
-  if (ch4Us <= BrushConfig::RC_STOP_MAX_US) {
-    stopBrush();
+  uint16_t command = 0;
+  bool commandValid = false;
+
+  if (controlMode == ControlMode::RcManual) {
+    commandValid = brushRcValid;
+    if (commandValid) command = brushPulseToCommand(ch4Us);
+  } else if (controlMode == ControlMode::RosAutonomous) {
+    commandValid = brushRosCommandMs != 0 &&
+                   (nowMs - brushRosCommandMs <= BrushConfig::ROS_TIMEOUT_MS);
+    if (commandValid) command = brushRosCommand;
+  }
+
+  if (!commandValid || command == 0) {
+    stopBrushController();
     return;
   }
 
-  const uint16_t requestedMv = brushPulseToThrottleMv(ch4Us);
-  if (!writeBrushThrottle(requestedMv)) {
+  if (!writeBrushThrottle(percentCommandToThrottleMv(command))) {
     setBrushBrake(true);
     return;
   }
   setBrushBrake(false);
 }
 
-// Arduino-ESP32 calls serialEventRun() after loop() when this symbol exists.
-// This lets the brush extension stay isolated from the main controller code.
-void serialEventRun(void) {
-  updateBrush();
-}
+uint16_t getBrushRcPulseUs() { return brushRcPulseUs; }
+bool getBrushRcValid() { return brushRcValid; }
+uint16_t getBrushRosCommand() { return brushRosCommand; }
+uint16_t getBrushThrottleMv() { return brushThrottleMv; }
+bool getBrushBrakeActive() { return brushBrakeActive; }
+bool getBrushMcpReady() { return brushMcpReady; }
