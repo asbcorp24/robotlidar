@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import secrets
 import socket
 import sqlite3
@@ -13,24 +12,21 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict
 
+from aiortc import RTCPeerConnection, RTCSessionDescription
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from video_relay import relay_registry
+
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 DB_PATH = BASE_DIR / "camera_hub.db"
 
-app = FastAPI(title="RobotLiDAR Camera Hub", version="0.3.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="RobotLiDAR Camera Hub", version="0.4.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 OFFLINE_AFTER_SEC = 5.0
 VIDEO_PORT_BASE = 10000
@@ -56,11 +52,11 @@ class Device:
 
     @property
     def online(self) -> bool:
-        return (time.time() - self.last_seen) <= OFFLINE_AFTER_SEC
+        return time.time() - self.last_seen <= OFFLINE_AFTER_SEC
 
     @property
     def video_online(self) -> bool:
-        return self.video_last_seen > 0 and (time.time() - self.video_last_seen) <= 3.0
+        return self.video_last_seen > 0 and time.time() - self.video_last_seen <= 3.0
 
     def public_json(self, alias: str | None = None) -> Dict[str, Any]:
         t = self.telemetry
@@ -117,11 +113,17 @@ class AttachDeviceRequest(BaseModel):
     alias: str | None = Field(default=None, max_length=128)
 
 
+class WebRtcOffer(BaseModel):
+    sdp: str
+    type: str = "offer"
+
+
 devices: Dict[str, Device] = {}
 sessions: Dict[str, int] = {}
 sequence = 0
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 rtp_transports: Dict[str, asyncio.DatagramTransport] = {}
+peer_connections: set[RTCPeerConnection] = set()
 
 
 def db() -> sqlite3.Connection:
@@ -132,25 +134,23 @@ def db() -> sqlite3.Connection:
 
 def init_db() -> None:
     with db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS user_devices (
-                user_id INTEGER NOT NULL,
-                device_id TEXT NOT NULL,
-                alias TEXT,
-                created_at INTEGER NOT NULL,
-                PRIMARY KEY(user_id, device_id),
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_device_one_owner ON user_devices(device_id);
-            """
-        )
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_devices (
+            user_id INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            alias TEXT,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(user_id, device_id),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_device_one_owner ON user_devices(device_id);
+        """)
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -176,7 +176,7 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
     if not user_id:
         raise HTTPException(status_code=401, detail="Session expired")
     with db() as conn:
-        row = conn.execute("SELECT id, username FROM users WHERE id=?", (user_id,)).fetchone()
+        row = conn.execute("SELECT id,username FROM users WHERE id=?", (user_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="User not found")
     return row
@@ -184,10 +184,7 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
 
 def owned_device(user_id: int, device_id: str) -> tuple[Device, str | None]:
     with db() as conn:
-        row = conn.execute(
-            "SELECT alias FROM user_devices WHERE user_id=? AND device_id=?",
-            (user_id, device_id),
-        ).fetchone()
+        row = conn.execute("SELECT alias FROM user_devices WHERE user_id=? AND device_id=?", (user_id, device_id)).fetchone()
     if not row:
         raise HTTPException(status_code=403, detail="This tractor is not linked to your account")
     dev = devices.get(device_id)
@@ -202,10 +199,12 @@ class RtpIngestProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr):
         dev = devices.get(self.device_id)
-        if dev:
-            dev.video_packets += 1
-            dev.video_bytes += len(data)
-            dev.video_last_seen = time.time()
+        if not dev:
+            return
+        dev.video_packets += 1
+        dev.video_bytes += len(data)
+        dev.video_last_seen = time.time()
+        relay_registry.feed(self.device_id, data)
 
 
 def allocate_video_port() -> int:
@@ -220,10 +219,7 @@ async def ensure_rtp_listener(dev: Device) -> None:
     if dev.device_id in rtp_transports:
         return
     loop = asyncio.get_running_loop()
-    transport, _ = await loop.create_datagram_endpoint(
-        lambda: RtpIngestProtocol(dev.device_id),
-        local_addr=("0.0.0.0", dev.video_ingest_port),
-    )
+    transport, _ = await loop.create_datagram_endpoint(lambda: RtpIngestProtocol(dev.device_id), local_addr=("0.0.0.0", dev.video_ingest_port))
     rtp_transports[dev.device_id] = transport
     print(f"RTP ingest {dev.device_id}: UDP 0.0.0.0:{dev.video_ingest_port}")
 
@@ -238,10 +234,7 @@ def build_ptz_packet(pan=0, tilt=0, speed=6000, flags=0) -> bytes:
 def auth_register(req: AuthRequest):
     with db() as conn:
         try:
-            cur = conn.execute(
-                "INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)",
-                (req.username.strip(), hash_password(req.password), int(time.time())),
-            )
+            cur = conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)", (req.username.strip(), hash_password(req.password), int(time.time())))
             user_id = cur.lastrowid
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="Username already exists")
@@ -276,51 +269,32 @@ def auth_logout(authorization: str | None = Header(default=None)):
 @app.get("/api/devices")
 def list_devices(user=Depends(current_user)):
     with db() as conn:
-        rows = conn.execute(
-            "SELECT device_id, alias FROM user_devices WHERE user_id=? ORDER BY created_at",
-            (user["id"],),
-        ).fetchall()
+        rows = conn.execute("SELECT device_id,alias FROM user_devices WHERE user_id=? ORDER BY created_at", (user["id"],)).fetchall()
     result = []
     for row in rows:
         dev = devices.get(row["device_id"])
         if dev:
             result.append(dev.public_json(row["alias"]))
         else:
-            result.append({
-                "id": row["device_id"], "device_id": row["device_id"],
-                "name": row["alias"] or row["device_id"], "online": False,
-                "video_online": False, "streamType": "webrtc",
-                "streamUrl": f"/api/devices/{row['device_id']}/webrtc",
-                "pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0,
-                "ethernet": "—", "uptimeSec": 0,
-            })
+            result.append({"id": row["device_id"], "device_id": row["device_id"], "name": row["alias"] or row["device_id"], "online": False, "video_online": False, "streamType": "webrtc", "streamUrl": f"/api/devices/{row['device_id']}/webrtc", "pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0})
     return {"devices": result}
 
 
 @app.get("/api/settings/devices")
 def settings_devices(user=Depends(current_user)):
     with db() as conn:
-        rows = conn.execute(
-            "SELECT device_id, alias, created_at FROM user_devices WHERE user_id=? ORDER BY created_at",
-            (user["id"],),
-        ).fetchall()
+        rows = conn.execute("SELECT device_id,alias,created_at FROM user_devices WHERE user_id=? ORDER BY created_at", (user["id"],)).fetchall()
     return {"devices": [dict(r) for r in rows]}
 
 
 @app.post("/api/settings/devices")
 def attach_device(req: AttachDeviceRequest, user=Depends(current_user)):
     device_id = req.device_id.strip()
-    if not device_id:
-        raise HTTPException(status_code=400, detail="Device ID is required")
     with db() as conn:
         owner = conn.execute("SELECT user_id FROM user_devices WHERE device_id=?", (device_id,)).fetchone()
         if owner and owner["user_id"] != user["id"]:
             raise HTTPException(status_code=409, detail="This tractor ID is already linked to another account")
-        conn.execute(
-            "INSERT INTO user_devices(user_id,device_id,alias,created_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(user_id,device_id) DO UPDATE SET alias=excluded.alias",
-            (user["id"], device_id, req.alias.strip() if req.alias else None, int(time.time())),
-        )
+        conn.execute("INSERT INTO user_devices(user_id,device_id,alias,created_at) VALUES(?,?,?,?) ON CONFLICT(user_id,device_id) DO UPDATE SET alias=excluded.alias", (user["id"], device_id, req.alias.strip() if req.alias else None, int(time.time())))
     return {"ok": True, "device_id": device_id}
 
 
@@ -359,7 +333,30 @@ def update_telemetry(device_id: str, req: TelemetryRequest):
 @app.get("/api/devices/{device_id}/video-status")
 def video_status(device_id: str, user=Depends(current_user)):
     dev, _ = owned_device(user["id"], device_id)
-    return {"device_id": device_id, "video_online": dev.video_online, "video_packets": dev.video_packets, "video_bytes": dev.video_bytes}
+    return {"device_id": device_id, "video_online": dev.video_online, "video_packets": dev.video_packets, "video_bytes": dev.video_bytes, **relay_registry.stats(device_id)}
+
+
+@app.post("/api/devices/{device_id}/webrtc")
+async def webrtc(device_id: str, offer: WebRtcOffer, user=Depends(current_user)):
+    dev, _ = owned_device(user["id"], device_id)
+    if not dev.video_online:
+        raise HTTPException(status_code=409, detail="Video stream is offline")
+
+    pc = RTCPeerConnection()
+    peer_connections.add(pc)
+    relay = relay_registry.get(device_id)
+    pc.addTrack(relay.new_track())
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        if pc.connectionState in ("failed", "closed", "disconnected"):
+            await pc.close()
+            peer_connections.discard(pc)
+
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer.sdp, type=offer.type))
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
 
 @app.post("/api/devices/{device_id}/ptz")
@@ -399,6 +396,8 @@ async def shutdown_task():
     for transport in rtp_transports.values():
         transport.close()
     rtp_transports.clear()
+    await asyncio.gather(*(pc.close() for pc in list(peer_connections)), return_exceptions=True)
+    peer_connections.clear()
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
