@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>RobotLiDAR — тракторы</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
@@ -37,7 +37,7 @@
       <section id="cameraView">
         <header class="topbar">
           <div><div id="cameraTitle" class="camera-title">Выберите трактор</div><div id="cameraSubtitle" class="muted">Добавьте ID трактора в настройках</div></div>
-          <div class="top-actions"><button id="refreshBtn" class="btn secondary">Обновить</button><button id="idrBtn" class="btn secondary">IDR</button></div>
+          <div class="top-actions"><button id="cardboardBtn" class="btn vr-btn">◉ Cardboard</button><button id="refreshBtn" class="btn secondary">Обновить</button><button id="idrBtn" class="btn secondary">IDR</button></div>
         </header>
         <section class="content-grid">
           <div class="video-card panel">
@@ -65,6 +65,18 @@
       </section>
     </main>
   </div>
+
+  <section id="cardboardView" class="cardboard-view hidden">
+    <div class="cardboard-eye left-eye"><video id="vrVideoLeft" autoplay playsinline muted></video><div class="vr-reticle"></div></div>
+    <div class="cardboard-eye right-eye"><video id="vrVideoRight" autoplay playsinline muted></video><div class="vr-reticle"></div></div>
+    <div class="cardboard-divider"></div>
+    <div class="cardboard-hud">
+      <button id="vrRecenterBtn" class="vr-control">Центр</button>
+      <div id="vrStatus">Гироскоп</div>
+      <button id="vrExitBtn" class="vr-control">Выход</button>
+    </div>
+  </section>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
