@@ -89,6 +89,12 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 		s.center(w, r, id)
 	case "request-idr":
 		s.requestIDR(w, r, id)
+	case "drive":
+		s.drive(w, r, id)
+	case "drive-stop":
+		s.driveStop(w, r, id)
+	case "brush":
+		s.brush(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "Not found")
 	}
