@@ -18,9 +18,11 @@ Browser
 
 ## Требования
 
-- Go 1.23+
+- Go 1.24+
 - открытые UDP ingest-порты `10000+` от тракторов к серверу
 - WebRTC UDP/TCP доступ от браузеров к серверу
+
+Используется Pion WebRTC `v4.2.18`.
 
 ## Запуск
 
@@ -41,10 +43,10 @@ FastAPI обращается к нему через `WEBRTC_RELAY_URL=http://127
 Для STUN можно задать:
 
 ```text
-STUN_URL=stun:stun.l.google.com:19302
+STUN_URL=stun:stun.example.com:3478
 ```
 
-Для реального публичного сервера позже рекомендуется собственный STUN/TURN (coturn) и HTTPS.
+Для реального публичного сервера рекомендуется собственный STUN/TURN (coturn) и HTTPS.
 
 ## Внутренний API
 
