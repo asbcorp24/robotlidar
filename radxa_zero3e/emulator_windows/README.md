@@ -11,13 +11,32 @@
 - отправляет RTP/H.264 на сервер;
 - раз в секунду отправляет телеметрию;
 - слушает UDP PTZ на порту 6000;
-- принимает PAN/TILT/CENTER/REQUEST_IDR и отображает команды в консоли.
+- принимает PAN/TILT/CENTER/REQUEST_IDR.
+
+## GUI
+
+Основной способ запуска теперь — графический интерфейс:
+
+```bat
+run_gui.bat
+```
+
+GUI позволяет:
+
+- выбрать `device_id` и имя устройства;
+- указать HTTP адрес Camera Hub и RTP host;
+- автоматически найти DirectShow web-камеры;
+- выбрать `ffmpeg.exe`;
+- настроить разрешение, FPS, bitrate и GOP;
+- запускать и останавливать эмуляцию;
+- видеть назначенный сервером RTP ingest port;
+- видеть последние PAN/TILT команды;
+- просматривать лог работы FFmpeg, регистрации и телеметрии;
+- сохранять настройки в `config.json`.
 
 ## 1. Установить Python
 
 Нужен Python 3.10+ для Windows.
-
-Проверка:
 
 ```bat
 py -3 --version
@@ -25,65 +44,13 @@ py -3 --version
 
 ## 2. Установить FFmpeg
 
-`ffmpeg.exe` должен быть доступен через PATH либо полный путь нужно указать в `config.json`.
-
-Проверка:
+`ffmpeg.exe` должен быть доступен через PATH либо его можно выбрать кнопкой `Обзор...` в GUI.
 
 ```bat
 ffmpeg -version
 ```
 
-## 3. Посмотреть название web-камеры
-
-Из папки эмулятора:
-
-```bat
-python emulator.py --list-cameras
-```
-
-FFmpeg выведет DirectShow video devices. Точное имя нужно записать в `camera_name`.
-
-Пример:
-
-```text
-"Integrated Camera"
-"USB Camera"
-"Logitech BRIO"
-```
-
-## 4. Настроить
-
-Скопировать:
-
-```bat
-copy config.example.json config.json
-```
-
-Пример для сервера на том же Windows-компьютере:
-
-```json
-{
-  "device_id": "camera-win-001",
-  "device_name": "Windows Camera Emulator",
-  "server_http": "http://127.0.0.1:8000",
-  "server_rtp_host": "127.0.0.1",
-  "server_rtp_port": 5004,
-  "ptz_listen_port": 6000,
-  "camera_name": "Integrated Camera",
-  "ffmpeg": "ffmpeg.exe",
-  "width": 1280,
-  "height": 720,
-  "fps": 30,
-  "bitrate_kbps": 2000,
-  "gop": 15,
-  "preset": "ultrafast",
-  "telemetry_period_sec": 1.0
-}
-```
-
-`server_rtp_port` здесь только запасное значение. После регистрации Camera Hub сам назначает устройству порт, например `10000`.
-
-## 5. Запустить сервер
+## 3. Запустить сервер
 
 В отдельной консоли:
 
@@ -95,39 +62,56 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-После регистрации эмулятора сервер покажет, например:
+## 4. Запустить GUI эмулятора
+
+```bat
+cd radxa_zero3e\emulator_windows
+run_gui.bat
+```
+
+В GUI:
+
+1. Нажать `Найти камеры`.
+2. Выбрать нужную web-камеру.
+3. Проверить `HTTP сервера`, например `http://127.0.0.1:8000`.
+4. Проверить `RTP host`, например `127.0.0.1`.
+5. Указать уникальный `Device ID`, например `camera-win-001`.
+6. Нажать `Старт`.
+
+После регистрации сервер назначит отдельный RTP ingest port, например `10000`. GUI покажет его в поле состояния.
+
+## Несколько эмуляторов
+
+Можно открыть несколько копий программы, но каждой нужны собственные:
+
+- `device_id`;
+- `ptz_listen_port`.
+
+Например:
 
 ```text
-RTP ingest camera-win-001: UDP 0.0.0.0:10000
+camera-win-001 / PTZ 6000
+camera-win-002 / PTZ 6001
+camera-win-003 / PTZ 6002
 ```
 
-## 6. Запустить эмулятор
+Сервер самостоятельно назначит каждой камере свой RTP ingest port.
 
-Самый простой вариант:
+## Консольный режим
+
+Старый режим сохранён.
+
+Список DirectShow камер:
 
 ```bat
-run.bat
+python emulator.py --list-cameras
 ```
 
-или вручную:
+Запуск:
 
 ```bat
-py -3 -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+copy config.example.json config.json
 python emulator.py --config config.json
-```
-
-Ожидаемый вывод:
-
-```text
-Device ID : camera-win-001
-Camera    : Integrated Camera
-Server    : http://127.0.0.1:8000
-[SERVER] registered camera-win-001
-[SERVER] assigned RTP ingest UDP 10000
-RTP       : 127.0.0.1:10000
-[PTZ] listening UDP 0.0.0.0:6000
 ```
 
 ## Проверить на сервере
@@ -144,35 +128,6 @@ GET http://127.0.0.1:8000/api/devices
 GET http://127.0.0.1:8000/api/devices/camera-win-001/video-status
 ```
 
-При работающем видео должны увеличиваться:
+При работающем видео должны увеличиваться `video_packets` и `video_bytes`, а `video_online` должен быть `true`.
 
-- `video_packets`;
-- `video_bytes`;
-- `video_online` должен быть `true`.
-
-## Проверка PTZ
-
-Например POST:
-
-```text
-http://127.0.0.1:8000/api/devices/camera-win-001/ptz
-```
-
-JSON:
-
-```json
-{
-  "pan_cdeg": 2500,
-  "tilt_cdeg": -1000,
-  "speed_cdeg_s": 4000,
-  "request_idr": false
-}
-```
-
-В консоли Windows-эмулятора появится примерно:
-
-```text
-[PTZ] pan=25.00 tilt=-10.00 speed=40.00 deg/s
-```
-
-Это тот же протокол, который позже будет использовать реальная Radxa ZERO 3E.
+Это тот же протокол регистрации, телеметрии, RTP и PTZ, который позже будет использовать реальная Radxa ZERO 3E.
