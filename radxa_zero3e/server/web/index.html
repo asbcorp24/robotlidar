@@ -49,8 +49,39 @@
               <div class="panel-title">Управление камерой</div>
               <div class="ptz-pad"><button data-move="up">▲</button><button data-move="left">◀</button><button id="centerBtn" class="center">●</button><button data-move="right">▶</button><button data-move="down">▼</button></div>
               <div class="value-grid"><label>Pan <strong id="panValue">0.0°</strong></label><input id="panRange" type="range" min="-90" max="90" step="0.5" value="0"><label>Tilt <strong id="tiltValue">0.0°</strong></label><input id="tiltRange" type="range" min="-45" max="45" step="0.5" value="0"><label>Скорость <strong id="speedValue">30°/с</strong></label><input id="speedRange" type="range" min="5" max="90" step="5" value="30"></div>
-              <div class="hint">Кнопки, стрелки клавиатуры или WASD</div>
+              <div class="hint">Камера: стрелки клавиатуры. В Cardboard — гироскоп.</div>
             </section>
+
+            <section class="panel control-panel tractor-panel">
+              <div class="panel-title">Движение трактора</div>
+              <div class="drive-pad">
+                <button class="drive-btn" data-drive="forward">▲</button>
+                <button class="drive-btn" data-drive="left">◀</button>
+                <button id="driveStopBtn" class="drive-stop">STOP</button>
+                <button class="drive-btn" data-drive="right">▶</button>
+                <button class="drive-btn" data-drive="backward">▼</button>
+              </div>
+              <div class="value-grid"><label>Скорость <strong id="driveSpeedValue">50%</strong></label><input id="driveSpeedRange" type="range" min="10" max="100" step="5" value="50"></div>
+              <div id="driveState" class="control-state">Гусеницы: STOP</div>
+              <div class="hint">W/A/S/D — движение, Space — аварийный STOP. Движение идёт только пока кнопка удерживается.</div>
+            </section>
+
+            <section class="panel control-panel brush-panel">
+              <div class="panel-title">Щётка</div>
+              <div class="brush-spin-row">
+                <button class="brush-spin-btn" data-brush-spin="reverse">↶ Вращение</button>
+                <button id="brushSpinStopBtn" class="drive-stop">STOP</button>
+                <button class="brush-spin-btn" data-brush-spin="forward">Вращение ↷</button>
+              </div>
+              <div class="value-grid"><label>Скорость щётки <strong id="brushSpeedValue">60%</strong></label><input id="brushSpeedRange" type="range" min="10" max="100" step="5" value="60"></div>
+              <div class="brush-lift-row">
+                <button class="brush-lift-btn" data-brush-lift="up">▲ Поднять</button>
+                <button class="brush-lift-btn" data-brush-lift="down">▼ Опустить</button>
+              </div>
+              <div id="brushState" class="control-state">Щётка: остановлена · подъём: STOP</div>
+              <div class="hint">Подъём/опускание работает только пока кнопка удерживается. Вращение щётки остаётся включённым до STOP или смены направления.</div>
+            </section>
+
             <section class="panel telemetry-panel"><div class="panel-title">Телеметрия</div><div class="metric"><span>FPS</span><strong id="fpsMetric">—</strong></div><div class="metric"><span>Битрейт</span><strong id="bitrateMetric">—</strong></div><div class="metric"><span>Ethernet</span><strong id="ethernetMetric">—</strong></div><div class="metric"><span>Uptime</span><strong id="uptimeMetric">—</strong></div></section>
           </aside>
         </section>
