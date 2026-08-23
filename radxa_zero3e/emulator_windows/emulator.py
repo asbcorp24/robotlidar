@@ -17,6 +17,8 @@ import requests
 PTZ_MAGIC = 0x5354
 PTZ_VERSION = 1
 PTZ_TYPE = 1
+DRIVE_TYPE = 2
+BRUSH_TYPE = 3
 FLAG_CENTER = 1 << 0
 FLAG_REQUEST_IDR = 1 << 1
 
@@ -54,6 +56,10 @@ class RadxaWindowsEmulator:
         self.start_time = time.monotonic()
         self.pan_cdeg = 0
         self.tilt_cdeg = 0
+        self.track_left = 0
+        self.track_right = 0
+        self.brush_spin = 0
+        self.brush_lift = 0
         self.video_restarts = 0
         self.session = requests.Session()
         self.video_ingest_port = cfg.server_rtp_port
@@ -168,7 +174,7 @@ class RadxaWindowsEmulator:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("0.0.0.0", self.cfg.ptz_listen_port))
         sock.settimeout(0.5)
-        print(f"[PTZ] listening UDP 0.0.0.0:{self.cfg.ptz_listen_port}")
+        print(f"[CONTROL] listening UDP 0.0.0.0:{self.cfg.ptz_listen_port}")
 
         while not self.stop_event.is_set():
             try:
@@ -181,26 +187,42 @@ class RadxaWindowsEmulator:
             if len(data) < 16:
                 continue
             try:
-                magic, version, ptype, seq, pan, tilt, speed, flags = struct.unpack("!HBBIhhHH", data[:16])
+                magic, version, ptype, seq, value1, value2, extra1, extra2 = struct.unpack("!HBBIhhHH", data[:16])
             except struct.error:
                 continue
-            if magic != PTZ_MAGIC or version != PTZ_VERSION or ptype != PTZ_TYPE:
+            if magic != PTZ_MAGIC or version != PTZ_VERSION:
                 continue
 
-            if flags & FLAG_CENTER:
-                self.pan_cdeg = 0
-                self.tilt_cdeg = 0
-            else:
-                self.pan_cdeg = max(-9000, min(9000, pan))
-                self.tilt_cdeg = max(-4500, min(4500, tilt))
-            if flags & FLAG_REQUEST_IDR:
-                self.request_idr()
-
-            print(
-                f"[PTZ] from {peer[0]} seq={seq} "
-                f"pan={self.pan_cdeg / 100:.2f} tilt={self.tilt_cdeg / 100:.2f} "
-                f"speed={speed / 100:.2f} deg/s flags=0x{flags:04x}"
-            )
+            if ptype == PTZ_TYPE:
+                pan, tilt, speed, flags = value1, value2, extra1, extra2
+                if flags & FLAG_CENTER:
+                    self.pan_cdeg = 0
+                    self.tilt_cdeg = 0
+                else:
+                    self.pan_cdeg = max(-9000, min(9000, pan))
+                    self.tilt_cdeg = max(-4500, min(4500, tilt))
+                if flags & FLAG_REQUEST_IDR:
+                    self.request_idr()
+                print(
+                    f"[PTZ] from {peer[0]} seq={seq} "
+                    f"pan={self.pan_cdeg / 100:.2f} tilt={self.tilt_cdeg / 100:.2f} "
+                    f"speed={speed / 100:.2f} deg/s flags=0x{flags:04x}"
+                )
+            elif ptype == DRIVE_TYPE:
+                self.track_left = max(-1000, min(1000, value1))
+                self.track_right = max(-1000, min(1000, value2))
+                print(
+                    f"[DRIVE] from {peer[0]} seq={seq} "
+                    f"left={self.track_left / 10:.1f}% right={self.track_right / 10:.1f}%"
+                )
+            elif ptype == BRUSH_TYPE:
+                self.brush_spin = max(-1000, min(1000, value1))
+                self.brush_lift = max(-1000, min(1000, value2))
+                lift_name = "UP" if self.brush_lift > 0 else "DOWN" if self.brush_lift < 0 else "STOP"
+                print(
+                    f"[BRUSH] from {peer[0]} seq={seq} "
+                    f"spin={self.brush_spin / 10:.1f}% lift={lift_name} ({self.brush_lift / 10:.1f}%)"
+                )
 
         sock.close()
 
@@ -227,7 +249,7 @@ class RadxaWindowsEmulator:
         self.start_video()
 
         threads = [
-            threading.Thread(target=self.ptz_loop, name="ptz", daemon=True),
+            threading.Thread(target=self.ptz_loop, name="control", daemon=True),
             threading.Thread(target=self.telemetry_loop, name="telemetry", daemon=True),
         ]
         for t in threads:
