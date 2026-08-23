@@ -1,0 +1,17 @@
+{
+  "device_id": "camera-win-001",
+  "device_name": "Windows Camera Emulator",
+  "server_http": "http://127.0.0.1:8000",
+  "server_rtp_host": "127.0.0.1",
+  "server_rtp_port": 5004,
+  "ptz_listen_port": 6000,
+  "camera_name": "Integrated Camera",
+  "ffmpeg": "ffmpeg.exe",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "bitrate_kbps": 2000,
+  "gop": 15,
+  "preset": "ultrafast",
+  "telemetry_period_sec": 1.0
+}
