@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="RobotLiDAR Camera Hub", version="0.1.0")
+app = FastAPI(title="RobotLiDAR Camera Hub", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,6 +21,7 @@ app.add_middleware(
 )
 
 OFFLINE_AFTER_SEC = 5.0
+VIDEO_PORT_BASE = 10000
 PTZ_MAGIC = 0x5354
 PTZ_VERSION = 1
 PTZ_TYPE = 1
@@ -33,26 +34,37 @@ class Device:
     device_id: str
     name: str
     ip: str
-    rtp_port: int = 5004
+    video_ingest_port: int
     ptz_port: int = 6000
     last_seen: float = field(default_factory=time.time)
     telemetry: Dict[str, Any] = field(default_factory=dict)
+    video_packets: int = 0
+    video_bytes: int = 0
+    video_last_seen: float = 0.0
 
     @property
     def online(self) -> bool:
         return (time.time() - self.last_seen) <= OFFLINE_AFTER_SEC
 
+    @property
+    def video_online(self) -> bool:
+        return self.video_last_seen > 0 and (time.time() - self.video_last_seen) <= 3.0
+
     def json(self) -> Dict[str, Any]:
         data = asdict(self)
         data["online"] = self.online
+        data["video_online"] = self.video_online
         data["last_seen_age_ms"] = int((time.time() - self.last_seen) * 1000)
+        data["video_last_seen_age_ms"] = (
+            int((time.time() - self.video_last_seen) * 1000) if self.video_last_seen else None
+        )
         return data
 
 
 class RegisterRequest(BaseModel):
     name: str = "Radxa ZERO 3E"
     ip: str
-    rtp_port: int = Field(5004, ge=1, le=65535)
+    rtp_port: int = Field(5004, ge=1, le=65535)  # compatibility field; hub assigns ingest port
     ptz_port: int = Field(6000, ge=1, le=65535)
 
 
@@ -77,6 +89,40 @@ devices: Dict[str, Device] = {}
 ws_clients: set[WebSocket] = set()
 sequence = 0
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+rtp_transports: Dict[str, asyncio.DatagramTransport] = {}
+
+
+class RtpIngestProtocol(asyncio.DatagramProtocol):
+    def __init__(self, device_id: str):
+        self.device_id = device_id
+
+    def datagram_received(self, data: bytes, addr):
+        dev = devices.get(self.device_id)
+        if dev is None:
+            return
+        dev.video_packets += 1
+        dev.video_bytes += len(data)
+        dev.video_last_seen = time.time()
+
+
+def allocate_video_port() -> int:
+    used = {d.video_ingest_port for d in devices.values()}
+    port = VIDEO_PORT_BASE
+    while port in used:
+        port += 1
+    return port
+
+
+async def ensure_rtp_listener(dev: Device) -> None:
+    if dev.device_id in rtp_transports:
+        return
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: RtpIngestProtocol(dev.device_id),
+        local_addr=("0.0.0.0", dev.video_ingest_port),
+    )
+    rtp_transports[dev.device_id] = transport
+    print(f"RTP ingest {dev.device_id}: UDP 0.0.0.0:{dev.video_ingest_port}")
 
 
 def build_ptz_packet(*, pan: int = 0, tilt: int = 0, speed: int = 6000, flags: int = 0) -> bytes:
@@ -121,6 +167,19 @@ async def list_devices():
     return {"devices": [d.json() for d in devices.values()]}
 
 
+@app.get("/api/devices/{device_id}/video-status")
+async def video_status(device_id: str):
+    dev = get_device(device_id)
+    return {
+        "device_id": dev.device_id,
+        "video_ingest_port": dev.video_ingest_port,
+        "video_online": dev.video_online,
+        "video_packets": dev.video_packets,
+        "video_bytes": dev.video_bytes,
+        "video_last_seen": dev.video_last_seen,
+    }
+
+
 @app.post("/api/devices/{device_id}/register")
 async def register_device(device_id: str, req: RegisterRequest):
     dev = devices.get(device_id)
@@ -129,18 +188,23 @@ async def register_device(device_id: str, req: RegisterRequest):
             device_id=device_id,
             name=req.name,
             ip=req.ip,
-            rtp_port=req.rtp_port,
+            video_ingest_port=allocate_video_port(),
             ptz_port=req.ptz_port,
         )
         devices[device_id] = dev
     else:
         dev.name = req.name
         dev.ip = req.ip
-        dev.rtp_port = req.rtp_port
         dev.ptz_port = req.ptz_port
         dev.last_seen = time.time()
+
+    await ensure_rtp_listener(dev)
     await broadcast_devices()
-    return {"ok": True, "device": dev.json()}
+    return {
+        "ok": True,
+        "device": dev.json(),
+        "video_ingest_port": dev.video_ingest_port,
+    }
 
 
 @app.post("/api/devices/{device_id}/telemetry")
@@ -200,3 +264,10 @@ async def startup_task():
             await asyncio.sleep(1.0)
 
     asyncio.create_task(ticker())
+
+
+@app.on_event("shutdown")
+async def shutdown_task():
+    for transport in rtp_transports.values():
+        transport.close()
+    rtp_transports.clear()
