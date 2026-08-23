@@ -39,9 +39,8 @@ The 1280x480 image is kept as one SBS stereo frame, so synchronization performed
 
 ## Network defaults
 
-- video: server UDP 5004, RTP/H.264
+- video: server-assigned UDP port, RTP/H.264
 - PTZ commands: ZERO 3E UDP 6000
-- telemetry: server UDP 6001
 - Ethernet interface default: `eth0`
 
 ZERO 3E has onboard Gigabit Ethernet. No Wi-Fi is required by this project.
@@ -57,10 +56,11 @@ ZERO 3E has onboard Gigabit Ethernet. No Wi-Fi is required by this project.
 - max bitrate: 3 Mbit/s
 - GOP: 15
 - B frames: 0
-- profile: Main
+- profile: Baseline
+- SPS/PPS repeated on keyframes via `dump_extra`
 - RTP packet size: 1200 bytes
 
-The video process is supervised by `radxa_stereo_node`; if FFmpeg exits it is restarted automatically.
+The profile/GOP are intentionally browser-friendly because the central server performs H.264 RTP -> WebRTC passthrough without transcoding.
 
 ## Initial OS
 
@@ -98,7 +98,7 @@ ffmpeg -f v4l2 -input_format mjpeg -video_size 1280x480 -framerate 30 \
 ## Install
 
 ```bash
-cd firmware/radxa_zero3e_stereo
+cd radxa_zero3e/device
 chmod +x install.sh
 ./install.sh
 ```
@@ -109,9 +109,10 @@ Verify:
 
 ```bash
 ffmpeg -hide_banner -encoders | grep rkmpp
+ffmpeg -hide_banner -h encoder=h264_rkmpp
 ```
 
-You should see `h264_rkmpp`.
+You should see `h264_rkmpp`; the encoder supports the H.264 baseline profile on compatible MPP hardware/builds.
 
 ## PWM / servo outputs
 
@@ -142,7 +143,7 @@ The exact `pwmchipN` numbering depends on the enabled overlays/kernel, so the ap
 
 ## Run manually
 
-Example only; replace the server IP and PWM chip paths with the values on the board:
+Example only; replace the server IP, assigned RTP port and PWM chip paths with the real values:
 
 ```bash
 sudo /usr/local/bin/radxa_stereo_node \
@@ -150,19 +151,13 @@ sudo /usr/local/bin/radxa_stereo_node \
   --eth-if eth0 \
   --camera /dev/video0 \
   --ffmpeg /usr/bin/ffmpeg \
-  --video-port 5004 \
+  --video-port 10000 \
   --control-port 6000 \
   --telemetry-port 6001 \
   --width 1280 --height 480 --fps 30 \
   --bitrate 2000 --maxrate 3000 --gop 15 \
   --pan-chip /sys/class/pwm/pwmchip0 --pan-channel 0 \
   --tilt-chip /sys/class/pwm/pwmchip1 --tilt-channel 0
-```
-
-If the board has more than one route/interface, add the Ethernet address explicitly:
-
-```text
---bind-ip 192.168.1.50
 ```
 
 ## PTZ ranges
@@ -180,13 +175,7 @@ Servo limits must be calibrated for the actual mechanical mount before allowing 
 
 ## systemd
 
-Edit `radxa-stereo.service` and set:
-
-- server IP
-- camera node
-- PWM chip paths
-
-Then:
+Edit `radxa-stereo.service` and set server/camera/PWM parameters, then:
 
 ```bash
 sudo cp radxa-stereo.service /etc/systemd/system/
@@ -201,10 +190,10 @@ journalctl -u radxa-stereo -f
 1. Boot ZERO 3E and verify Ethernet.
 2. Verify HBVCAM appears as UVC/V4L2.
 3. Confirm 1280x480@30 MJPEG mode.
-4. Confirm `h264_rkmpp` encoder.
-5. Test H.264 RTP to the server without servos.
-6. Enable PWM overlays.
-7. Find the actual `pwmchipN` paths.
+4. Confirm `h264_rkmpp` encoder and baseline profile support.
+5. Start Camera Hub + Pion relay and register the device to obtain its RTP port.
+6. Test H.264 RTP passthrough to the browser without servos.
+7. Enable PWM overlays and identify the actual `pwmchipN` paths.
 8. Connect servos using an external 5-6 V supply with common GND.
 9. Test CENTER and limited PAN/TILT travel.
 10. Enable the systemd service.
