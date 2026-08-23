@@ -21,16 +21,37 @@ function updateTelemetry(d){$('fpsMetric').textContent=d.fps||'—';$('bitrateMe
 function closePeer(){if(currentPeer){try{currentPeer.close();}catch{}currentPeer=null;}const v=$('video');v.srcObject=null;}
 function waitIce(pc){return new Promise(resolve=>{if(pc.iceGatheringState==='complete')return resolve();const done=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',done);resolve();}};pc.addEventListener('icegatheringstatechange',done);setTimeout(resolve,2500);});}
 
+function preferH264(transceiver){
+  try{
+    if(!RTCRtpReceiver.getCapabilities||!transceiver.setCodecPreferences)return true;
+    const caps=RTCRtpReceiver.getCapabilities('video');
+    const h264=(caps?.codecs||[]).filter(c=>String(c.mimeType).toLowerCase()==='video/h264');
+    if(!h264.length)return false;
+    h264.sort((a,b)=>{
+      const ap=String(a.sdpFmtpLine||'').includes('packetization-mode=1')?0:1;
+      const bp=String(b.sdpFmtpLine||'').includes('packetization-mode=1')?0:1;
+      return ap-bp;
+    });
+    transceiver.setCodecPreferences(h264);
+    return true;
+  }catch(e){console.warn('H264 codec preference',e);return true;}
+}
+
 async function connectStream(d){
   const video=$('video');
   closePeer();
   $('videoPlaceholder').style.display='flex';
-  $('videoPlaceholder').querySelector('div:nth-child(2)').textContent=d.online?(d.video_online?'Подключение WebRTC...':'Видеопоток пока не поступает'):'Трактор offline';
+  $('videoPlaceholder').querySelector('div:nth-child(2)').textContent=d.online?(d.video_online?'Подключение H.264 WebRTC...':'Видеопоток пока не поступает'):'Трактор offline';
   if(!d.online||!d.video_online)return;
 
   const pc=new RTCPeerConnection();
   currentPeer=pc;
-  pc.addTransceiver('video',{direction:'recvonly'});
+  const transceiver=pc.addTransceiver('video',{direction:'recvonly'});
+  if(!preferH264(transceiver)){
+    closePeer();
+    $('videoPlaceholder').querySelector('div:nth-child(2)').textContent='Браузер не поддерживает H.264 WebRTC';
+    return;
+  }
   pc.ontrack=e=>{
     video.srcObject=e.streams[0]||new MediaStream([e.track]);
     video.play().catch(()=>{});
