@@ -7,28 +7,26 @@
 ```text
 Radxa / Windows emulator
         |
-        | готовый H.264 / RTP / UDP
+        | H.264/RTP + telemetry + control
         v
 +--------------------------------------+
-| robotlidar-server (один Go-процесс)  |
+| robotlidar-server                    |
 |                                      |
-|  HTTP + REST API                     |
-|  users / login / sessions            |
-|  SQLite                              |
-|  user <-> tractor device_id          |
-|  telemetry                           |
-|  PTZ / CENTER / IDR                  |
-|  RTP ingest 10000+                   |
-|  Pion WebRTC H.264 passthrough       |
-|  встроенный web-интерфейс            |
+| HTTP/REST + users/sessions + SQLite  |
+| user <-> tractor device_id           |
+| RTP ingest + Pion WebRTC passthrough |
+| PTZ camera                            |
+| tractor drive                        |
+| brush spin + lift                    |
+| embedded web                         |
 +------------------+-------------------+
                    |
-                   | WebRTC / DTLS / SRTP
+                   | WebRTC
                    v
                 Browser
 ```
 
-H.264 на сервере **не декодируется и не перекодируется**. Готовые RTP-пакеты от Radxa передаются в `Pion TrackLocalStaticRTP`, а браузер декодирует H.264 штатным WebRTC-декодером.
+H.264 на сервере не декодируется и не перекодируется.
 
 ## Структура
 
@@ -38,49 +36,35 @@ radxa_zero3e/server/
 ├── auth.go
 ├── devices.go
 ├── media.go
+├── control.go
 ├── util.go
 ├── go.mod
 ├── web/
 └── camera_hub.db
 ```
 
-Python/FastAPI и отдельный `webrtc_relay` больше не нужны.
-
-## Требования
-
-- Go 1.24+
-- открытый HTTP/HTTPS порт сервера;
-- UDP `10000+` от Radxa к серверу для RTP;
-- доступные WebRTC UDP-порты сервера для браузеров.
-
-Используются Pion WebRTC v4 и pure-Go SQLite `modernc.org/sqlite`.
-
 ## Запуск
+
+Требуется Go 1.24+.
 
 Windows:
 
 ```bat
 cd radxa_zero3e\server
+run_server.bat
+```
+
+или:
+
+```bat
 go mod tidy
 go run .
 ```
-
-или `run_server.bat`.
 
 Сборка EXE:
 
 ```bat
 go build -trimpath -ldflags="-s -w" -o robotlidar-server.exe .
-robotlidar-server.exe
-```
-
-Linux:
-
-```bash
-cd radxa_zero3e/server
-go mod tidy
-go build -trimpath -ldflags='-s -w' -o robotlidar-server .
-./robotlidar-server
 ```
 
 Переменные окружения:
@@ -91,76 +75,92 @@ DB_PATH=camera_hub.db
 STUN_URL=stun:stun.example.com:3478
 ```
 
-## Device ID
+## Device ID и пользователи
 
-У каждого трактора постоянный уникальный ID, например `TRACTOR-0001`. При регистрации сервер назначает ему RTP ingest-порт `10000+`.
-
-## Пользователи
-
-Пользователь входит по логину/паролю, в `Настройки` добавляет ID своего трактора и после этого видит только свои устройства. WebRTC и PTZ проверяют принадлежность выбранного ID текущему пользователю.
-
-Пароли сохраняются как `PBKDF2-SHA256`; формат базы совместим с предыдущей реализацией.
+У каждого трактора постоянный уникальный ID, например `TRACTOR-0001`. Пользователь входит в web, добавляет этот ID в `Настройки` и после этого может видеть видео и управлять только своими тракторами.
 
 ## Видео
 
 ```text
 HBVCAM SBS
-  -> Radxa h264_rkmpp Baseline
-  -> B-frames=0
-  -> GOP=15
-  -> SPS/PPS на keyframe
-  -> RTP/UDP
-  -> Go/Pion passthrough
-  -> WebRTC/SRTP
-  -> Browser
+ -> Radxa h264_rkmpp Baseline
+ -> RTP/UDP
+ -> Go/Pion TrackLocalStaticRTP
+ -> WebRTC/SRTP
+ -> Browser
 ```
+
+## Управление трактором
+
+В web добавлена отдельная панель движения:
+
+- вперёд;
+- назад;
+- разворот/поворот влево;
+- разворот/поворот вправо;
+- STOP;
+- скорость 10–100%;
+- W/A/S/D;
+- Space = аварийный STOP.
+
+Сервер передаёт не конкретный PWM, а нормированные значения левой/правой гусеницы `-1000..+1000`. Это позволяет позже на Radxa/ESP32 независимо настроить драйверы моторов.
+
+## Щётка
+
+В web есть отдельная панель навесного оборудования:
+
+- вращение щётки вперёд;
+- реверс вращения;
+- STOP вращения;
+- регулировка скорости;
+- поднять щётку;
+- опустить щётку.
+
+Вращение щётки — постоянная команда до STOP/смены направления. Подъём и опускание — hold-to-run: механизм движется только пока оператор удерживает кнопку, при отпускании отправляется `lift=0`.
+
+## Управляющий UDP протокол
+
+Сервер отправляет все команды на control/PTZ UDP port устройства фиксированными 16-байтными пакетами.
+
+```text
+type 1 = camera PTZ
+type 2 = tractor drive: left/right
+type 3 = brush: spin/lift
+```
+
+Drive и brush используют диапазон `-1000..+1000`.
+
+Для будущей Radxa→ESP32 обязательно используется локальный watchdog: отсутствие свежей команды движения или подъёма 300–500 мс должно приводить к STOP. Это защищает от зависшего браузера, потери сети или падения сервера.
 
 ## Cardboard / VR
 
-В веб-интерфейсе есть кнопка `Cardboard` для выбранного онлайн-трактора.
+Кнопка `Cardboard` включает fullscreen SBS режим. Левая половина стереокадра идёт левому глазу, правая — правому. `DeviceOrientation` телефона преобразуется в PAN/TILT камеры примерно 10 раз/с.
 
-После нажатия:
+Для мобильного гироскопа в реальной эксплуатации нужен HTTPS.
 
-1. браузер запрашивает доступ к датчикам ориентации телефона;
-2. включается полноэкранный landscape VR-режим;
-3. SBS-кадр делится: левая половина идёт левому глазу, правая — правому;
-4. исходное направление головы запоминается как центр;
-5. относительное вращение телефона преобразуется в PAN/TILT выбранного трактора;
-6. PTZ-команды ограничиваются диапазонами PAN `-90..+90` и TILT `-45..+45` и отправляются примерно 10 раз/с;
-7. кнопка `Центр` в VR повторно фиксирует текущее положение головы как нулевое, не делая механический CENTER;
-8. `Выход` возвращает обычный интерфейс.
-
-Важно: `DeviceOrientation` на мобильных браузерах обычно доступен только в secure context. Для локального теста `localhost` допускается, а при открытии сервера по обычному `http://IP-адрес` датчик на части телефонов может быть заблокирован. Для реального использования нужен HTTPS.
-
-На iPhone Safari разрешение на датчики запрашивается только после пользовательского нажатия — кнопка `Cardboard` выполняет этот запрос корректно.
-
-## API
-
-Пользовательские:
+## Основные API
 
 ```text
-POST   /api/auth/register
-POST   /api/auth/login
-GET    /api/auth/me
-POST   /api/auth/logout
+POST /api/auth/register
+POST /api/auth/login
+GET  /api/auth/me
+POST /api/auth/logout
+
 GET    /api/settings/devices
 POST   /api/settings/devices
 DELETE /api/settings/devices/{device_id}
-GET    /api/devices
-GET    /api/devices/{device_id}/video-status
-POST   /api/devices/{device_id}/webrtc
-POST   /api/devices/{device_id}/ptz
-POST   /api/devices/{device_id}/center
-POST   /api/devices/{device_id}/request-idr
+
+GET  /api/devices
+POST /api/devices/{id}/webrtc
+POST /api/devices/{id}/ptz
+POST /api/devices/{id}/center
+POST /api/devices/{id}/request-idr
+POST /api/devices/{id}/drive
+POST /api/devices/{id}/drive-stop
+POST /api/devices/{id}/brush
+
+POST /api/devices/{id}/register
+POST /api/devices/{id}/telemetry
 ```
 
-Для Radxa/эмулятора:
-
-```text
-POST /api/devices/{device_id}/register
-POST /api/devices/{device_id}/telemetry
-```
-
-## Публичный сервер
-
-Для эксплуатации через Интернет нужны HTTPS, STUN/TURN (coturn), firewall для RTP ingest и ICE/WebRTC UDP, а также отдельный секрет устройства в дополнение к `device_id`.
+Подробный формат находится в `web/api-contract.md`.
