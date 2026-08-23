@@ -3,30 +3,38 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
+import os
 import secrets
 import socket
 import sqlite3
 import struct
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from video_relay import relay_registry
-
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 DB_PATH = BASE_DIR / "camera_hub.db"
+RELAY_URL = os.getenv("WEBRTC_RELAY_URL", "http://127.0.0.1:8090").rstrip("/")
 
-app = FastAPI(title="RobotLiDAR Camera Hub", version="0.4.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="RobotLiDAR Camera Hub", version="0.5.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 OFFLINE_AFTER_SEC = 5.0
 VIDEO_PORT_BASE = 10000
@@ -46,27 +54,21 @@ class Device:
     ptz_port: int = 6000
     last_seen: float = field(default_factory=time.time)
     telemetry: Dict[str, Any] = field(default_factory=dict)
-    video_packets: int = 0
-    video_bytes: int = 0
-    video_last_seen: float = 0.0
 
     @property
     def online(self) -> bool:
         return time.time() - self.last_seen <= OFFLINE_AFTER_SEC
 
-    @property
-    def video_online(self) -> bool:
-        return self.video_last_seen > 0 and time.time() - self.video_last_seen <= 3.0
-
-    def public_json(self, alias: str | None = None) -> Dict[str, Any]:
+    def public_json(self, alias: str | None = None, relay_status: dict | None = None) -> Dict[str, Any]:
         t = self.telemetry
+        rs = relay_status or {}
         return {
             "id": self.device_id,
             "device_id": self.device_id,
             "name": alias or self.name or self.device_id,
             "online": self.online,
-            "video_online": self.video_online,
-            "streamType": "webrtc",
+            "video_online": bool(rs.get("video_online", False)),
+            "streamType": "webrtc-h264-passthrough",
             "streamUrl": f"/api/devices/{self.device_id}/webrtc",
             "pan": (t.get("pan_cdeg") or 0) / 100.0,
             "tilt": (t.get("tilt_cdeg") or 0) / 100.0,
@@ -74,8 +76,9 @@ class Device:
             "bitrateKbps": int((t.get("bitrate_bps") or 0) / 1000),
             "ethernet": f"{t.get('link_mbps')} Mbit/s" if t.get("link_mbps") else "—",
             "uptimeSec": int((t.get("uptime_ms") or 0) / 1000),
-            "video_packets": self.video_packets,
-            "video_bytes": self.video_bytes,
+            "video_packets": int(rs.get("packets", 0)),
+            "video_bytes": int(rs.get("bytes", 0)),
+            "viewers": int(rs.get("viewers", 0)),
         }
 
 
@@ -122,8 +125,6 @@ devices: Dict[str, Device] = {}
 sessions: Dict[str, int] = {}
 sequence = 0
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-rtp_transports: Dict[str, asyncio.DatagramTransport] = {}
-peer_connections: set[RTCPeerConnection] = set()
 
 
 def db() -> sqlite3.Connection:
@@ -135,6 +136,7 @@ def db() -> sqlite3.Connection:
 def init_db() -> None:
     with db() as conn:
         conn.executescript("""
+        PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -184,7 +186,10 @@ def current_user(authorization: str | None = Header(default=None)) -> sqlite3.Ro
 
 def owned_device(user_id: int, device_id: str) -> tuple[Device, str | None]:
     with db() as conn:
-        row = conn.execute("SELECT alias FROM user_devices WHERE user_id=? AND device_id=?", (user_id, device_id)).fetchone()
+        row = conn.execute(
+            "SELECT alias FROM user_devices WHERE user_id=? AND device_id=?",
+            (user_id, device_id),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=403, detail="This tractor is not linked to your account")
     dev = devices.get(device_id)
@@ -193,35 +198,46 @@ def owned_device(user_id: int, device_id: str) -> tuple[Device, str | None]:
     return dev, row["alias"]
 
 
-class RtpIngestProtocol(asyncio.DatagramProtocol):
-    def __init__(self, device_id: str):
-        self.device_id = device_id
+def relay_call(method: str, path: str, payload: dict | None = None, timeout: float = 2.0) -> dict:
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(RELAY_URL + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode("utf-8")) if raw else {}
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("error", str(exc))
+        except Exception:
+            detail = str(exc)
+        raise RuntimeError(detail) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"WebRTC relay unavailable: {exc}") from exc
 
-    def datagram_received(self, data: bytes, addr):
-        dev = devices.get(self.device_id)
-        if not dev:
-            return
-        dev.video_packets += 1
-        dev.video_bytes += len(data)
-        dev.video_last_seen = time.time()
-        relay_registry.feed(self.device_id, data)
+
+def relay_all_status() -> dict[str, dict]:
+    try:
+        data = relay_call("GET", "/api/streams", timeout=0.8)
+        return data.get("streams", {})
+    except RuntimeError:
+        return {}
 
 
 def allocate_video_port() -> int:
     used = {d.video_ingest_port for d in devices.values()}
+    for status in relay_all_status().values():
+        try:
+            used.add(int(status.get("rtp_port", 0)))
+        except (TypeError, ValueError):
+            pass
     port = VIDEO_PORT_BASE
     while port in used:
         port += 1
     return port
-
-
-async def ensure_rtp_listener(dev: Device) -> None:
-    if dev.device_id in rtp_transports:
-        return
-    loop = asyncio.get_running_loop()
-    transport, _ = await loop.create_datagram_endpoint(lambda: RtpIngestProtocol(dev.device_id), local_addr=("0.0.0.0", dev.video_ingest_port))
-    rtp_transports[dev.device_id] = transport
-    print(f"RTP ingest {dev.device_id}: UDP 0.0.0.0:{dev.video_ingest_port}")
 
 
 def build_ptz_packet(pan=0, tilt=0, speed=6000, flags=0) -> bytes:
@@ -234,7 +250,10 @@ def build_ptz_packet(pan=0, tilt=0, speed=6000, flags=0) -> bytes:
 def auth_register(req: AuthRequest):
     with db() as conn:
         try:
-            cur = conn.execute("INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)", (req.username.strip(), hash_password(req.password), int(time.time())))
+            cur = conn.execute(
+                "INSERT INTO users(username,password_hash,created_at) VALUES(?,?,?)",
+                (req.username.strip(), hash_password(req.password), int(time.time())),
+            )
             user_id = cur.lastrowid
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="Username already exists")
@@ -246,7 +265,10 @@ def auth_register(req: AuthRequest):
 @app.post("/api/auth/login")
 def auth_login(req: AuthRequest):
     with db() as conn:
-        row = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (req.username.strip(),)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE username=? COLLATE NOCASE",
+            (req.username.strip(),),
+        ).fetchone()
     if not row or not verify_password(req.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid login or password")
     token = secrets.token_urlsafe(32)
@@ -269,21 +291,54 @@ def auth_logout(authorization: str | None = Header(default=None)):
 @app.get("/api/devices")
 def list_devices(user=Depends(current_user)):
     with db() as conn:
-        rows = conn.execute("SELECT device_id,alias FROM user_devices WHERE user_id=? ORDER BY created_at", (user["id"],)).fetchall()
+        rows = conn.execute(
+            "SELECT device_id,alias FROM user_devices WHERE user_id=? ORDER BY created_at",
+            (user["id"],),
+        ).fetchall()
+    relay_status = relay_all_status()
     result = []
     for row in rows:
         dev = devices.get(row["device_id"])
         if dev:
-            result.append(dev.public_json(row["alias"]))
+            result.append(dev.public_json(row["alias"], relay_status.get(dev.device_id)))
         else:
-            result.append({"id": row["device_id"], "device_id": row["device_id"], "name": row["alias"] or row["device_id"], "online": False, "video_online": False, "streamType": "webrtc", "streamUrl": f"/api/devices/{row['device_id']}/webrtc", "pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0})
-    return {"devices": result}
+            rs = relay_status.get(row["device_id"], {})
+            result.append({
+                "id": row["device_id"],
+                "device_id": row["device_id"],
+                "name": row["alias"] or row["device_id"],
+                "online": False,
+                "video_online": bool(rs.get("video_online", False)),
+                "streamType": "webrtc-h264-passthrough",
+                "streamUrl": f"/api/devices/{row['device_id']}/webrtc",
+                "pan": 0,
+                "tilt": 0,
+                "fps": 0,
+                "bitrateKbps": 0,
+                "ethernet": "—",
+                "uptimeSec": 0,
+                "video_packets": int(rs.get("packets", 0)),
+                "video_bytes": int(rs.get("bytes", 0)),
+                "viewers": int(rs.get("viewers", 0)),
+            })
+    return {"devices": result, "relay_online": bool(relay_status) or _relay_health()}
+
+
+def _relay_health() -> bool:
+    try:
+        relay_call("GET", "/health", timeout=0.4)
+        return True
+    except RuntimeError:
+        return False
 
 
 @app.get("/api/settings/devices")
 def settings_devices(user=Depends(current_user)):
     with db() as conn:
-        rows = conn.execute("SELECT device_id,alias,created_at FROM user_devices WHERE user_id=? ORDER BY created_at", (user["id"],)).fetchall()
+        rows = conn.execute(
+            "SELECT device_id,alias,created_at FROM user_devices WHERE user_id=? ORDER BY created_at",
+            (user["id"],),
+        ).fetchall()
     return {"devices": [dict(r) for r in rows]}
 
 
@@ -294,7 +349,11 @@ def attach_device(req: AttachDeviceRequest, user=Depends(current_user)):
         owner = conn.execute("SELECT user_id FROM user_devices WHERE device_id=?", (device_id,)).fetchone()
         if owner and owner["user_id"] != user["id"]:
             raise HTTPException(status_code=409, detail="This tractor ID is already linked to another account")
-        conn.execute("INSERT INTO user_devices(user_id,device_id,alias,created_at) VALUES(?,?,?,?) ON CONFLICT(user_id,device_id) DO UPDATE SET alias=excluded.alias", (user["id"], device_id, req.alias.strip() if req.alias else None, int(time.time())))
+        conn.execute(
+            "INSERT INTO user_devices(user_id,device_id,alias,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id,device_id) DO UPDATE SET alias=excluded.alias",
+            (user["id"], device_id, req.alias.strip() if req.alias else None, int(time.time())),
+        )
     return {"ok": True, "device_id": device_id}
 
 
@@ -308,16 +367,36 @@ def detach_device(device_id: str, user=Depends(current_user)):
 @app.post("/api/devices/{device_id}/register")
 async def register_device(device_id: str, req: RegisterRequest):
     dev = devices.get(device_id)
+    created = False
     if dev is None:
         dev = Device(device_id, req.name, req.ip, allocate_video_port(), req.ptz_port)
         devices[device_id] = dev
+        created = True
     else:
         dev.name = req.name
         dev.ip = req.ip
         dev.ptz_port = req.ptz_port
         dev.last_seen = time.time()
-    await ensure_rtp_listener(dev)
-    return {"ok": True, "device": asdict(dev), "video_ingest_port": dev.video_ingest_port}
+
+    try:
+        status = await asyncio.to_thread(
+            relay_call,
+            "POST",
+            f"/api/streams/{device_id}",
+            {"rtp_port": dev.video_ingest_port},
+            2.0,
+        )
+    except RuntimeError as exc:
+        if created:
+            devices.pop(device_id, None)
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    return {
+        "ok": True,
+        "device": asdict(dev),
+        "video_ingest_port": dev.video_ingest_port,
+        "relay": status,
+    }
 
 
 @app.post("/api/devices/{device_id}/telemetry")
@@ -333,37 +412,48 @@ def update_telemetry(device_id: str, req: TelemetryRequest):
 @app.get("/api/devices/{device_id}/video-status")
 def video_status(device_id: str, user=Depends(current_user)):
     dev, _ = owned_device(user["id"], device_id)
-    return {"device_id": device_id, "video_online": dev.video_online, "video_packets": dev.video_packets, "video_bytes": dev.video_bytes, **relay_registry.stats(device_id)}
+    try:
+        status = relay_call("GET", f"/api/streams/{device_id}/status")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "device_id": device_id,
+        "rtp_port": dev.video_ingest_port,
+        **status,
+    }
 
 
 @app.post("/api/devices/{device_id}/webrtc")
 async def webrtc(device_id: str, offer: WebRtcOffer, user=Depends(current_user)):
-    dev, _ = owned_device(user["id"], device_id)
-    if not dev.video_online:
+    owned_device(user["id"], device_id)
+    try:
+        status = await asyncio.to_thread(relay_call, "GET", f"/api/streams/{device_id}/status", None, 1.0)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not status.get("video_online"):
         raise HTTPException(status_code=409, detail="Video stream is offline")
 
-    pc = RTCPeerConnection()
-    peer_connections.add(pc)
-    relay = relay_registry.get(device_id)
-    pc.addTrack(relay.new_track())
-
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        if pc.connectionState in ("failed", "closed", "disconnected"):
-            await pc.close()
-            peer_connections.discard(pc)
-
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer.sdp, type=offer.type))
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    try:
+        answer = await asyncio.to_thread(
+            relay_call,
+            "POST",
+            f"/api/streams/{device_id}/webrtc",
+            {"sdp": offer.sdp, "type": offer.type},
+            8.0,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return answer
 
 
 @app.post("/api/devices/{device_id}/ptz")
 def ptz(device_id: str, req: PtzRequest, user=Depends(current_user)):
     dev, _ = owned_device(user["id"], device_id)
     flags = FLAG_REQUEST_IDR if req.request_idr else 0
-    udp_sock.sendto(build_ptz_packet(req.pan_cdeg, req.tilt_cdeg, req.speed_cdeg_s, flags), (dev.ip, dev.ptz_port))
+    udp_sock.sendto(
+        build_ptz_packet(req.pan_cdeg, req.tilt_cdeg, req.speed_cdeg_s, flags),
+        (dev.ip, dev.ptz_port),
+    )
     return {"ok": True}
 
 
@@ -389,15 +479,8 @@ def index():
 @app.on_event("startup")
 async def startup_task():
     init_db()
-
-
-@app.on_event("shutdown")
-async def shutdown_task():
-    for transport in rtp_transports.values():
-        transport.close()
-    rtp_transports.clear()
-    await asyncio.gather(*(pc.close() for pc in list(peer_connections)), return_exceptions=True)
-    peer_connections.clear()
+    if not await asyncio.to_thread(_relay_health):
+        print(f"WARNING: Pion WebRTC relay is not reachable at {RELAY_URL}")
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
