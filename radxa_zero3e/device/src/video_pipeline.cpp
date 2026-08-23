@@ -55,6 +55,9 @@ bool VideoPipeline::start(const std::string& ffmpeg,
         // Browser-safe profile for zero-transcode WebRTC passthrough.
         // The central server does not decode/re-encode the H.264 bitstream.
         "-profile:v", "baseline",
+        // Repeat codec headers on keyframes so a browser that joins an already
+        // running RTP stream receives SPS/PPS before the next IDR.
+        "-bsf:v", "dump_extra=freq=keyframe",
         "-f", "rtp",
         url
     };
