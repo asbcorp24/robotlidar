@@ -1,30 +1,33 @@
-# Camera Dashboard
+# RobotLiDAR web dashboard
 
-Web interface for selecting remote Radxa ZERO 3E camera devices, watching live video, and controlling PAN/TILT.
+Web-интерфейс встроен непосредственно в единый Go Camera Hub через `go:embed`.
 
-This first version is a frontend prototype with a small API contract. It is intentionally independent from the final streaming backend so that the UI can be wired later to WebRTC/HLS/MSE without changing the control surface.
+Отдельно запускать статический HTTP-сервер не нужно.
 
-## Features
+## Возможности
 
-- device list with online/offline state
-- one-click switching between camera devices
-- large video viewport
-- PAN/TILT controls
-- center button
-- keyboard arrows / WASD for PTZ
-- telemetry panel (FPS, bitrate, latency, ethernet, uptime)
-- placeholder stream support via per-device `streamUrl`
-- backend API contract documented in `api-contract.md`
+- вход и регистрация пользователя;
+- список только своих тракторов;
+- добавление/удаление тракторов по постоянному `device_id`;
+- online/offline;
+- просмотр H.264 через WebRTC/Pion без серверного перекодирования;
+- PAN/TILT;
+- CENTER;
+- управление стрелками/WASD;
+- IDR request;
+- FPS, bitrate, Ethernet, uptime.
 
-## Run locally
+## Запуск
 
-Any static HTTP server is enough for the UI prototype:
-
-```bash
-cd web/camera_dashboard
-python3 -m http.server 8080
+```bat
+cd radxa_zero3e\server
+run_server.bat
 ```
 
-Open `http://localhost:8080`.
+Открыть:
 
-The prototype uses demo device data when `/api/devices` is not available.
+```text
+http://127.0.0.1:8000
+```
+
+HTML/CSS/JS компилируются внутрь `robotlidar-server` и доступны через тот же HTTP-порт, что и REST API.
