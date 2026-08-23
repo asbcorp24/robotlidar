@@ -135,6 +135,7 @@ class RadxaWindowsEmulator:
             "-keyint_min", str(self.cfg.gop),
             "-bf", "0",
             "-sc_threshold", "0",
+            "-bsf:v", "dump_extra=freq=keyframe",
             "-f", "rtp",
             target,
         ]
