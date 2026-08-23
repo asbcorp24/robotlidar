@@ -1,78 +1,76 @@
-# Camera Hub Server
+# RobotLiDAR Camera Hub — Go server
 
-Центральный сервер тракторов Radxa ZERO 3E.
+Центральный сервер для тракторов с Radxa ZERO 3E теперь полностью реализован на Go.
 
 ## Архитектура
 
 ```text
 Radxa / Windows emulator
         |
-        | H.264 RTP/UDP (готовый кодированный поток)
+        | готовый H.264 / RTP / UDP
         v
-+----------------------------+
-| Pion WebRTC relay (Go)     |
-| без decode / encode        |
-+-------------+--------------+
-              |
-              | WebRTC H.264 / SRTP
-              v
-           Browser
-
-FastAPI (Python)
-  - пользователи / логин / пароль
-  - SQLite
-  - привязка tractor device_id к пользователю
-  - проверка прав доступа
-  - список тракторов / телеметрия
-  - PTZ / CENTER / IDR
-  - WebRTC signaling proxy к Pion
++--------------------------------------+
+| robotlidar-server (один Go-процесс)  |
+|                                      |
+|  HTTP + REST API                     |
+|  users / login / sessions            |
+|  SQLite                              |
+|  user <-> tractor device_id          |
+|  telemetry                           |
+|  PTZ / CENTER / IDR                  |
+|  RTP ingest 10000+                   |
+|  Pion WebRTC H.264 passthrough       |
+|  встроенный web-интерфейс            |
++------------------+-------------------+
+                   |
+                   | WebRTC / DTLS / SRTP
+                   v
+                Browser
 ```
 
-Видео больше не декодируется Python-сервером. В `requirements.txt` нет `PyAV` и `aiortc`.
+H.264 на сервере **не декодируется и не перекодируется**. Готовые RTP-пакеты от Radxa передаются в `Pion TrackLocalStaticRTP`, а браузер декодирует H.264 аппаратно/штатным WebRTC-декодером.
 
-## Папки
+## Структура
 
 ```text
 radxa_zero3e/server/
-├── main.py
-├── requirements.txt
-├── camera_hub.db              # создаётся автоматически
+├── main.go        # запуск HTTP, SQLite, встроенного web
+├── auth.go        # пользователи, пароли, сессии, привязка ID
+├── devices.go     # регистрация тракторов, telemetry, список устройств
+├── media.go       # RTP ingest, Pion WebRTC, PTZ
+├── util.go
+├── go.mod
 ├── web/
-└── webrtc_relay/
-    ├── main.go
-    ├── go.mod
-    └── README.md
+└── camera_hub.db  # создаётся автоматически
 ```
 
-## 1. Запустить WebRTC relay
+Python/FastAPI и отдельный `webrtc_relay` больше не нужны.
 
-Нужен Go 1.24+.
+## Требования
 
-Windows:
+- Go 1.24+
+- открытый HTTP/HTTPS порт сервера;
+- UDP `10000+` от Radxa к серверу для RTP;
+- доступные WebRTC UDP-порты сервера для браузеров.
+
+Используются:
+
+- Pion WebRTC v4;
+- pure-Go SQLite `modernc.org/sqlite` — CGO не требуется;
+- существующий формат SQLite базы совместим с предыдущей Python-версией.
+
+## Запуск на Windows
 
 ```bat
 cd radxa_zero3e\server
-run_relay.bat
+go mod tidy
+go run .
 ```
 
 или:
 
 ```bat
-cd radxa_zero3e\server\webrtc_relay
-go mod tidy
-go run .
-```
-
-По умолчанию relay API слушает только `127.0.0.1:8090`.
-
-## 2. Запустить FastAPI
-
-```bat
-cd radxa_zero3e\server
-py -3 -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+run_server.bat
 ```
 
 Открыть:
@@ -81,67 +79,126 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 http://127.0.0.1:8000
 ```
 
-## 3. Запустить эмулятор
+## Сборка одного EXE
 
 ```bat
-cd radxa_zero3e\emulator_windows
-run_gui.bat
+go build -trimpath -ldflags="-s -w" -o robotlidar-server.exe .
+robotlidar-server.exe
 ```
 
-Например ID:
+Web-интерфейс встроен в бинарник через `go:embed`, поэтому рядом с EXE не требуется отдельный web-сервер.
+
+## Linux
+
+```bash
+cd radxa_zero3e/server
+go mod tidy
+go build -trimpath -ldflags='-s -w' -o robotlidar-server .
+./robotlidar-server
+```
+
+Настройки окружения:
 
 ```text
-TRACTOR-WIN-0001
+LISTEN_ADDR=0.0.0.0:8000
+DB_PATH=camera_hub.db
+STUN_URL=stun:stun.example.com:3478
 ```
 
-При регистрации Camera Hub назначит RTP ingest-порт, например `10000`. Сам UDP порт слушает Pion relay, а не FastAPI.
+`STUN_URL` для локального теста не обязателен.
 
-## Пользовательская модель
+## Device ID
 
-1. Пользователь создаёт аккаунт/входит.
-2. В `Настройки` вводит постоянный ID трактора.
-3. Сервер сохраняет привязку `user -> device_id`.
-4. В списке камер пользователь видит только свои ID.
-5. WebRTC и PTZ доступны только владельцу привязанного ID.
+У каждого трактора постоянный уникальный ID, например:
+
+```text
+TRACTOR-0001
+TRACTOR-0002
+TRACTOR-0003
+```
+
+При старте Radxa/эмулятор делает:
+
+```http
+POST /api/devices/TRACTOR-0001/register
+```
+
+Сервер выделяет RTP ingest-порт:
+
+```json
+{
+  "ok": true,
+  "video_ingest_port": 10000
+}
+```
+
+После этого трактор отправляет H.264/RTP непосредственно на UDP `10000`.
+
+Следующие устройства получают `10001`, `10002` и т.д.
+
+## Пользователи
+
+Пользователь:
+
+1. входит по логину/паролю;
+2. открывает `Настройки`;
+3. добавляет ID своего трактора;
+4. видит только привязанные к своему аккаунту тракторы;
+5. может смотреть их видео и отправлять PTZ-команды.
+
+Один `device_id` нельзя одновременно привязать к двум аккаунтам.
+
+Пароли сохраняются как `PBKDF2-SHA256`, совместимо с ранее созданной `camera_hub.db`.
 
 ## Видео
 
-Целевая цепочка:
-
 ```text
 HBVCAM
-  -> Radxa h264_rkmpp Baseline, B=0, GOP=15
+  -> Radxa h264_rkmpp Baseline
+  -> B-frames=0
+  -> GOP=15
+  -> SPS/PPS на keyframe
   -> RTP/UDP
-  -> Pion TrackLocalStaticRTP
-  -> WebRTC DTLS/SRTP
-  -> browser H.264 decoder
+  -> Go/Pion passthrough
+  -> WebRTC/SRTP
+  -> Chrome / Edge / другой H.264 WebRTC browser
 ```
 
-H.264 payload не перекодируется и не проходит через Python.
+При 30 fps и GOP 15 новый IDR появляется примерно каждые 0.5 секунды, поэтому новый зритель быстро начинает декодирование.
 
-Для быстрого подключения нового зрителя upstream должен регулярно передавать SPS/PPS вместе с IDR. GOP=15 при 30 fps даёт новый IDR примерно каждые 0.5 секунды.
+## API
 
-## Сеть
-
-Для одного потока 2 Mbit/s:
-
-- Radxa -> сервер: ~2 Mbit/s;
-- сервер -> один браузер: ~2 Mbit/s;
-- второй зритель того же трактора добавляет ещё ~2 Mbit/s исходящего трафика.
-
-CPU сервера расходуется главным образом на сеть, RTP, DTLS/SRTP и WebRTC signaling, а не на H.264 codec.
-
-## Интернет
-
-Для локального теста STUN/TURN не нужен. Для публичного сервера понадобятся:
-
-- HTTPS (nginx);
-- публичные WebRTC UDP порты;
-- STUN/TURN (желательно coturn);
-- при необходимости `STUN_URL` для Pion relay.
-
-Пример:
+Пользовательские:
 
 ```text
-STUN_URL=stun:stun.example.com:3478
+POST   /api/auth/register
+POST   /api/auth/login
+GET    /api/auth/me
+POST   /api/auth/logout
+GET    /api/settings/devices
+POST   /api/settings/devices
+DELETE /api/settings/devices/{device_id}
+GET    /api/devices
+GET    /api/devices/{device_id}/video-status
+POST   /api/devices/{device_id}/webrtc
+POST   /api/devices/{device_id}/ptz
+POST   /api/devices/{device_id}/center
+POST   /api/devices/{device_id}/request-idr
 ```
+
+Для Radxa/эмулятора:
+
+```text
+POST /api/devices/{device_id}/register
+POST /api/devices/{device_id}/telemetry
+```
+
+## Публичный сервер
+
+Для эксплуатации через Интернет далее нужны:
+
+- HTTPS, например nginx;
+- собственный STUN/TURN (coturn);
+- firewall для диапазона RTP ingest;
+- ограничение диапазона ICE/WebRTC UDP портов;
+- отдельный секрет/ключ устройства в дополнение к публичному `device_id`.
