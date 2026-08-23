@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import socket
 import struct
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -56,16 +54,15 @@ class RadxaWindowsEmulator:
         self.start_time = time.monotonic()
         self.pan_cdeg = 0
         self.tilt_cdeg = 0
-        self.last_ptz_seq = 0
-        self.frames_est = 0
         self.video_restarts = 0
         self.session = requests.Session()
+        self.video_ingest_port = cfg.server_rtp_port
         self.local_ip = self._get_local_ip()
 
     def _get_local_ip(self) -> str:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            s.connect((self.cfg.server_rtp_host, self.cfg.server_rtp_port))
+            s.connect((self.cfg.server_rtp_host, 80))
             return s.getsockname()[0]
         except OSError:
             return "127.0.0.1"
@@ -83,7 +80,10 @@ class RadxaWindowsEmulator:
         try:
             r = self.session.post(url, json=payload, timeout=3)
             r.raise_for_status()
+            data = r.json()
+            self.video_ingest_port = int(data.get("video_ingest_port", self.cfg.server_rtp_port))
             print(f"[SERVER] registered {self.cfg.device_id} as {self.local_ip}")
+            print(f"[SERVER] assigned RTP ingest UDP {self.video_ingest_port}")
             return True
         except Exception as e:
             print(f"[SERVER] register failed: {e}")
@@ -92,9 +92,10 @@ class RadxaWindowsEmulator:
     def send_telemetry(self) -> None:
         url = f"{self.cfg.server_http.rstrip('/')}/api/devices/{self.cfg.device_id}/telemetry"
         uptime_ms = int((time.monotonic() - self.start_time) * 1000)
+        video_ok = self.video_proc is not None and self.video_proc.poll() is None
         payload = {
-            "fps": self.cfg.fps if self.video_proc and self.video_proc.poll() is None else 0,
-            "bitrate_bps": self.cfg.bitrate_kbps * 1000 if self.video_proc and self.video_proc.poll() is None else 0,
+            "fps": self.cfg.fps if video_ok else 0,
+            "bitrate_bps": self.cfg.bitrate_kbps * 1000 if video_ok else 0,
             "dropped_frames": 0,
             "uptime_ms": uptime_ms,
             "pan_cdeg": self.pan_cdeg,
@@ -111,7 +112,7 @@ class RadxaWindowsEmulator:
             print(f"[SERVER] telemetry failed: {e}")
 
     def ffmpeg_command(self) -> list[str]:
-        target = f"rtp://{self.cfg.server_rtp_host}:{self.cfg.server_rtp_port}?pkt_size=1200"
+        target = f"rtp://{self.cfg.server_rtp_host}:{self.video_ingest_port}?pkt_size=1200"
         return [
             self.cfg.ffmpeg,
             "-hide_banner",
@@ -159,8 +160,6 @@ class RadxaWindowsEmulator:
         self.video_proc = None
 
     def request_idr(self) -> None:
-        # FFmpeg/libx264 normally emits an IDR every GOP. Restarting is intentionally
-        # avoided here because it would interrupt RTP. This hook mirrors the Radxa API.
         print("[PTZ] REQUEST_IDR received; emulator will use the next scheduled IDR")
 
     def ptz_loop(self) -> None:
@@ -187,7 +186,6 @@ class RadxaWindowsEmulator:
             if magic != PTZ_MAGIC or version != PTZ_VERSION or ptype != PTZ_TYPE:
                 continue
 
-            self.last_ptz_seq = seq
             if flags & FLAG_CENTER:
                 self.pan_cdeg = 0
                 self.tilt_cdeg = 0
@@ -219,9 +217,12 @@ class RadxaWindowsEmulator:
         print(f"Camera    : {self.cfg.camera_name}")
         print(f"Local IP  : {self.local_ip}")
         print(f"Server    : {self.cfg.server_http}")
-        print(f"RTP       : {self.cfg.server_rtp_host}:{self.cfg.server_rtp_port}")
 
-        self.register()
+        while not self.register():
+            print("[SERVER] retry in 2 seconds...")
+            time.sleep(2)
+
+        print(f"RTP       : {self.cfg.server_rtp_host}:{self.video_ingest_port}")
         self.start_video()
 
         threads = [
