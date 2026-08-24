@@ -42,20 +42,21 @@ type server struct {
 }
 
 type device struct {
-	ID       string
-	Name     string
-	IP       string
-	PTZPort  int
-	RTPPort  int
-	LastSeen atomic.Int64
-	FPS      atomic.Int64
-	Bitrate  atomic.Int64
-	Dropped  atomic.Int64
-	UptimeMS atomic.Int64
-	PanCDeg  atomic.Int64
-	TiltCDeg atomic.Int64
-	LinkMbps atomic.Int64
-	stream   *rtpStream
+	ID         string
+	Name       string
+	DeviceType string
+	IP         string
+	PTZPort    int
+	RTPPort    int
+	LastSeen   atomic.Int64
+	FPS        atomic.Int64
+	Bitrate    atomic.Int64
+	Dropped    atomic.Int64
+	UptimeMS   atomic.Int64
+	PanCDeg    atomic.Int64
+	TiltCDeg   atomic.Int64
+	LinkMbps   atomic.Int64
+	stream     *rtpStream
 }
 
 type user struct {
