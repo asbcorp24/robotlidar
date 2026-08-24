@@ -54,13 +54,7 @@
 
             <section class="panel control-panel tractor-panel">
               <div class="panel-title">Движение трактора</div>
-              <div class="drive-pad">
-                <button class="drive-btn" data-drive="forward">▲</button>
-                <button class="drive-btn" data-drive="left">◀</button>
-                <button id="driveStopBtn" class="drive-stop">STOP</button>
-                <button class="drive-btn" data-drive="right">▶</button>
-                <button class="drive-btn" data-drive="backward">▼</button>
-              </div>
+              <div class="drive-pad"><button class="drive-btn" data-drive="forward">▲</button><button class="drive-btn" data-drive="left">◀</button><button id="driveStopBtn" class="drive-stop">STOP</button><button class="drive-btn" data-drive="right">▶</button><button class="drive-btn" data-drive="backward">▼</button></div>
               <div class="value-grid"><label>Скорость <strong id="driveSpeedValue">50%</strong></label><input id="driveSpeedRange" type="range" min="10" max="100" step="5" value="50"></div>
               <div id="driveState" class="control-state">Гусеницы: STOP</div>
               <div class="hint">W/A/S/D — движение, Space — аварийный STOP. Движение идёт только пока кнопка удерживается.</div>
@@ -68,16 +62,9 @@
 
             <section class="panel control-panel brush-panel">
               <div class="panel-title">Щётка</div>
-              <div class="brush-spin-row">
-                <button class="brush-spin-btn" data-brush-spin="reverse">↶ Вращение</button>
-                <button id="brushSpinStopBtn" class="drive-stop">STOP</button>
-                <button class="brush-spin-btn" data-brush-spin="forward">Вращение ↷</button>
-              </div>
+              <div class="brush-spin-row"><button class="brush-spin-btn" data-brush-spin="reverse">↶ Вращение</button><button id="brushSpinStopBtn" class="drive-stop">STOP</button><button class="brush-spin-btn" data-brush-spin="forward">Вращение ↷</button></div>
               <div class="value-grid"><label>Скорость щётки <strong id="brushSpeedValue">60%</strong></label><input id="brushSpeedRange" type="range" min="10" max="100" step="5" value="60"></div>
-              <div class="brush-lift-row">
-                <button class="brush-lift-btn" data-brush-lift="up">▲ Поднять</button>
-                <button class="brush-lift-btn" data-brush-lift="down">▼ Опустить</button>
-              </div>
+              <div class="brush-lift-row"><button class="brush-lift-btn" data-brush-lift="up">▲ Поднять</button><button class="brush-lift-btn" data-brush-lift="down">▼ Опустить</button></div>
               <div id="brushState" class="control-state">Щётка: остановлена · подъём: STOP</div>
               <div class="hint">Подъём/опускание работает только пока кнопка удерживается. Вращение щётки остаётся включённым до STOP или смены направления.</div>
             </section>
@@ -90,7 +77,7 @@
       <section id="settingsView" class="hidden settings-view">
         <header class="topbar"><div><div class="camera-title">Настройки</div><div class="muted">Привязка тракторов к вашему аккаунту</div></div></header>
         <div class="settings-content">
-          <section class="panel settings-card"><div class="panel-title">Добавить трактор</div><p class="muted">Введите постоянный ID, указанный в программе Radxa или эмулятора.</p><div class="attach-form"><label>ID трактора<input id="attachId" placeholder="TRACTOR-0001"></label><label>Название<input id="attachAlias" placeholder="Трактор №1"></label><button id="attachBtn" class="btn primary">Добавить</button></div><div id="attachError" class="form-error"></div></section>
+          <section class="panel settings-card"><div class="panel-title">Добавить трактор</div><p class="muted">Введите постоянный ID, указанный в программе Radxa, Orange Pi или эмулятора.</p><div class="attach-form"><label>ID трактора<input id="attachId" placeholder="TRACTOR-0001"></label><label>Название<input id="attachAlias" placeholder="Трактор №1"></label><button id="attachBtn" class="btn primary">Добавить</button></div><div id="attachError" class="form-error"></div></section>
           <section class="panel settings-card"><div class="panel-title">Привязанные тракторы</div><div id="linkedDevices" class="linked-list"></div></section>
         </div>
       </section>
@@ -101,13 +88,10 @@
     <div class="cardboard-eye left-eye"><video id="vrVideoLeft" autoplay playsinline muted></video><div class="vr-reticle"></div></div>
     <div class="cardboard-eye right-eye"><video id="vrVideoRight" autoplay playsinline muted></video><div class="vr-reticle"></div></div>
     <div class="cardboard-divider"></div>
-    <div class="cardboard-hud">
-      <button id="vrRecenterBtn" class="vr-control">Центр</button>
-      <div id="vrStatus">Гироскоп</div>
-      <button id="vrExitBtn" class="vr-control">Выход</button>
-    </div>
+    <div class="cardboard-hud"><button id="vrRecenterBtn" class="vr-control">Центр</button><div id="vrStatus">Гироскоп</div><button id="vrExitBtn" class="vr-control">Выход</button></div>
   </section>
 
   <script src="/static/app.js"></script>
+  <script src="/static/control-heartbeat.js"></script>
 </body>
 </html>
