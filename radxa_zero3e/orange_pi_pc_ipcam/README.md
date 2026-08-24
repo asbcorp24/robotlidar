@@ -1,18 +1,18 @@
-# Orange Pi PC + Mercusys MC500 gateway
+# Orange Pi PC + Botslab W311 gateway
 
-Клиент RobotLiDAR для трактора с IP-камерой Mercusys MC500.
+Клиент RobotLiDAR для трактора с IP-камерой **Botslab W311**.
 
-MC500 официально поддерживает H.264, RTSP и ONVIF/PTZ. Сама камера подключается по Wi-Fi 2.4 ГГц; Orange Pi PC можно подключить к тому же роутеру по Ethernet.
+По официальным данным W311 имеет 4MP-видео, 360° pan/tilt, подключение по LAN или Wi-Fi и поддержку NVR через ONVIF/RTSP. Поэтому Orange Pi может использовать камеру как сетевой источник H.264 и как PTZ-устройство, не меняя серверный протокол RobotLiDAR.
 
 ```text
-Mercusys MC500
-  | Wi-Fi 2.4 GHz
-  | RTSP H.264 :554 + ONVIF :2020
+Botslab W311
+  | Ethernet/LAN или Wi-Fi
+  | RTSP + ONVIF
   v
 LAN/router <---- Ethernet ---- Orange Pi PC
                               |-- FFmpeg -c:v copy -> H.264/RTP -> RobotLiDAR Go server
                               |-- UDP control <- RobotLiDAR Go server
-                              |-- ONVIF -> PAN/TILT MC500
+                              |-- ONVIF -> PAN/TILT W311
                               `-- USB-UART 115200 -> ESP32
                                                    |-- tracks
                                                    |-- brush spin
@@ -21,33 +21,29 @@ LAN/router <---- Ethernet ---- Orange Pi PC
 
 Сервер видит этот вариант точно так же, как Radxa: один постоянный `device_id`, один RTP stream и один control UDP port.
 
-## Перед первым запуском MC500
+## Перед первым запуском W311
 
-В приложении MERCUSYS открой:
+1. Подключи W311 к той же локальной сети, где находится Orange Pi.
+2. Зафиксируй IP камеры в DHCP reservation роутера.
+3. В приложении Botslab включи/настрой доступ для NVR/ONVIF/RTSP, если прошивка требует отдельного включения.
+4. Определи учётные данные камеры для ONVIF/RTSP.
+5. Проверь фактический RTSP URL именно своей W311.
 
-```text
-Camera -> Device Settings -> Advanced Settings -> Camera Account
-```
+Официальный сайт подтверждает поддержку ONVIF/RTSP для NVR, но публично не публикует универсальный RTSP path для W311. Поэтому в `config.example.json` путь намеренно оставлен как `RTSP_PATH`, а не захардкожен неподтверждённый `/stream1`.
 
-Создай отдельный username/password камеры. Это не пароль аккаунта MERCUSYS. Эти данные используются RTSP и ONVIF.
-
-Высокое качество:
-
-```text
-rtsp://USER:PASS@CAMERA_IP:554/stream1
-```
-
-Низкое качество:
+Пример формы URL:
 
 ```text
-rtsp://USER:PASS@CAMERA_IP:554/stream2
+rtsp://USER:PASS@CAMERA_IP:554/RTSP_PATH
 ```
 
-ONVIF service port у Mercusys: `2020`. Для MC500 в конфиге используется:
+ONVIF Device Service по стандартной схеме пробуем так:
 
 ```text
-http://CAMERA_IP:2020/onvif/device_service
+http://CAMERA_IP/onvif/device_service
 ```
+
+Если камера использует другой порт, укажи его в `onvif_device_service`.
 
 ## Что реализовано
 
@@ -100,30 +96,35 @@ nano config.json
   "server_rtp_host": "192.168.1.100",
   "control_listen_port": 6000,
 
-  "rtsp_url": "rtsp://camerauser:camerapassword@192.168.1.60:554/stream1",
+  "rtsp_url": "rtsp://USER:PASS@192.168.1.60:554/RTSP_PATH",
 
-  "onvif_device_service": "http://192.168.1.60:2020/onvif/device_service",
-  "onvif_username": "camerauser",
-  "onvif_password": "camerapassword",
+  "onvif_device_service": "http://192.168.1.60/onvif/device_service",
+  "onvif_username": "USER",
+  "onvif_password": "PASS",
 
   "esp32_serial": "/dev/ttyUSB0",
   "esp32_baud": 115200
 }
 ```
 
-## Проверка MC500
+## Проверка W311
 
-Сначала зафиксируй IP камеры в DHCP reservation роутера, например `192.168.1.60`.
-
-Проверка RTSP:
+Проверь, какие порты слушает камера:
 
 ```bash
-ffprobe -rtsp_transport tcp "rtsp://USER:PASS@192.168.1.60:554/stream1"
+sudo apt install -y nmap
+nmap -sT -p 80,443,554,8000,8080,8899,2020 CAMERA_IP
 ```
 
-Для прямого passthrough codec должен определяться как H.264.
+Проверка RTSP после определения URL:
 
-Если разрешение stream1 ниже 1920x1080, поставь в MERCUSYS app качество `Best Quality`.
+```bash
+ffprobe -rtsp_transport tcp "rtsp://USER:PASS@CAMERA_IP:554/RTSP_PATH"
+```
+
+Для прямого passthrough желательно, чтобы codec определялся как H.264. Если выбранный профиль W311 отдаёт H.265, переключи профиль камеры на H.264; иначе текущему browser passthrough понадобится транскодирование.
+
+Можно также проверить ONVIF через ONVIF Device Manager с Windows или любым ONVIF discovery tool в той же LAN. После обнаружения `GetCapabilities` наш gateway сам получает PTZ XAddr и profile token.
 
 Проверь время Orange Pi:
 
@@ -162,9 +163,20 @@ sudo journalctl -u orange-pi-ipcam -f
 ```text
 Web -> Go server -> UDP/6000 Orange Pi
 
-Type 1 -> ONVIF MC500 PAN/TILT
+Type 1 -> ONVIF Botslab W311 PAN/TILT
 Type 2 -> ESP32 DRV left/right
 Type 3 -> ESP32 AUX lift/brush
 ```
 
-Cardboard не требует специального протокола: гироскоп телефона формирует обычные PAN/TILT, Orange Pi переводит их в ONVIF `AbsoluteMove` MC500.
+Cardboard не требует специального протокола: гироскоп телефона формирует обычные PAN/TILT, Orange Pi переводит их в ONVIF `AbsoluteMove` W311.
+
+## Что проверить на реальной W311
+
+Поддержка ONVIF/RTSP у модели подтверждена производителем, но конкретная прошивка может отличаться по:
+
+- RTSP path;
+- порту ONVIF;
+- отдельной настройке включения NVR/ONVIF;
+- поддерживаемому типу PTZ-команд (`AbsoluteMove`, `RelativeMove`, `ContinuousMove`).
+
+Gateway сейчас сначала рассчитан на `AbsoluteMove`. Если W311 объявит только `ContinuousMove`, добавим автоматический fallback после первого теста `GetCapabilities/GetProfiles` на твоей камере.
