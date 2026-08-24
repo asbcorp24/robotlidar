@@ -1,0 +1,17 @@
+[Unit]
+Description=RobotLiDAR Orange Pi IP camera gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robotlidar
+Group=robotlidar
+WorkingDirectory=/opt/robotlidar-orange
+ExecStart=/opt/robotlidar-orange/orange-pi-ipcam --config /etc/robotlidar-orange/config.json
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
