@@ -9,10 +9,11 @@ import (
 )
 
 type registerRequest struct {
-	Name    string `json:"name"`
-	IP      string `json:"ip"`
-	RTPPort int    `json:"rtp_port"`
-	PTZPort int    `json:"ptz_port"`
+	Name       string `json:"name"`
+	IP         string `json:"ip"`
+	RTPPort    int    `json:"rtp_port"`
+	PTZPort    int    `json:"ptz_port"`
+	DeviceType string `json:"device_type"`
 }
 
 type telemetryRequest struct {
@@ -117,6 +118,9 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 	if req.PTZPort <= 0 {
 		req.PTZPort = 6000
 	}
+	if strings.TrimSpace(req.DeviceType) == "" {
+		req.DeviceType = "radxa_stereo"
+	}
 
 	s.devicesM.Lock()
 	d := s.devices[id]
@@ -134,16 +138,18 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 			return
 		}
 		d = &device{
-			ID:      id,
-			Name:    req.Name,
-			IP:      req.IP,
-			PTZPort: req.PTZPort,
-			RTPPort: port,
-			stream:  stream,
+			ID:         id,
+			Name:       req.Name,
+			DeviceType: req.DeviceType,
+			IP:         req.IP,
+			PTZPort:    req.PTZPort,
+			RTPPort:    port,
+			stream:     stream,
 		}
 		s.devices[id] = d
 	} else {
 		d.Name = req.Name
+		d.DeviceType = req.DeviceType
 		d.IP = req.IP
 		d.PTZPort = req.PTZPort
 	}
@@ -176,43 +182,20 @@ func (s *server) telemetry(w http.ResponseWriter, r *http.Request, id string) {
 	}
 
 	d.LastSeen.Store(time.Now().UnixMilli())
-	if req.FPS != nil {
-		d.FPS.Store(*req.FPS)
-	}
-	if req.BitrateBPS != nil {
-		d.Bitrate.Store(*req.BitrateBPS)
-	}
-	if req.DroppedFrames != nil {
-		d.Dropped.Store(*req.DroppedFrames)
-	}
-	if req.UptimeMS != nil {
-		d.UptimeMS.Store(*req.UptimeMS)
-	}
-	if req.PanCDeg != nil {
-		d.PanCDeg.Store(*req.PanCDeg)
-	}
-	if req.TiltCDeg != nil {
-		d.TiltCDeg.Store(*req.TiltCDeg)
-	}
-	if req.LinkMbps != nil {
-		d.LinkMbps.Store(*req.LinkMbps)
-	}
+	if req.FPS != nil { d.FPS.Store(*req.FPS) }
+	if req.BitrateBPS != nil { d.Bitrate.Store(*req.BitrateBPS) }
+	if req.DroppedFrames != nil { d.Dropped.Store(*req.DroppedFrames) }
+	if req.UptimeMS != nil { d.UptimeMS.Store(*req.UptimeMS) }
+	if req.PanCDeg != nil { d.PanCDeg.Store(*req.PanCDeg) }
+	if req.TiltCDeg != nil { d.TiltCDeg.Store(*req.TiltCDeg) }
+	if req.LinkMbps != nil { d.LinkMbps.Store(*req.LinkMbps) }
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *server) videoStatus(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	u, ok := s.requireUser(w, r)
-	if !ok {
-		return
-	}
-	d, ok := s.ownedDevice(w, u.ID, id)
-	if !ok {
-		return
-	}
+	if r.Method != http.MethodGet { methodNotAllowed(w); return }
+	u, ok := s.requireUser(w, r); if !ok { return }
+	d, ok := s.ownedDevice(w, u.ID, id); if !ok { return }
 	writeJSON(w, http.StatusOK, d.stream.status())
 }
 
@@ -222,9 +205,7 @@ func (s *server) ownedDevice(w http.ResponseWriter, userID int64, id string) (*d
 		writeError(w, http.StatusForbidden, "This tractor is not linked to your account")
 		return nil, false
 	}
-	s.devicesM.RLock()
-	d := s.devices[id]
-	s.devicesM.RUnlock()
+	s.devicesM.RLock(); d := s.devices[id]; s.devicesM.RUnlock()
 	if d == nil {
 		writeError(w, http.StatusConflict, "Tractor is linked but currently offline")
 		return nil, false
@@ -234,14 +215,8 @@ func (s *server) ownedDevice(w http.ResponseWriter, userID int64, id string) (*d
 
 func (s *server) allocateVideoPortLocked() int {
 	used := make(map[int]bool, len(s.devices))
-	for _, d := range s.devices {
-		used[d.RTPPort] = true
-	}
-	for p := videoPortBase; p <= 65535; p++ {
-		if !used[p] {
-			return p
-		}
-	}
+	for _, d := range s.devices { used[d.RTPPort] = true }
+	for p := videoPortBase; p <= 65535; p++ { if !used[p] { return p } }
 	return 0
 }
 
@@ -252,57 +227,33 @@ func (d *device) online() bool {
 
 func (d *device) publicJSON(alias string) map[string]any {
 	return map[string]any{
-		"id":            d.ID,
-		"device_id":     d.ID,
-		"name":          alias,
-		"online":        d.online(),
-		"video_online":  d.stream.videoOnline(),
-		"streamType":    "webrtc",
-		"streamUrl":     "/api/devices/" + d.ID + "/webrtc",
-		"pan":           float64(d.PanCDeg.Load()) / 100.0,
-		"tilt":          float64(d.TiltCDeg.Load()) / 100.0,
-		"fps":           d.FPS.Load(),
-		"bitrateKbps":   d.Bitrate.Load() / 1000,
-		"ethernet":      linkLabel(d.LinkMbps.Load()),
-		"uptimeSec":     d.UptimeMS.Load() / 1000,
-		"video_packets": d.stream.Packets.Load(),
-		"video_bytes":   d.stream.Bytes.Load(),
-		"viewers":       d.stream.Viewers.Load(),
+		"id": d.ID, "device_id": d.ID, "device_type": d.DeviceType, "name": alias,
+		"online": d.online(), "video_online": d.stream.videoOnline(),
+		"streamType": "webrtc", "streamUrl": "/api/devices/" + d.ID + "/webrtc",
+		"pan": float64(d.PanCDeg.Load()) / 100.0, "tilt": float64(d.TiltCDeg.Load()) / 100.0,
+		"fps": d.FPS.Load(), "bitrateKbps": d.Bitrate.Load() / 1000,
+		"ethernet": linkLabel(d.LinkMbps.Load()), "uptimeSec": d.UptimeMS.Load() / 1000,
+		"video_packets": d.stream.Packets.Load(), "video_bytes": d.stream.Bytes.Load(), "viewers": d.stream.Viewers.Load(),
 	}
 }
 
 func (d *device) runtimeJSON() map[string]any {
 	return map[string]any{
-		"device_id":         d.ID,
-		"name":              d.Name,
-		"ip":                d.IP,
-		"video_ingest_port": d.RTPPort,
-		"ptz_port":          d.PTZPort,
-		"online":            d.online(),
+		"device_id": d.ID, "device_type": d.DeviceType, "name": d.Name, "ip": d.IP,
+		"video_ingest_port": d.RTPPort, "ptz_port": d.PTZPort, "online": d.online(),
 	}
 }
 
 func offlineDeviceJSON(id, name string) map[string]any {
 	return map[string]any{
-		"id":           id,
-		"device_id":    id,
-		"name":         name,
-		"online":       false,
-		"video_online": false,
-		"streamType":   "webrtc",
-		"streamUrl":    "/api/devices/" + id + "/webrtc",
-		"pan":          0,
-		"tilt":         0,
-		"fps":          0,
-		"bitrateKbps":  0,
-		"ethernet":     "—",
-		"uptimeSec":    0,
+		"id": id, "device_id": id, "device_type": "unknown", "name": name,
+		"online": false, "video_online": false,
+		"streamType": "webrtc", "streamUrl": "/api/devices/" + id + "/webrtc",
+		"pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0,
 	}
 }
 
 func linkLabel(v int64) string {
-	if v <= 0 {
-		return "—"
-	}
+	if v <= 0 { return "—" }
 	return fmt.Sprintf("%d Mbit/s", v)
 }
