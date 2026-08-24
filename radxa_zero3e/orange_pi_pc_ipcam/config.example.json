@@ -1,0 +1,28 @@
+{
+  "device_id": "TRACTOR-ORANGE-0001",
+  "device_name": "Orange Pi + Kingstar IP camera",
+  "server_http": "http://192.168.1.100:8000",
+  "server_rtp_host": "192.168.1.100",
+  "control_listen_port": 6000,
+  "ethernet_interface": "eth0",
+
+  "rtsp_url": "rtsp://admin:password@192.168.10.20:554/stream1",
+  "ffmpeg": "ffmpeg",
+  "rtsp_transport": "tcp",
+  "reported_fps": 25,
+  "reported_bitrate_bps": 2000000,
+
+  "onvif_device_service": "http://192.168.10.20/onvif/device_service",
+  "onvif_username": "admin",
+  "onvif_password": "password",
+  "onvif_profile_token": "",
+  "onvif_ptz_url": "",
+  "onvif_timeout_ms": 1500,
+
+  "esp32_serial": "/dev/ttyUSB0",
+  "esp32_baud": 115200,
+  "drive_watchdog_ms": 450,
+  "lift_watchdog_ms": 450,
+
+  "telemetry_period_ms": 1000
+}
