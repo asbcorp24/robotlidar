@@ -21,6 +21,29 @@ stopDrive=async function(){
   return originalStopDrive();
 };
 
+// Radxa/HBVCAM sends SBS stereo. Orange Pi + MC500 is a mono camera, so in
+// Cardboard the complete frame is duplicated for both eyes instead of being
+// split into left/right halves.
+const monoStyle=document.createElement('style');
+monoStyle.textContent=`
+.cardboard-view.mono-camera .cardboard-eye video{width:100%;height:100%;left:0!important;object-fit:contain}
+`;
+document.head.appendChild(monoStyle);
+
+const originalEnterCardboard=enterCardboard;
+enterCardboard=async function(){
+  const mono=selected?.device_type==='orange_pi_ipcam'||selected?.device_type==='mono_ipcam';
+  $('cardboardView').classList.toggle('mono-camera',!!mono);
+  return originalEnterCardboard();
+};
+
+const originalExitCardboard=exitCardboard;
+exitCardboard=function(){
+  const r=originalExitCardboard();
+  $('cardboardView').classList.remove('mono-camera');
+  return r;
+};
+
 setInterval(()=>{
   if(!token||!selected?.online)return;
   if(driveActive){
