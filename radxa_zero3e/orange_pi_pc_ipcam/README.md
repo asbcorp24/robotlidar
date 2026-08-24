@@ -1,44 +1,73 @@
-# Orange Pi PC + Kingstar Smart IP camera gateway
+# Orange Pi PC + Mercusys MC500 gateway
 
-Отдельный клиент RobotLiDAR для варианта, где камера и Orange Pi находятся в одной Ethernet-сети.
+Клиент RobotLiDAR для трактора с IP-камерой Mercusys MC500.
+
+MC500 официально поддерживает H.264, RTSP и ONVIF/PTZ. Сама камера подключается по Wi-Fi 2.4 ГГц; Orange Pi PC можно подключить к тому же роутеру по Ethernet.
 
 ```text
-Kingstar Smart IP camera
-  | RTSP H.264 + ONVIF PTZ
-  | Ethernet LAN
+Mercusys MC500
+  | Wi-Fi 2.4 GHz
+  | RTSP H.264 :554 + ONVIF :2020
   v
-Orange Pi PC
-  |-- FFmpeg -c:v copy -> H.264/RTP -> RobotLiDAR Go server
-  |-- UDP control <- RobotLiDAR Go server
-  |-- ONVIF -> PAN/TILT Kingstar
-  `-- USB-UART 115200 -> ESP32 track controller
-                           |-- left/right tracks
-                           |-- brush spin
-                           `-- brush lift actuator
+LAN/router <---- Ethernet ---- Orange Pi PC
+                              |-- FFmpeg -c:v copy -> H.264/RTP -> RobotLiDAR Go server
+                              |-- UDP control <- RobotLiDAR Go server
+                              |-- ONVIF -> PAN/TILT MC500
+                              `-- USB-UART 115200 -> ESP32
+                                                   |-- tracks
+                                                   |-- brush spin
+                                                   `-- brush lift
 ```
 
-Сервер видит этот вариант так же, как Radxa: один постоянный `device_id`, один RTP stream и один control UDP port.
+Сервер видит этот вариант точно так же, как Radxa: один постоянный `device_id`, один RTP stream и один control UDP port.
+
+## Перед первым запуском MC500
+
+В приложении MERCUSYS открой:
+
+```text
+Camera -> Device Settings -> Advanced Settings -> Camera Account
+```
+
+Создай отдельный username/password камеры. Это не пароль аккаунта MERCUSYS. Эти данные используются RTSP и ONVIF.
+
+Высокое качество:
+
+```text
+rtsp://USER:PASS@CAMERA_IP:554/stream1
+```
+
+Низкое качество:
+
+```text
+rtsp://USER:PASS@CAMERA_IP:554/stream2
+```
+
+ONVIF service port у Mercusys: `2020`. Для MC500 в конфиге используется:
+
+```text
+http://CAMERA_IP:2020/onvif/device_service
+```
 
 ## Что реализовано
 
-- регистрация `device_id` на `radxa_zero3e/server`;
-- получение назначенного `video_ingest_port`;
-- RTSP -> RTP через FFmpeg **без декодирования и перекодирования** (`-c:v copy`);
-- автоматический перезапуск FFmpeg;
-- `REQUEST_IDR` реализован перезапуском RTSP/RTP pipeline;
+- регистрация `device_id` на центральном Go server;
+- получение `video_ingest_port`;
+- RTSP -> RTP через FFmpeg без decode/encode (`-c:v copy`);
+- автоматический рестарт FFmpeg;
 - ONVIF WS-Security UsernameToken PasswordDigest;
-- автоматические ONVIF `GetCapabilities` и `GetProfiles`;
-- ONVIF `AbsoluteMove` для PAN/TILT, включая Cardboard/гироскоп;
-- команды гусениц -> существующий ESP32 протокол `DRV`;
-- подъём щётки + скорость щётки -> существующий ESP32 протокол `AUX`;
-- автоматическая отправка `ARM` перед первой ненулевой командой;
-- локальный drive/lift watchdog;
-- HTTP telemetry на центральный сервер;
+- автоматические `GetCapabilities` / `GetProfiles`;
+- ONVIF `AbsoluteMove` для обычного PTZ и Cardboard/гироскопа;
+- гусеницы -> ESP32 `DRV`;
+- подъём щётки + скорость вращения -> ESP32 `AUX`;
+- автоматический `ARM` перед первой ненулевой командой;
+- локальные watchdog для движения и подъёма;
+- HTTP telemetry;
 - systemd service.
 
-## ESP32 совместимость
+## ESP32
 
-Используется уже существующий протокол `firmware/esp32_wroom_track_controller`:
+Используется существующий протокол `firmware/esp32_wroom_track_controller`:
 
 ```text
 DRV,seq,left,right*HH
@@ -47,15 +76,13 @@ ARM,seq,1*HH
 STOP,seq*HH
 ```
 
-где:
-
 - `left/right`: `-1000..+1000`;
-- `actuator`: `-1/0/+1` — опустить/стоп/поднять;
+- `actuator`: `-1/0/+1`;
 - `brush`: `0..1000`.
 
-Текущая аппаратная схема щётки ESP32 имеет DAC + Brake без линии Reverse. Поэтому отрицательный `spin` от сервера пока переводится в тот же модуль скорости. Для физического реверса щётки потребуется отдельный выход реверса в ESP32/силовой части.
+Текущая ESP32-схема щётки имеет DAC + Brake, но не отдельный Reverse. Поэтому отрицательный `spin` пока передаётся как тот же модуль скорости. Для настоящего реверса щётки потребуется добавить аппаратную линию Reverse и поддержку её в ESP32.
 
-ESP32 должен быть переключён пультом в режим `ROS`. Первый ненулевой web-командный пакет вызывает `ARM`, после чего идут `DRV/AUX`. При потере свежих команд ESP32 и Orange Pi независимо останавливают опасное движение watchdog'ом.
+ESP32 должен быть переведён пультом в режим `ROS`.
 
 ## Конфигурация
 
@@ -64,7 +91,7 @@ cp config.example.json config.json
 nano config.json
 ```
 
-Главные поля:
+Пример:
 
 ```json
 {
@@ -73,49 +100,42 @@ nano config.json
   "server_rtp_host": "192.168.1.100",
   "control_listen_port": 6000,
 
-  "rtsp_url": "rtsp://admin:password@192.168.10.20:554/stream1",
+  "rtsp_url": "rtsp://camerauser:camerapassword@192.168.1.60:554/stream1",
 
-  "onvif_device_service": "http://192.168.10.20/onvif/device_service",
-  "onvif_username": "admin",
-  "onvif_password": "password",
+  "onvif_device_service": "http://192.168.1.60:2020/onvif/device_service",
+  "onvif_username": "camerauser",
+  "onvif_password": "camerapassword",
 
   "esp32_serial": "/dev/ttyUSB0",
   "esp32_baud": 115200
 }
 ```
 
-RTSP URL выше — пример. Нужно поставить реальный URL конкретной Kingstar Smart.
+## Проверка MC500
 
-Если камера не отдаёт ONVIF capabilities корректно, можно вручную заполнить:
+Сначала зафиксируй IP камеры в DHCP reservation роутера, например `192.168.1.60`.
 
-```json
-{
-  "onvif_ptz_url": "http://CAMERA_IP/onvif/ptz_service",
-  "onvif_profile_token": "Profile_1"
-}
-```
-
-## Проверка камеры до запуска gateway
-
-Проверить RTSP:
+Проверка RTSP:
 
 ```bash
-ffprobe -rtsp_transport tcp "rtsp://USER:PASS@CAMERA_IP:554/STREAM"
+ffprobe -rtsp_transport tcp "rtsp://USER:PASS@192.168.1.60:554/stream1"
 ```
 
-Поток должен быть H.264 для прямого passthrough. Если Kingstar отдаёт только H.265, текущий browser H.264 passthrough потребует другой профиль камеры или отдельный транскодер.
+Для прямого passthrough codec должен определяться как H.264.
 
-Проверь синхронизацию времени Orange Pi:
+Если разрешение stream1 ниже 1920x1080, поставь в MERCUSYS app качество `Best Quality`.
+
+Проверь время Orange Pi:
 
 ```bash
 timedatectl status
 ```
 
-Для ONVIF WS-Security неправильное системное время может привести к отказу авторизации.
+ONVIF WS-Security чувствителен к неверному системному времени.
 
-## Ручной запуск
+## Запуск
 
-Требуется Go 1.24+, FFmpeg и Linux.
+Требуются Linux, FFmpeg и Go 1.24+.
 
 ```bash
 cd radxa_zero3e/orange_pi_pc_ipcam
@@ -127,16 +147,7 @@ go build -o orange-pi-ipcam .
 ./orange-pi-ipcam --config config.json
 ```
 
-Ожидаемый лог:
-
-```text
-device_id=TRACTOR-ORANGE-0001 local_ip=192.168.1.51 RTP=192.168.1.100:10000 control=UDP/6000
-ONVIF PTZ: http://192.168.10.20/onvif/device_service
-ESP32: /dev/ttyUSB0 @ 115200
-FFmpeg RTSP copy started pid=...
-```
-
-## Установка как сервис
+## Установка как systemd service
 
 ```bash
 chmod +x install.sh
@@ -146,33 +157,14 @@ sudo systemctl restart orange-pi-ipcam
 sudo journalctl -u orange-pi-ipcam -f
 ```
 
-## Сеть
-
-Orange Pi должна одновременно видеть:
-
-1. IP-камеру Kingstar по Ethernet/LAN;
-2. центральный RobotLiDAR server;
-3. ESP32 по USB-UART.
-
-Например:
-
-```text
-Camera:    192.168.10.20
-Orange Pi: 192.168.10.10 / camera LAN
-           192.168.1.51  / server LAN (если два интерфейса/VLAN)
-Server:    192.168.1.100
-```
-
-Можно использовать одну общую Ethernet-подсеть, если это удобнее.
-
 ## Управляющий поток
 
 ```text
 Web -> Go server -> UDP/6000 Orange Pi
 
-Type 1 -> ONVIF Kingstar PAN/TILT
+Type 1 -> ONVIF MC500 PAN/TILT
 Type 2 -> ESP32 DRV left/right
 Type 3 -> ESP32 AUX lift/brush
 ```
 
-Cardboard работает без отдельной логики на сервере: гироскоп формирует обычные PTZ команды, а Orange Pi преобразует их в ONVIF `AbsoluteMove`.
+Cardboard не требует специального протокола: гироскоп телефона формирует обычные PAN/TILT, Orange Pi переводит их в ONVIF `AbsoluteMove` MC500.
