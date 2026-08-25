@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"strconv"
@@ -62,20 +63,20 @@ func (b *srtBridge) run() {
 			"-bsf:v", "dump_extra=freq=keyframe",
 			"-f", "rtp", output,
 		)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
 		log.Printf("SRT ingest %s: srt://0.0.0.0:%d -> RTP 127.0.0.1:%d (copy)", b.DeviceID, b.SRTPort, b.RTPPort)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			select {
-			case <-b.stop:
-				return
-			default:
-			}
-			if len(out) > 0 {
-				log.Printf("SRT %s ffmpeg exited: %v: %s", b.DeviceID, err, string(out))
-			} else {
-				log.Printf("SRT %s ffmpeg exited: %v", b.DeviceID, err)
-			}
+		err := cmd.Run()
+
+		select {
+		case <-b.stop:
+			return
+		default:
+		}
+		if err != nil {
+			log.Printf("SRT %s ffmpeg exited: %v; restarting listener", b.DeviceID, err)
 		} else {
-			log.Printf("SRT %s ffmpeg ended; waiting for reconnect", b.DeviceID)
+			log.Printf("SRT %s session ended; waiting for reconnect", b.DeviceID)
 		}
 
 		select {
