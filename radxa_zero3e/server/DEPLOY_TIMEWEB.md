@@ -12,7 +12,7 @@ Production deployment target:
 - TURN relay allocation: UDP `50000-50100`
 - HTTPS: `443/tcp`
 
-Raspberry Pi video uses SRT/MPEG-TS by default. H.264 is copied end-to-end; the server FFmpeg bridge only remuxes SRT/MPEG-TS to the existing localhost RTP ingest and does not decode or encode video.
+Raspberry Pi video uses SRT/MPEG-TS by default. H.264 is copied end-to-end. The Go server receives SRT directly, reconstructs MPEG-TS/PES, packetizes the existing H.264 Annex-B stream to RTP in memory, and writes it into Pion WebRTC. There is no FFmpeg process, decode, or encode on the server.
 
 ## Environment
 
@@ -31,15 +31,16 @@ TURN_PASSWORD=<strong-random-password>
 
 ## Server packages
 
-The SRT ingest bridge requires FFmpeg with `libsrt` support:
+No FFmpeg or libsrt system package is required for SRT ingest. SRT is implemented by the Go dependency `github.com/datarhei/gosrt` and is linked into `robotlidar-server`.
+
+Only the normal build toolchain is needed:
 
 ```bash
 apt update
-apt install -y ffmpeg
-ffmpeg -protocols 2>/dev/null | grep -E '^  srt$'
+apt install -y golang-go
 ```
 
-The last command must print `srt`.
+If Go was installed from the official archive instead, the distro package is not required.
 
 ## UFW
 
@@ -74,8 +75,12 @@ After a Raspberry with video enabled registers, the server log should contain li
 
 ```text
 RTP ingest TRACTOR-RPI-...: udp://0.0.0.0:10000
-SRT ingest TRACTOR-RPI-...: srt://0.0.0.0:12000 -> RTP 127.0.0.1:10000 (copy)
+SRT ingest TRACTOR-RPI-...: srt://0.0.0.0:12000 (pure Go MPEG-TS/H.264 -> Pion)
+SRT TRACTOR-RPI-... publisher connected from ...
+SRT H.264 MPEG-TS detected video PID ...
 ```
+
+The RTP port remains allocated for backwards compatibility with legacy clients. In SRT mode, video does not pass through that UDP socket; SRT packets are parsed and written to the Pion track directly in memory.
 
 Check listeners with:
 
