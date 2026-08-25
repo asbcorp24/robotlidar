@@ -137,8 +137,8 @@ func main() {
 
 	log.Printf("RobotLiDAR Go server listening on http://%s", addr)
 	log.Printf("SQLite: %s", dbPath)
-	log.Printf("H.264: RTP passthrough -> Pion WebRTC, no decode/encode")
-	log.Printf("Reliable uplink: SRT/MPEG-TS UDP %d-%d -> local RTP passthrough", srtPortBase, srtPortMax)
+	log.Printf("H.264: direct RTP -> Pion WebRTC, no decode/encode")
+	log.Printf("Reliable uplink: pure-Go SRT/MPEG-TS UDP %d-%d -> H.264 RTP -> Pion", srtPortBase, srtPortMax)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
