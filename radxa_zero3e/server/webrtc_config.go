@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -16,6 +17,13 @@ const (
 
 // newWebRTCPeerConnection creates a Pion PeerConnection with a predictable
 // UDP port range and optional TURN relay configured from environment variables.
+//
+// The MediaEngine + default interceptor registry are intentionally created for
+// every PeerConnection. In addition to normal codec negotiation this enables
+// Pion's standard RTCP/NACK pipeline, including retransmission of recently sent
+// RTP packets when the browser reports packet loss. Without these interceptors
+// a single lost H.264 packet can leave the browser waiting for the next IDR
+// frame and appear as a several-second frozen image.
 //
 // Supported environment variables:
 //   WEBRTC_UDP_MIN=40000
@@ -51,7 +59,20 @@ func newWebRTCPeerConnection(cfg webrtc.Configuration) (*webrtc.PeerConnection, 
 		})
 	}
 
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
+	mediaEngine := &webrtc.MediaEngine{}
+	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
+		return nil, fmt.Errorf("register WebRTC codecs: %w", err)
+	}
+	registry := &interceptor.Registry{}
+	if err := webrtc.RegisterDefaultInterceptors(mediaEngine, registry); err != nil {
+		return nil, fmt.Errorf("register WebRTC interceptors: %w", err)
+	}
+
+	api := webrtc.NewAPI(
+		webrtc.WithSettingEngine(settingEngine),
+		webrtc.WithMediaEngine(mediaEngine),
+		webrtc.WithInterceptorRegistry(registry),
+	)
 	return api.NewPeerConnection(cfg)
 }
 
