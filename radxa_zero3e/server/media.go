@@ -152,7 +152,7 @@ func (st *rtpStream) answer(offer webrtcOffer) (map[string]any, error) {
 		cfg.ICEServers = []webrtc.ICEServer{{URLs: []string{stun}}}
 	}
 
-	pc, err := webrtc.NewPeerConnection(cfg)
+	pc, err := newWebRTCPeerConnection(cfg)
 	if err != nil {
 		return nil, err
 	}
