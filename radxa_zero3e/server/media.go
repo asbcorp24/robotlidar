@@ -82,16 +82,23 @@ func (st *rtpStream) readLoop() {
 		if err := packet.Unmarshal(buf[:n]); err != nil {
 			continue
 		}
-		st.Packets.Add(1)
-		st.Bytes.Add(uint64(n))
-		st.LastMS.Store(time.Now().UnixMilli())
-
-		// H.264 payload remains untouched. Pion only adapts RTP transport fields
-		// such as SSRC/payload type for each WebRTC subscriber.
-		if err := st.Track.WriteRTP(&packet); err != nil {
+		if err := st.writeRTP(&packet, n); err != nil {
 			log.Printf("WebRTC relay %s write error: %v", st.DeviceID, err)
 		}
 	}
+}
+
+// writeRTP is the common in-memory entry point into the Pion track. Legacy
+// devices call it through the UDP RTP listener; pure-Go SRT ingest calls it
+// directly after MPEG-TS/PES parsing and H.264 RTP packetization.
+func (st *rtpStream) writeRTP(packet *rtp.Packet, wireBytes int) error {
+	st.Packets.Add(1)
+	if wireBytes <= 0 {
+		wireBytes = packet.MarshalSize()
+	}
+	st.Bytes.Add(uint64(wireBytes))
+	st.LastMS.Store(time.Now().UnixMilli())
+	return st.Track.WriteRTP(packet)
 }
 
 func (st *rtpStream) videoOnline() bool {
