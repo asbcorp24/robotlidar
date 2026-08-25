@@ -48,6 +48,8 @@ type device struct {
 	IP         string
 	PTZPort    int
 	RTPPort    int
+	SRTPort    int
+	Transport  string
 	LastSeen   atomic.Int64
 	FPS        atomic.Int64
 	Bitrate    atomic.Int64
@@ -57,6 +59,7 @@ type device struct {
 	TiltCDeg   atomic.Int64
 	LinkMbps   atomic.Int64
 	stream     *rtpStream
+	srt        *srtBridge
 }
 
 type user struct {
@@ -135,6 +138,7 @@ func main() {
 	log.Printf("RobotLiDAR Go server listening on http://%s", addr)
 	log.Printf("SQLite: %s", dbPath)
 	log.Printf("H.264: RTP passthrough -> Pion WebRTC, no decode/encode")
+	log.Printf("Reliable uplink: SRT/MPEG-TS UDP %d-%d -> local RTP passthrough", srtPortBase, srtPortMax)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
