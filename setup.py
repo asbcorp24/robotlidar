@@ -5,7 +5,7 @@ package_name = 'robotlidar'
 
 setup(
     name=package_name,
-    version='0.6.0',
+    version='0.6.1',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -20,7 +20,7 @@ setup(
     zip_safe=True,
     maintainer='asbcorp24',
     maintainer_email='asbcorp24@users.noreply.github.com',
-    description='Offline tracked tractor control, ESP32 drive, localization, charging and web control.',
+    description='Offline tracked tractor control, ESP32 drive, localization, charging, IP-camera relay and web control.',
     license='MIT',
     entry_points={'console_scripts':[
         'motor_gpio_node = robotlidar.motor_gpio_node:main',
@@ -34,6 +34,6 @@ setup(
         'charging_manager_node = robotlidar.charging_manager_node:main',
         'route_recorder_node = robotlidar.route_recorder_node:main',
         'route_player_node = robotlidar.route_player_node:main',
-        'robotlidar_web = robotlidar.web_entry_settings:main',
+        'robotlidar_web = robotlidar.web_entry_camera:main',
     ]},
 )
