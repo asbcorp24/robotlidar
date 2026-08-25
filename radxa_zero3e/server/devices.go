@@ -172,7 +172,7 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 			writeError(w, http.StatusServiceUnavailable, "No SRT ports available")
 			return
 		}
-		bridge, err := newSRTBridge(id, srtPort, d.RTPPort)
+		bridge, err := newSRTBridge(id, srtPort, d.stream)
 		if err != nil {
 			s.devicesM.Unlock()
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -180,6 +180,10 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 		}
 		d.SRTPort = srtPort
 		d.srt = bridge
+	} else if transport != "srt" && d.srt != nil {
+		d.srt.close()
+		d.srt = nil
+		d.SRTPort = 0
 	}
 
 	d.LastSeen.Store(time.Now().UnixMilli())
