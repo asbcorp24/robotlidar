@@ -6,8 +6,9 @@ Production deployment target:
 - punycode: `tele.xn----7sbbd7e6b.xn--p1ai`
 - HTTP application: `127.0.0.1:8000`
 - RTP ingest: UDP `10000-10099`
-- WebRTC ICE: UDP `40000-40100`
-- TURN/STUN: `3478/tcp`, `3478/udp`
+- WebRTC ICE (Pion direct): UDP `40000-40100`
+- TURN/STUN listener: `3478/tcp`, `3478/udp`
+- TURN relay allocation: UDP `50000-50100`
 - HTTPS: `443/tcp`
 
 ## Environment
@@ -35,6 +36,7 @@ ufw allow 3478/tcp
 ufw allow 3478/udp
 ufw allow 10000:10099/udp
 ufw allow 40000:40100/udp
+ufw allow 50000:50100/udp
 ufw reload
 ```
 
@@ -69,6 +71,8 @@ fingerprint
 lt-cred-mech
 realm=tele.xn----7sbbd7e6b.xn--p1ai
 user=robotlidar:<same-password-as-TURN_PASSWORD>
+min-port=50000
+max-port=50100
 no-multicast-peers
 no-cli
 ```
