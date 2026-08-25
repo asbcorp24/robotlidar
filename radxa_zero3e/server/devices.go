@@ -9,11 +9,12 @@ import (
 )
 
 type registerRequest struct {
-	Name       string `json:"name"`
-	IP         string `json:"ip"`
-	RTPPort    int    `json:"rtp_port"`
-	PTZPort    int    `json:"ptz_port"`
-	DeviceType string `json:"device_type"`
+	Name           string `json:"name"`
+	IP             string `json:"ip"`
+	RTPPort        int    `json:"rtp_port"`
+	PTZPort        int    `json:"ptz_port"`
+	DeviceType     string `json:"device_type"`
+	VideoTransport string `json:"video_transport"`
 }
 
 type telemetryRequest struct {
@@ -121,6 +122,14 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 	if strings.TrimSpace(req.DeviceType) == "" {
 		req.DeviceType = "radxa_stereo"
 	}
+	transport := strings.ToLower(strings.TrimSpace(req.VideoTransport))
+	if transport == "" {
+		transport = "rtp"
+	}
+	if transport != "rtp" && transport != "srt" {
+		writeError(w, http.StatusBadRequest, "video_transport must be rtp or srt")
+		return
+	}
 
 	s.devicesM.Lock()
 	d := s.devices[id]
@@ -144,6 +153,7 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 			IP:         req.IP,
 			PTZPort:    req.PTZPort,
 			RTPPort:    port,
+			Transport:  transport,
 			stream:     stream,
 		}
 		s.devices[id] = d
@@ -152,15 +162,40 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 		d.DeviceType = req.DeviceType
 		d.IP = req.IP
 		d.PTZPort = req.PTZPort
+		d.Transport = transport
 	}
-	d.LastSeen.Store(time.Now().UnixMilli())
-	s.devicesM.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	if transport == "srt" && d.srt == nil {
+		srtPort := s.allocateSRTPortLocked()
+		if srtPort == 0 {
+			s.devicesM.Unlock()
+			writeError(w, http.StatusServiceUnavailable, "No SRT ports available")
+			return
+		}
+		bridge, err := newSRTBridge(id, srtPort, d.RTPPort)
+		if err != nil {
+			s.devicesM.Unlock()
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		d.SRTPort = srtPort
+		d.srt = bridge
+	}
+
+	d.LastSeen.Store(time.Now().UnixMilli())
+	resp := map[string]any{
 		"ok":                true,
 		"device":            d.runtimeJSON(),
 		"video_ingest_port": d.RTPPort,
-	})
+		"video_transport":   transport,
+	}
+	if transport == "srt" {
+		resp["srt_ingest_port"] = d.SRTPort
+		resp["srt_latency_ms"] = 200
+	}
+	s.devicesM.Unlock()
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) telemetry(w http.ResponseWriter, r *http.Request, id string) {
@@ -196,7 +231,10 @@ func (s *server) videoStatus(w http.ResponseWriter, r *http.Request, id string) 
 	if r.Method != http.MethodGet { methodNotAllowed(w); return }
 	u, ok := s.requireUser(w, r); if !ok { return }
 	d, ok := s.ownedDevice(w, u.ID, id); if !ok { return }
-	writeJSON(w, http.StatusOK, d.stream.status())
+	status := d.stream.status()
+	status["transport"] = d.Transport
+	if d.SRTPort > 0 { status["srt_ingest_port"] = d.SRTPort }
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *server) ownedDevice(w http.ResponseWriter, userID int64, id string) (*device, bool) {
@@ -216,7 +254,14 @@ func (s *server) ownedDevice(w http.ResponseWriter, userID int64, id string) (*d
 func (s *server) allocateVideoPortLocked() int {
 	used := make(map[int]bool, len(s.devices))
 	for _, d := range s.devices { used[d.RTPPort] = true }
-	for p := videoPortBase; p <= 65535; p++ { if !used[p] { return p } }
+	for p := videoPortBase; p < srtPortBase; p++ { if !used[p] { return p } }
+	return 0
+}
+
+func (s *server) allocateSRTPortLocked() int {
+	used := make(map[int]bool, len(s.devices))
+	for _, d := range s.devices { if d.SRTPort > 0 { used[d.SRTPort] = true } }
+	for p := srtPortBase; p <= srtPortMax; p++ { if !used[p] { return p } }
 	return 0
 }
 
@@ -230,6 +275,7 @@ func (d *device) publicJSON(alias string) map[string]any {
 		"id": d.ID, "device_id": d.ID, "device_type": d.DeviceType, "name": alias,
 		"online": d.online(), "video_online": d.stream.videoOnline(),
 		"streamType": "webrtc", "streamUrl": "/api/devices/" + d.ID + "/webrtc",
+		"video_transport": d.Transport,
 		"pan": float64(d.PanCDeg.Load()) / 100.0, "tilt": float64(d.TiltCDeg.Load()) / 100.0,
 		"fps": d.FPS.Load(), "bitrateKbps": d.Bitrate.Load() / 1000,
 		"ethernet": linkLabel(d.LinkMbps.Load()), "uptimeSec": d.UptimeMS.Load() / 1000,
@@ -240,7 +286,8 @@ func (d *device) publicJSON(alias string) map[string]any {
 func (d *device) runtimeJSON() map[string]any {
 	return map[string]any{
 		"device_id": d.ID, "device_type": d.DeviceType, "name": d.Name, "ip": d.IP,
-		"video_ingest_port": d.RTPPort, "ptz_port": d.PTZPort, "online": d.online(),
+		"video_ingest_port": d.RTPPort, "srt_ingest_port": d.SRTPort,
+		"video_transport": d.Transport, "ptz_port": d.PTZPort, "online": d.online(),
 	}
 }
 
