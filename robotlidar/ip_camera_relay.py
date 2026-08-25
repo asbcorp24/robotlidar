@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """RTSP H.264 passthrough and device registration for Raspberry Pi.
 
-Video relay and remote control are independent: RTSP can be disabled while the
-Raspberry remains registered on the central server for PTZ/drive/brush control.
+Video relay and remote control are independent. When video is enabled the
+Raspberry requests the reliable SRT ingest from the central server and sends
+H.264 as MPEG-TS with stream copy (no decode/encode). Old servers remain
+compatible through an automatic RTP fallback.
 """
 from __future__ import annotations
 
@@ -27,6 +29,8 @@ class IpCameraRelayManager:
         self._process: Optional[subprocess.Popen] = None
         self._config: dict[str, Any] = {}
         self._video_port: Optional[int] = None
+        self._srt_port: Optional[int] = None
+        self._transport = 'rtp'
         self._registered = False
         self._last_error = ''
         self._last_register_at = 0.0
@@ -53,6 +57,8 @@ class IpCameraRelayManager:
             if changed:
                 self._registered = False
                 self._video_port = None
+                self._srt_port = None
+                self._transport = 'rtp'
         if changed:
             self._log('DEVICE: configuration changed; re-registering')
             self._stop_ffmpeg()
@@ -75,7 +81,9 @@ class IpCameraRelayManager:
                 'server_url': cfg.get('server_url') or '',
                 'rtsp_configured': bool(cfg.get('rtsp_url')),
                 'registered': self._registered,
+                'video_transport': self._transport,
                 'video_ingest_port': self._video_port,
+                'srt_ingest_port': self._srt_port,
                 'ffmpeg_running': running,
                 'ffmpeg_pid': process.pid if running else None,
                 'restart_count': self._restart_count,
@@ -95,7 +103,7 @@ class IpCameraRelayManager:
     def _normalize(self, settings: dict[str, Any]) -> dict[str, Any]:
         return {
             'enabled': bool(settings.get('camera_enabled', False)),
-            'remote_control_enabled': bool(settings.get('camera_remote_control_enabled', True)),
+            'remote_control_enabled': bool(settings.get('camera_remote_control_enabled', False)),
             'device_id': str(settings.get('camera_device_id') or self.default_device_id()).strip(),
             'rtsp_url': str(settings.get('camera_rtsp_url') or '').strip(),
             'server_url': str(settings.get('camera_server_url') or '').strip().rstrip('/'),
@@ -103,6 +111,7 @@ class IpCameraRelayManager:
             'control_port': int(settings.get('camera_control_port') or 6000),
             'reported_fps': int(settings.get('camera_reported_fps') or 25),
             'reported_bitrate_bps': int(settings.get('camera_reported_bitrate_bps') or 2_000_000),
+            'srt_latency_ms': max(80, min(2000, int(settings.get('camera_srt_latency_ms') or 200))),
         }
 
     def _run(self) -> None:
@@ -136,7 +145,8 @@ class IpCameraRelayManager:
             except Exception as exc:
                 self._set_error(str(exc))
                 self._log(f'DEVICE: {exc}')
-                self._registered = False
+                with self._lock:
+                    self._registered = False
                 self._stop_ffmpeg()
                 self._sleep(2.0)
                 continue
@@ -155,40 +165,65 @@ class IpCameraRelayManager:
         if not server_host:
             raise RuntimeError('Invalid central server URL')
         local_ip = self._local_ip_for(server_host)
+        requested_transport = 'srt' if cfg.get('enabled') else 'rtp'
         payload = {
             'name': f'Raspberry Pi RobotLiDAR ({cfg["device_id"]})',
             'ip': local_ip,
             'rtp_port': 5004,
             'ptz_port': cfg['control_port'],
+            'device_type': 'raspberry_robotlidar',
+            'video_transport': requested_transport,
         }
         data = self._json_request(
             'POST',
             f'{cfg["server_url"]}/api/devices/{urllib.parse.quote(cfg["device_id"], safe="")}/register',
             payload,
         )
-        port = int(data.get('video_ingest_port') or 0)
-        if not 1 <= port <= 65535:
+        rtp_port = int(data.get('video_ingest_port') or 0)
+        if not 1 <= rtp_port <= 65535:
             raise RuntimeError('Central server did not return video_ingest_port')
+
+        transport = str(data.get('video_transport') or 'rtp').strip().lower()
+        srt_port = int(data.get('srt_ingest_port') or 0)
+        if requested_transport == 'srt' and transport == 'srt' and not 1 <= srt_port <= 65535:
+            raise RuntimeError('Central server selected SRT but did not return srt_ingest_port')
+        if transport not in ('rtp', 'srt'):
+            transport = 'rtp'
+
         with self._lock:
-            self._video_port = port
+            self._video_port = rtp_port
+            self._srt_port = srt_port if transport == 'srt' else None
+            self._transport = transport
             self._registered = True
             self._last_register_at = time.time()
             self._last_error = ''
-        self._log(f'DEVICE: registered {cfg["device_id"]}; control UDP {cfg["control_port"]}; RTP {port}')
+
+        if transport == 'srt':
+            self._log(
+                f'DEVICE: registered {cfg["device_id"]}; control UDP {cfg["control_port"]}; '
+                f'SRT {srt_port} -> server RTP {rtp_port}'
+            )
+        else:
+            self._log(
+                f'DEVICE: registered {cfg["device_id"]}; control UDP {cfg["control_port"]}; '
+                f'legacy RTP {rtp_port}'
+            )
 
     def _ensure_ffmpeg(self, cfg: dict[str, Any]) -> None:
         with self._lock:
             process = self._process
-            port = self._video_port
+            rtp_port = self._video_port
+            srt_port = self._srt_port
+            transport = self._transport
         if process is not None and process.poll() is None:
             return
-        if port is None:
+        if rtp_port is None:
             return
         server_host = urllib.parse.urlparse(cfg['server_url']).hostname
         if not server_host:
             raise RuntimeError('Invalid central server URL')
-        target = f'rtp://{server_host}:{port}?pkt_size=1200'
-        command = [
+
+        common = [
             cfg['ffmpeg'],
             '-hide_banner', '-loglevel', 'warning',
             '-fflags', 'nobuffer',
@@ -197,9 +232,30 @@ class IpCameraRelayManager:
             '-map', '0:v:0', '-an',
             '-c:v', 'copy',
             '-bsf:v', 'dump_extra=freq=keyframe',
-            '-f', 'rtp', target,
         ]
-        self._log(f'CAMERA: starting RTSP passthrough -> {server_host}:{port}')
+
+        if transport == 'srt':
+            if srt_port is None:
+                raise RuntimeError('SRT selected without ingest port')
+            latency_us = int(cfg['srt_latency_ms']) * 1000
+            target = (
+                f'srt://{server_host}:{srt_port}?mode=caller&transtype=live&'
+                f'latency={latency_us}&pkt_size=1316'
+            )
+            command = common + [
+                '-mpegts_flags', '+resend_headers',
+                '-muxdelay', '0',
+                '-f', 'mpegts', target,
+            ]
+            self._log(
+                f'CAMERA: starting RTSP/TCP -> H264 copy -> SRT/MPEG-TS '
+                f'{server_host}:{srt_port} latency={cfg["srt_latency_ms"]}ms'
+            )
+        else:
+            target = f'rtp://{server_host}:{rtp_port}?pkt_size=1200'
+            command = common + ['-f', 'rtp', target]
+            self._log(f'CAMERA: starting legacy RTSP passthrough -> RTP {server_host}:{rtp_port}')
+
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -265,6 +321,7 @@ class IpCameraRelayManager:
                 with self._lock:
                     self._registered = False
                     self._video_port = None
+                    self._srt_port = None
                 self._stop_ffmpeg()
                 return
             raise
