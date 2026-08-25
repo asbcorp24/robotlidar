@@ -5,11 +5,14 @@ Production deployment target:
 - domain: `tele.ар-баш.рф`
 - punycode: `tele.xn----7sbbd7e6b.xn--p1ai`
 - HTTP application: `127.0.0.1:8000`
-- RTP ingest: UDP `10000-10099`
+- legacy RTP ingest: UDP `10000-11999`
+- reliable Raspberry SRT ingest: UDP `12000-12099`
 - WebRTC ICE (Pion direct): UDP `40000-40100`
 - TURN/STUN listener: `3478/tcp`, `3478/udp`
 - TURN relay allocation: UDP `50000-50100`
 - HTTPS: `443/tcp`
+
+Raspberry Pi video uses SRT/MPEG-TS by default. H.264 is copied end-to-end; the server FFmpeg bridge only remuxes SRT/MPEG-TS to the existing localhost RTP ingest and does not decode or encode video.
 
 ## Environment
 
@@ -26,6 +29,18 @@ TURN_PASSWORD=<strong-random-password>
 
 `TURN_URL` may contain more than one URL separated by commas, for example UDP and TCP variants.
 
+## Server packages
+
+The SRT ingest bridge requires FFmpeg with `libsrt` support:
+
+```bash
+apt update
+apt install -y ffmpeg
+ffmpeg -protocols 2>/dev/null | grep -E '^  srt$'
+```
+
+The last command must print `srt`.
+
 ## UFW
 
 ```bash
@@ -34,13 +49,14 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 3478/tcp
 ufw allow 3478/udp
-ufw allow 10000:10099/udp
+ufw allow 10000:11999/udp
+ufw allow 12000:12099/udp
 ufw allow 40000:40100/udp
 ufw allow 50000:50100/udp
 ufw reload
 ```
 
-The same port rules must be allowed in the Timeweb cloud firewall if one is attached to the server.
+The same port rules must be allowed in the Timeweb cloud firewall if one is attached to the server. In particular, UDP `12000-12099` must be reachable from Raspberry Pi devices for SRT.
 
 ## Build
 
@@ -52,6 +68,20 @@ go mod download
 go build -trimpath -ldflags="-s -w" -o robotlidar-server .
 systemctl restart robotlidar
 curl http://127.0.0.1:8000/health
+```
+
+After a Raspberry with video enabled registers, the server log should contain lines similar to:
+
+```text
+RTP ingest TRACTOR-RPI-...: udp://0.0.0.0:10000
+SRT ingest TRACTOR-RPI-...: srt://0.0.0.0:12000 -> RTP 127.0.0.1:10000 (copy)
+```
+
+Check listeners with:
+
+```bash
+ss -lunp | grep -E ':120[0-9][0-9]|:100[0-9][0-9]'
+journalctl -u robotlidar -f
 ```
 
 ## coturn example
