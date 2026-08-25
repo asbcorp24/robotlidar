@@ -5,54 +5,53 @@
 ## Архитектура
 
 ```text
-Radxa + USB stereo camera
-          или
-Orange Pi PC + Mercusys MC500
-          или
-Windows emulator
+Raspberry Pi + RTSP camera
         |
-        | H.264/RTP + telemetry + control
+        | SRT/MPEG-TS/H.264 (reliable, no transcode)
         v
 +--------------------------------------+
 | robotlidar-server                    |
 |                                      |
 | HTTP/REST + users/sessions + SQLite  |
-| user <-> tractor device_id           |
-| RTP ingest + Pion WebRTC passthrough |
-| PTZ camera                            |
-| tractor drive                        |
-| brush spin + lift                    |
+| pure-Go SRT + MPEG-TS/PES parser     |
+| H.264 -> RTP packetizer in memory    |
+| Pion WebRTC                          |
+| PTZ / drive / brush control          |
 | embedded web                         |
 +------------------+-------------------+
                    |
                    | WebRTC
                    v
                 Browser
+
+Legacy Radxa / Orange Pi / Windows emulator clients can still use direct H.264/RTP ingest.
 ```
 
-H.264 на сервере не декодируется и не перекодируется.
+H.264 на сервере не декодируется и не перекодируется. Для Raspberry серверу не требуется FFmpeg: SRT принимает pure-Go библиотека, MPEG-TS/PES разбирается в Go, а исходный Annex-B H.264 сразу пакетизуется в RTP и записывается в Pion track.
 
 ## Клиенты
 
-### Radxa ZERO 3E
+### Raspberry Pi RobotLiDAR
 
-`radxa_zero3e/device/` — USB stereo UVC camera + аппаратный H.264 RKMPP + локальные PAN/TILT servo.
-
-### Orange Pi PC + Mercusys MC500
-
-`radxa_zero3e/orange_pi_pc_ipcam/` — MC500 подключена к LAN по Wi-Fi 2.4 ГГц, Orange Pi к тому же роутеру по Ethernet.
+Корневой проект `robotlidar/` использует IP-камеру по RTSP/TCP. Raspberry запускает FFmpeg только как лёгкий remux:
 
 ```text
-MC500 -- RTSP/H.264 --> Orange Pi -- RTP/H.264 --> Server
-MC500 <-- ONVIF/PTZ -- Orange Pi <-- UDP control -- Server
-ESP32 <--- USB-UART --- Orange Pi <-- drive/brush --- Server
+RTSP/TCP -> H.264 copy -> MPEG-TS -> SRT -> Go server
 ```
 
-MC500 официально поддерживает H.264, RTSP и ONVIF. Для неё используются RTSP `:554/stream1` и ONVIF service port `2020`; Camera Account создаётся в приложении MERCUSYS.
+Используется `-c:v copy`, поэтому на Raspberry нет декодирования/повторного кодирования видео.
+
+### Radxa ZERO 3E
+
+`radxa_zero3e/device/` — USB stereo UVC camera + аппаратный H.264 RKMPP + локальные PAN/TILT servo. Старый RTP uplink сохраняется для совместимости.
+
+### Orange Pi PC + IP camera
+
+`radxa_zero3e/orange_pi_pc_ipcam/` — IP-камера и ESP32 через Orange Pi. Старый RTP uplink сохраняется для совместимости.
 
 ### Windows emulator
 
-`radxa_zero3e/emulator_windows/` — тестовый клиент до подключения реального оборудования.
+`tools/rtsp_camera_emulator_windows/` — RTSP-камера для Raspberry и полный тестовый трактор для центрального сервера.
 
 ## Структура сервера
 
@@ -62,35 +61,23 @@ radxa_zero3e/server/
 ├── auth.go
 ├── devices.go
 ├── media.go
+├── srt_bridge.go
 ├── control.go
 ├── util.go
+├── webrtc_config.go
 ├── go.mod
-├── web/
-└── camera_hub.db
+└── web/
 ```
 
 ## Запуск
 
 Требуется Go 1.24+.
 
-Windows:
-
-```bat
-cd radxa_zero3e\server
-run_server.bat
-```
-
-или:
-
-```bat
-go mod tidy
-go run .
-```
-
-Сборка EXE:
-
-```bat
-go build -trimpath -ldflags="-s -w" -o robotlidar-server.exe .
+```bash
+cd radxa_zero3e/server
+go mod download
+go build -trimpath -ldflags="-s -w" -o robotlidar-server .
+./robotlidar-server
 ```
 
 Переменные окружения:
@@ -99,6 +86,8 @@ go build -trimpath -ldflags="-s -w" -o robotlidar-server.exe .
 LISTEN_ADDR=0.0.0.0:8000
 DB_PATH=camera_hub.db
 STUN_URL=stun:stun.example.com:3478
+WEBRTC_UDP_MIN=40000
+WEBRTC_UDP_MAX=40100
 ```
 
 ## Device ID и пользователи
@@ -107,46 +96,38 @@ STUN_URL=stun:stun.example.com:3478
 
 ## Видео
 
+Новый Raspberry uplink:
+
 ```text
 Camera H.264
- -> tractor gateway
- -> RTP/UDP
- -> Go/Pion TrackLocalStaticRTP
+ -> RTSP/TCP
+ -> Raspberry FFmpeg (-c:v copy)
+ -> MPEG-TS/SRT
+ -> Go SRT receiver
+ -> Go MPEG-TS/PES parser
+ -> Go H.264 RTP packetizer
+ -> Pion TrackLocalStaticRTP
  -> WebRTC/SRTP
  -> Browser
 ```
 
+SRT использует восстановление потерянных пакетов и небольшой latency buffer, поэтому интернет-канал устойчивее обычного RTP/UDP.
+
+Legacy uplink остаётся доступным:
+
+```text
+H.264/RTP/UDP -> Go RTP ingest -> Pion WebRTC
+```
+
 ## Управление трактором
 
-В web есть:
+В web есть вперёд/назад/влево/вправо/STOP, скорость, W/A/S/D и Space. Сервер передаёт нормированные значения левой/правой гусеницы `-1000..+1000`.
 
-- вперёд;
-- назад;
-- поворот/разворот влево;
-- поворот/разворот вправо;
-- STOP;
-- скорость 10–100%;
-- W/A/S/D;
-- Space = аварийный STOP.
-
-Сервер передаёт нормированные значения левой/правой гусеницы `-1000..+1000`.
-
-Пока кнопка движения удерживается, browser повторяет активную команду примерно каждые 180 мс. Если browser/сеть пропадает, heartbeat прекращается и watchdog Orange Pi/ESP32 переводит привод в STOP.
+Пока кнопка движения удерживается, browser повторяет активную команду примерно каждые 180 мс. Если browser/сеть пропадает, heartbeat прекращается и watchdog Raspberry/ESP32 переводит привод в STOP.
 
 ## Щётка
 
-В web есть:
-
-- вращение;
-- реверс команды вращения;
-- STOP;
-- скорость;
-- поднять;
-- опустить.
-
-Подъём/опускание — hold-to-run. Активные brush-команды также поддерживаются heartbeat.
-
-Текущая ESP32 силовая схема щётки имеет скорость + Brake, без отдельной физической линии Reverse; до добавления этой линии отрицательное направление вращения не реализуется аппаратно.
+Поддерживаются вращение, STOP, скорость, поднять и опустить. Подъём/опускание — hold-to-run. Активные brush-команды также поддерживаются heartbeat.
 
 ## Управляющий UDP протокол
 
@@ -159,22 +140,6 @@ type 3 = brush: spin/lift
 ```
 
 Drive и brush используют диапазон `-1000..+1000`.
-
-На Orange Pi:
-
-```text
-type 1 -> ONVIF MC500
-type 2 -> ESP32 DRV
-type 3 -> ESP32 AUX
-```
-
-## Cardboard / VR
-
-Кнопка `Cardboard` включает fullscreen режим. Для Radxa SBS поток делится между глазами. `DeviceOrientation` телефона формирует PAN/TILT примерно 10 раз/с.
-
-Для Orange Pi + MC500 те же PAN/TILT команды автоматически переводятся Orange Pi в ONVIF `AbsoluteMove` камеры.
-
-Для мобильного гироскопа в реальной эксплуатации нужен HTTPS.
 
 ## Основные API
 
