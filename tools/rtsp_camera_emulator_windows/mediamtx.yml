@@ -1,0 +1,7 @@
+logLevel: info
+rtsp: yes
+rtspAddress: :8554
+protocols: [tcp]
+paths:
+  camera:
+    source: publisher
