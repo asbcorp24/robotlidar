@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 cd /d "%~dp0"
 
 rem Prepare MediaMTX first through Windows TLS / PowerShell.
@@ -21,34 +21,16 @@ if %errorlevel%==0 (
   set "PY_CMD=python"
 )
 
-rem Python's bundled OpenSSL on some Windows installations has no usable
-rem default CA file. Use certifi's current Mozilla CA bundle instead of
-rem disabling TLS verification. This is required for HTTPS registration and
-rem telemetry to the central RobotLiDAR server.
-%PY_CMD% -c "import certifi" >nul 2>nul
+rem HTTPS registration/telemetry is executed by windows_launcher.py through
+rem the system curl.exe. On Windows curl uses Schannel and the Windows
+rem certificate store; TLS verification remains enabled.
+where curl.exe >nul 2>nul
 if errorlevel 1 (
-  echo Installing Python CA bundle ^(certifi^)...
-  %PY_CMD% -m pip install --user --upgrade certifi
-  if errorlevel 1 (
-    echo.
-    echo ERROR: Failed to install certifi.
-    pause
-    exit /b 1
-  )
-)
-
-for /f "usebackq delims=" %%I in (`%PY_CMD% -c "import certifi; print(certifi.where())"`) do set "SSL_CERT_FILE=%%I"
-if not defined SSL_CERT_FILE (
-  echo ERROR: Could not determine certifi CA bundle path.
-  pause
-  exit /b 1
-)
-if not exist "%SSL_CERT_FILE%" (
-  echo ERROR: CA bundle does not exist: %SSL_CERT_FILE%
+  echo ERROR: curl.exe was not found. Windows 10/11 normally includes it.
   pause
   exit /b 1
 )
 
-echo Python CA bundle: %SSL_CERT_FILE%
-%PY_CMD% emulator.py
+echo HTTPS transport: Windows curl.exe / Schannel
+%PY_CMD% windows_launcher.py
 if errorlevel 1 pause
