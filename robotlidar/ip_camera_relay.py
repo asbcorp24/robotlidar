@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""RTSP H.264 passthrough from an IP camera to the central RobotLiDAR Go server.
+"""RTSP H.264 passthrough and device registration for Raspberry Pi.
 
-The Raspberry Pi never decodes/re-encodes video: FFmpeg reads RTSP and sends the
-existing H.264 elementary stream as RTP/UDP using ``-c:v copy``.
+Video relay and remote control are independent: RTSP can be disabled while the
+Raspberry remains registered on the central server for PTZ/drive/brush control.
 """
 from __future__ import annotations
 
 import json
-import os
 import socket
 import subprocess
 import threading
@@ -55,7 +54,7 @@ class IpCameraRelayManager:
                 self._registered = False
                 self._video_port = None
         if changed:
-            self._log('CAMERA: configuration changed; restarting relay')
+            self._log('DEVICE: configuration changed; re-registering')
             self._stop_ffmpeg()
             self._wake.set()
 
@@ -71,6 +70,7 @@ class IpCameraRelayManager:
             running = process is not None and process.poll() is None
             return {
                 'enabled': bool(cfg.get('enabled')),
+                'control_enabled': bool(cfg.get('remote_control_enabled')),
                 'device_id': cfg.get('device_id') or '',
                 'server_url': cfg.get('server_url') or '',
                 'rtsp_configured': bool(cfg.get('rtsp_url')),
@@ -95,6 +95,7 @@ class IpCameraRelayManager:
     def _normalize(self, settings: dict[str, Any]) -> dict[str, Any]:
         return {
             'enabled': bool(settings.get('camera_enabled', False)),
+            'remote_control_enabled': bool(settings.get('camera_remote_control_enabled', True)),
             'device_id': str(settings.get('camera_device_id') or self.default_device_id()).strip(),
             'rtsp_url': str(settings.get('camera_rtsp_url') or '').strip(),
             'server_url': str(settings.get('camera_server_url') or '').strip().rstrip('/'),
@@ -107,12 +108,18 @@ class IpCameraRelayManager:
     def _run(self) -> None:
         while not self._stop.is_set():
             cfg = self._snapshot_config()
-            if not cfg.get('enabled'):
+            active = bool(cfg.get('enabled') or cfg.get('remote_control_enabled'))
+            if not active:
                 self._stop_ffmpeg()
                 self._sleep(1.0)
                 continue
-            if not cfg.get('rtsp_url') or not cfg.get('server_url') or not cfg.get('device_id'):
-                self._set_error('RTSP URL, server URL and device ID are required')
+            if not cfg.get('server_url') or not cfg.get('device_id'):
+                self._set_error('Server URL and device ID are required')
+                self._stop_ffmpeg()
+                self._sleep(1.0)
+                continue
+            if cfg.get('enabled') and not cfg.get('rtsp_url'):
+                self._set_error('RTSP URL is required while video relay is enabled')
                 self._stop_ffmpeg()
                 self._sleep(1.0)
                 continue
@@ -120,12 +127,15 @@ class IpCameraRelayManager:
             try:
                 if not self._registered or self._video_port is None:
                     self._register(cfg)
-                self._ensure_ffmpeg(cfg)
+                if cfg.get('enabled'):
+                    self._ensure_ffmpeg(cfg)
+                else:
+                    self._stop_ffmpeg()
                 if time.time() - self._last_telemetry_at >= 1.0:
                     self._send_telemetry(cfg)
             except Exception as exc:
                 self._set_error(str(exc))
-                self._log(f'CAMERA: {exc}')
+                self._log(f'DEVICE: {exc}')
                 self._registered = False
                 self._stop_ffmpeg()
                 self._sleep(2.0)
@@ -146,7 +156,7 @@ class IpCameraRelayManager:
             raise RuntimeError('Invalid central server URL')
         local_ip = self._local_ip_for(server_host)
         payload = {
-            'name': f'Raspberry Pi + IP camera ({cfg["device_id"]})',
+            'name': f'Raspberry Pi RobotLiDAR ({cfg["device_id"]})',
             'ip': local_ip,
             'rtp_port': 5004,
             'ptz_port': cfg['control_port'],
@@ -164,7 +174,7 @@ class IpCameraRelayManager:
             self._registered = True
             self._last_register_at = time.time()
             self._last_error = ''
-        self._log(f'CAMERA: registered {cfg["device_id"]}; RTP ingest UDP {port}')
+        self._log(f'DEVICE: registered {cfg["device_id"]}; control UDP {cfg["control_port"]}; RTP {port}')
 
     def _ensure_ffmpeg(self, cfg: dict[str, Any]) -> None:
         with self._lock:
@@ -233,7 +243,7 @@ class IpCameraRelayManager:
     def _send_telemetry(self, cfg: dict[str, Any]) -> None:
         with self._lock:
             process = self._process
-        video_ok = process is not None and process.poll() is None
+        video_ok = bool(cfg.get('enabled')) and process is not None and process.poll() is None
         payload = {
             'fps': cfg['reported_fps'] if video_ok else 0,
             'bitrate_bps': cfg['reported_bitrate_bps'] if video_ok else 0,
