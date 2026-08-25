@@ -47,9 +47,9 @@ fi
 
 sudo apt update
 sudo apt install -y \
-  python3-fastapi python3-uvicorn python3-pil python3-serial
+  python3-fastapi python3-uvicorn python3-pil python3-serial ffmpeg
 
-# Разрешения на USB-лидар, UART GPS, I2C и GPIO.
+# Разрешения на USB-лидар, UART GPS, ESP32, I2C и GPIO.
 for DEVICE_GROUP in dialout i2c gpio; do
   if getent group "$DEVICE_GROUP" >/dev/null; then
     sudo usermod -aG "$DEVICE_GROUP" "$USER_NAME"
@@ -81,7 +81,9 @@ echo
 echo "RobotLidar Web установлен и запущен."
 echo "Порт лидара: $SERIAL_PORT"
 echo "Порт GPS: $GPS_PORT"
+echo "FFmpeg: $(command -v ffmpeg || echo 'не найден')"
 echo "Статус: sudo systemctl status $SERVICE_NAME"
 echo "Журнал: journalctl -u $SERVICE_NAME -f"
 echo "Панель: http://<IP_RASPBERRY_PI>:8080"
+echo "В панели появился раздел IP-камера: RTSP URL, ID трактора и адрес центрального сервера."
 echo "После добавления пользователя в группы dialout/i2c/gpio может потребоваться перезагрузка."
