@@ -2,17 +2,15 @@ from __future__ import annotations
 
 """Windows launcher for RobotLiDAR emulator.
 
-Python builds on some Windows machines can have a broken/outdated OpenSSL CA
-chain even though Windows Schannel validates the same HTTPS endpoint correctly.
-The emulator talks to the RobotLiDAR server through urllib, so on Windows we
-route urllib.request.urlopen() through the system curl.exe. Windows curl uses
-Schannel and therefore the normal Windows certificate store.
+HTTPS registration/telemetry is routed through the system curl.exe so Windows
+Schannel validates the certificate with the normal Windows certificate store.
+WSS control uses websocket-client; truststore is injected before importing the
+emulator so Python SSL also uses the Windows certificate store.
 
-No certificate verification is disabled.
+Certificate verification is never disabled.
 """
 
 import io
-import json
 import os
 import shutil
 import subprocess
@@ -43,11 +41,15 @@ class CurlResponse:
         return False
 
 
-def _curl_urlopen(url_or_request: Any, data: bytes | None = None, timeout: float | None = None, *args: Any, **kwargs: Any) -> CurlResponse:
+def _curl_urlopen(
+    url_or_request: Any,
+    data: bytes | None = None,
+    timeout: float | None = None,
+    *args: Any,
+    **kwargs: Any,
+) -> CurlResponse:
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if not curl:
-        # Extremely old/minimal Windows installations may not have curl.exe.
-        # Keep the original behavior as a fallback.
         return _ORIGINAL_URLOPEN(url_or_request, data=data, timeout=timeout, *args, **kwargs)  # type: ignore[return-value]
 
     if isinstance(url_or_request, urllib.request.Request):
@@ -101,6 +103,12 @@ def _curl_urlopen(url_or_request: Any, data: bytes | None = None, timeout: float
 def main() -> int:
     if os.name == "nt":
         urllib.request.urlopen = _curl_urlopen  # type: ignore[assignment]
+        try:
+            import truststore
+
+            truststore.inject_into_ssl()
+        except ImportError:
+            print("WARNING: truststore is not installed; WSS will use Python's default CA store")
 
     import emulator
 
