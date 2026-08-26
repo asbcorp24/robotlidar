@@ -132,6 +132,7 @@ class RemoteControlGateway:
                 'websocket_connected': self._ws_connected,
                 'websocket_url': self._ws_url,
                 'websocket_reconnects': self._ws_reconnects,
+                'ros_mode_active': self._ros_mode_active(),
                 'packet_age_sec': round(time.monotonic() - self._last_packet_at, 3) if self._last_packet_at else None,
                 'last_seq': self._last_seq,
                 'drive': {'left': self._drive[0], 'right': self._drive[1]},
@@ -140,6 +141,15 @@ class RemoteControlGateway:
                 'onvif_configured': bool(cfg.get('onvif_url')),
                 'last_error': self._last_error,
             }
+
+    def _ros_mode_active(self) -> bool:
+        """Return True only while a ROS mapping/navigation launch is running."""
+        try:
+            from robotlidar import web_app
+            state = web_app.process_manager.status()
+            return bool(state.get('process_running')) and state.get('mode') in ('mapping', 'navigation')
+        except Exception:
+            return False
 
     def _ws_loop(self) -> None:
         while not self._stop.is_set():
@@ -313,10 +323,14 @@ class RemoteControlGateway:
             had_aux = self._brush != (0, 0)
             self._drive = (0, 0)
             self._brush = (0, 0)
+        if not self._ros_mode_active():
+            if had_drive or had_aux:
+                self._log(f'CONTROL: {reason}; STOP suppressed because ROS mode is not active')
+            return
         self._publish_drive(0, 0)
         self._publish_aux(0, 0)
         if had_drive or had_aux:
-            self._log(f'CONTROL: {reason} -> STOP')
+            self._log(f'CONTROL: {reason} -> STOP (ROS mode)')
 
     def _request_arm(self) -> None:
         callback = self._arm_callback
@@ -367,26 +381,37 @@ class RemoteControlGateway:
         while not self._stop.wait(0.05):
             cfg = self._snapshot()
             now = time.monotonic()
+            ros_active = self._ros_mode_active()
             with self._lock:
                 drive_age = now - self._last_drive_at if self._last_drive_at else 1e9
                 aux_age = now - self._last_aux_at if self._last_aux_at else 1e9
                 drive_nonzero = self._drive != (0, 0)
                 aux_nonzero = self._brush != (0, 0)
+
             if drive_nonzero and drive_age > float(cfg.get('drive_watchdog_sec', 0.45)):
-                self._publish_drive(0, 0)
+                if ros_active:
+                    self._publish_drive(0, 0)
                 with self._lock:
                     self._drive = (0, 0)
                 if not drive_stopped:
-                    self._log('CONTROL: drive watchdog -> STOP')
+                    if ros_active:
+                        self._log('CONTROL: drive watchdog -> STOP (ROS mode)')
+                    else:
+                        self._log('CONTROL: drive watchdog expired; STOP suppressed outside ROS mode')
                 drive_stopped = True
             elif drive_nonzero:
                 drive_stopped = False
+
             if aux_nonzero and aux_age > float(cfg.get('aux_watchdog_sec', 0.55)):
-                self._publish_aux(0, 0)
+                if ros_active:
+                    self._publish_aux(0, 0)
                 with self._lock:
                     self._brush = (0, 0)
                 if not aux_stopped:
-                    self._log('CONTROL: aux watchdog -> STOP')
+                    if ros_active:
+                        self._log('CONTROL: aux watchdog -> STOP (ROS mode)')
+                    else:
+                        self._log('CONTROL: aux watchdog expired; STOP suppressed outside ROS mode')
                 aux_stopped = True
             elif aux_nonzero:
                 aux_stopped = False
