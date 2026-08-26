@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -88,9 +86,6 @@ func (st *rtpStream) readLoop() {
 	}
 }
 
-// writeRTP is the common in-memory entry point into the Pion track. Legacy
-// devices call it through the UDP RTP listener; pure-Go SRT ingest calls it
-// directly after MPEG-TS/PES parsing and H.264 RTP packetization.
 func (st *rtpStream) writeRTP(packet *rtp.Packet, wireBytes int) error {
 	st.Packets.Add(1)
 	if wireBytes <= 0 {
@@ -291,21 +286,5 @@ func (s *server) requestIDR(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (s *server) sendPTZ(d *device, pan, tilt int16, speed, flags uint16) error {
-	seq := s.seq.Add(1)
-	packet := make([]byte, 16)
-	binary.BigEndian.PutUint16(packet[0:2], ptzMagic)
-	packet[2] = ptzVersion
-	packet[3] = ptzType
-	binary.BigEndian.PutUint32(packet[4:8], seq)
-	binary.BigEndian.PutUint16(packet[8:10], uint16(pan))
-	binary.BigEndian.PutUint16(packet[10:12], uint16(tilt))
-	binary.BigEndian.PutUint16(packet[12:14], speed)
-	binary.BigEndian.PutUint16(packet[14:16], flags)
-
-	ip := net.ParseIP(d.IP)
-	if ip == nil {
-		return fmt.Errorf("invalid device ip: %s", d.IP)
-	}
-	_, err := s.ptzConn.WriteToUDP(packet, &net.UDPAddr{IP: ip, Port: d.PTZPort})
-	return err
+	return s.sendDevicePacket(d, s.buildControlPacket(ptzType, pan, tilt, speed, flags))
 }
