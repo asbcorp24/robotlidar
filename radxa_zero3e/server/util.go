@@ -52,10 +52,39 @@ func cors(next http.Handler) http.Handler {
 	})
 }
 
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusRecorder) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+
+		// Telemetry is sent continuously by every connected tractor. Successful
+		// telemetry requests are intentionally omitted from the access log so
+		// journalctl remains useful. Errors are still always logged.
+		isTelemetry := r.Method == http.MethodPost &&
+			strings.HasPrefix(r.URL.Path, "/api/devices/") &&
+			strings.HasSuffix(r.URL.Path, "/telemetry")
+		if isTelemetry && rw.status < http.StatusBadRequest {
+			return
+		}
+
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rw.status, time.Since(start).Round(time.Millisecond))
 	})
 }
