@@ -10,9 +10,11 @@ Production deployment target:
 - WebRTC ICE (Pion direct): UDP `40000-40100`
 - TURN/STUN listener: `3478/tcp`, `3478/udp`
 - TURN relay allocation: UDP `50000-50100`
-- HTTPS: `443/tcp`
+- HTTPS/WSS: `443/tcp`
 
 Raspberry Pi video uses SRT/MPEG-TS by default. H.264 is copied end-to-end. The Go server receives SRT directly, reconstructs MPEG-TS/PES, packetizes the existing H.264 Annex-B stream to RTP in memory, and writes it into Pion WebRTC. There is no FFmpeg process, decode, or encode on the server.
+
+Remote control uses an outbound WebSocket opened by Raspberry Pi to the server. This works through NAT and does not require forwarding UDP port 6000 on the Raspberry-side router. Legacy UDP control remains only as a fallback for local/older clients.
 
 ## Environment
 
@@ -42,6 +44,38 @@ apt install -y golang-go
 
 If Go was installed from the official archive instead, the distro package is not required.
 
+## Nginx: WebSocket is required
+
+The HTTPS reverse proxy must pass WebSocket Upgrade headers to the Go server. In the `server { ... }` block for `tele.xn----7sbbd7e6b.xn--p1ai`, the proxy location should contain at least:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+```
+
+Then validate and reload:
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
+The device control URL is:
+
+```text
+wss://tele.xn----7sbbd7e6b.xn--p1ai/api/devices/<DEVICE_ID>/control-ws
+```
+
 ## UFW
 
 ```bash
@@ -57,7 +91,9 @@ ufw allow 50000:50100/udp
 ufw reload
 ```
 
-The same port rules must be allowed in the Timeweb cloud firewall if one is attached to the server. In particular, UDP `12000-12099` must be reachable from Raspberry Pi devices for SRT.
+No inbound `6000/udp` rule is required for Raspberry devices using the WebSocket control channel.
+
+The same SRT/WebRTC/TURN port rules must be allowed in the Timeweb cloud firewall if one is attached to the server. In particular, UDP `12000-12099` must be reachable from Raspberry Pi devices for SRT.
 
 ## Build
 
@@ -65,24 +101,25 @@ The same port rules must be allowed in the Timeweb cloud firewall if one is atta
 cd /opt/robotlidar
 git pull
 cd radxa_zero3e/server
-go mod download
+go mod tidy
 go build -trimpath -ldflags="-s -w" -o robotlidar-server .
 systemctl restart robotlidar
 curl http://127.0.0.1:8000/health
 ```
 
-After a Raspberry with video enabled registers, the server log should contain lines similar to:
+After a Raspberry with video and remote control enabled registers, the server log should contain lines similar to:
 
 ```text
 RTP ingest TRACTOR-RPI-...: udp://0.0.0.0:10000
 SRT ingest TRACTOR-RPI-...: srt://0.0.0.0:12000 (pure Go MPEG-TS/H.264 -> Pion)
 SRT TRACTOR-RPI-... publisher connected from ...
 SRT H.264 MPEG-TS detected video PID ...
+CONTROL/WSS TRACTOR-RPI-... connected from ...
 ```
 
 The RTP port remains allocated for backwards compatibility with legacy clients. In SRT mode, video does not pass through that UDP socket; SRT packets are parsed and written to the Pion track directly in memory.
 
-Check listeners with:
+Check listeners/logs with:
 
 ```bash
 ss -lunp | grep -E ':120[0-9][0-9]|:100[0-9][0-9]'
