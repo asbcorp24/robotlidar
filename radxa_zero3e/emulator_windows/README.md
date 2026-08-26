@@ -1,18 +1,31 @@
-# Windows emulator for Radxa ZERO 3E camera node
+# Windows emulator for RobotLiDAR tractor/camera node
 
-Эмулятор нужен для тестирования системы до приезда Radxa ZERO 3E.
+Эмулятор нужен для проверки текущей интернет-архитектуры RobotLiDAR без реального Raspberry Pi и трактора.
 
-Он ведёт себя как отдельный трактор:
+Сейчас он повторяет актуальную схему Raspberry:
 
 - имеет постоянный `device_id`;
-- регистрируется на центральном Go Camera Hub;
-- получает выделенный RTP ingest-порт;
+- регистрируется на центральном Go-сервере;
+- запрашивает `video_transport=srt`;
+- получает назначенный `srt_ingest_port`;
 - захватывает Windows web-камеру через DirectShow;
-- кодирует `libx264` в H.264 Baseline с низкой задержкой;
-- B-frames=0, короткий GOP, SPS/PPS на keyframe;
-- отправляет готовый H.264/RTP на сервер без серверного перекодирования;
-- отправляет телеметрию;
-- принимает PTZ/CENTER/REQUEST_IDR.
+- кодирует H.264 Baseline через `libx264`;
+- отправляет MPEG-TS/H.264 через SRT в режиме `caller`;
+- сервер принимает SRT в чистом Go и передаёт H.264 в Pion WebRTC без серверного decode/encode;
+- открывает исходящий WebSocket/WSS к серверу для управления через NAT;
+- принимает тем же 16-байтным бинарным протоколом PTZ, DRIVE и BRUSH;
+- показывает полученные команды в GUI;
+- старый входящий UDP `:6000` оставлен только как необязательный legacy fallback.
+
+Основная схема:
+
+```text
+Windows emulator
+   ├── SRT caller ─────────────► Go server ──► Pion WebRTC ──► browser
+   └── WSS client ◄──────────── Go server ◄────────────────── browser control
+```
+
+Проброс входящего UDP-порта для управления не нужен.
 
 ## GUI
 
@@ -22,94 +35,112 @@
 run_gui.bat
 ```
 
-GUI позволяет выбрать постоянный ID трактора, web-камеру, адрес сервера, `ffmpeg.exe`, разрешение/FPS/bitrate/GOP и видеть RTP/PTZ/лог.
+`run_gui.bat` автоматически создаёт `.venv` и устанавливает зависимости из `requirements.txt`.
 
-## Требования
+В GUI задаются:
 
-- Python 3.10+;
-- FFmpeg;
-- запущенный `radxa_zero3e/server` на Go.
+- Device ID;
+- имя устройства;
+- адрес центрального сервера;
+- SRT latency;
+- legacy UDP порт;
+- web-камера;
+- `ffmpeg.exe`;
+- разрешение, FPS, bitrate и GOP.
 
-## Порядок локального теста
+В состоянии отображаются:
 
-### 1. Запустить единый Go-сервер
+- назначенный SRT ingest порт;
+- состояние WSS;
+- последний PTZ;
+- команды левой/правой гусеницы;
+- щётка/подъём.
 
-Нужен Go 1.24+.
+## Тест с production сервером
 
-```bat
-cd radxa_zero3e\server
-run_server.bat
-```
-
-или:
-
-```bat
-go mod tidy
-go run .
-```
-
-Сервер одновременно выполняет:
+В GUI укажи:
 
 ```text
-HTTP/API + SQLite + login + device_id + telemetry + PTZ + RTP ingest + Pion WebRTC
+Центральный сервер:
+https://tele.xn----7sbbd7e6b.xn--p1ai
+
+Device ID:
+TRACTOR-WIN-0001
 ```
 
-Отдельный FastAPI и отдельный relay больше не запускаются.
+Выбери камеру и нажми `Старт`.
 
-### 2. Запустить GUI эмулятора
-
-```bat
-cd radxa_zero3e\emulator_windows
-run_gui.bat
-```
-
-В GUI:
-
-1. Нажать `Найти камеры`.
-2. Выбрать web-камеру.
-3. `HTTP сервера`: для локального теста `http://127.0.0.1:8000`.
-4. `RTP host`: для локального теста `127.0.0.1`.
-5. Указать постоянный ID, например `TRACTOR-WIN-0001`.
-6. Нажать `Старт`.
-
-Сервер вернёт, например:
+Нормальный лог выглядит примерно так:
 
 ```text
-RTP ingest UDP 10000
+[SERVER] registered TRACTOR-WIN-0001 as 192.168.x.x
+[SERVER] assigned SRT ingest UDP 12000, latency 200 ms
+[VIDEO] starting:
+...
+[CONTROL/WSS] connected wss://tele.xn----7sbbd7e6b.xn--p1ai/api/devices/TRACTOR-WIN-0001/control-ws
 ```
 
-и FFmpeg начнёт отправлять готовые H.264/RTP пакеты на этот UDP-порт.
+После этого при нажатии кнопок сайта должны появляться сообщения:
 
-### 3. Открыть личный кабинет
+```text
+[PTZ] via WSS seq=... pan=... tilt=...
+[DRIVE] via WSS seq=... left=... right=...
+[BRUSH] via WSS seq=... spin=... lift=...
+```
+
+Это позволяет проверить всю цепочку `browser -> Go server -> WSS -> устройство` без Raspberry Pi.
+
+## Nginx для production WSS
+
+Для WebSocket в `location /` должны быть:
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+```
+
+Без этих заголовков эмулятор покажет `Handshake status 400 Bad Request`.
+
+## Локальный тест
+
+Можно использовать:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-Создать пользователя и в `Настройки` добавить тот же ID:
+Тогда control URL автоматически станет `ws://127.0.0.1:8000/.../control-ws`, а видео пойдёт SRT на назначенный сервером UDP-порт.
 
-```text
-TRACTOR-WIN-0001
+## Требования
+
+- Python 3.10+;
+- FFmpeg с поддержкой `libsrt`;
+- Go-сервер `radxa_zero3e/server`.
+
+Проверка SRT в FFmpeg:
+
+```bat
+ffmpeg -protocols | findstr /I srt
 ```
 
-После выбора трактора браузер получает этот же H.264 через WebRTC/Pion без decode/encode на сервере.
+Должен присутствовать протокол `srt`.
 
 ## Несколько эмуляторов
 
-Каждой копии нужны собственные:
-
-- `device_id`;
-- `ptz_listen_port`.
+Каждой копии нужен собственный `device_id`. Legacy UDP-порт тоже должен отличаться, если UDP fallback включён.
 
 Например:
 
 ```text
-TRACTOR-WIN-0001 / PTZ 6000 / RTP 10000
-TRACTOR-WIN-0002 / PTZ 6001 / RTP 10001
-TRACTOR-WIN-0003 / PTZ 6002 / RTP 10002
+TRACTOR-WIN-0001 / legacy UDP 6000
+TRACTOR-WIN-0002 / legacy UDP 6001
+TRACTOR-WIN-0003 / legacy UDP 6002
 ```
 
-RTP-порты назначает сервер автоматически.
+SRT-порты `12000-12099` назначает сервер автоматически.
 
 ## Консольный режим
 
@@ -123,7 +154,8 @@ python emulator.py --list-cameras
 
 ```bat
 copy config.example.json config.json
+python -m pip install -r requirements.txt
 python emulator.py --config config.json
 ```
 
-Это тот же upstream H.264/RTP и PTZ-протокол, который будет использовать реальная Radxa ZERO 3E.
+Эмулятор использует тот же транспорт управления и тот же бинарный формат команд, что и текущий Raspberry remote-control gateway.
