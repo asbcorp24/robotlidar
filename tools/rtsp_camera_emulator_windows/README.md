@@ -4,10 +4,10 @@
 
 ## Режим 1 — RTSP IP-камера для Raspberry Pi
 
-Эмулятор поднимает MediaMTX и публикует настоящий H.264/RTSP поток:
+Эмулятор поднимает MediaMTX и публикует H.264/RTSP поток:
 
 ```text
-Windows emulator -> RTSP/H.264 -> Raspberry Pi -> RTP/H.264 -> Go server -> WebRTC -> Browser
+Windows emulator -> RTSP/H.264 -> Raspberry Pi -> SRT/MPEG-TS/H.264 -> Go server -> WebRTC -> Browser
 ```
 
 URL имеет вид:
@@ -16,25 +16,44 @@ URL имеет вид:
 rtsp://WINDOWS_IP:8554/camera
 ```
 
-В поле **IP Windows, доступный Raspberry** укажите IPv4 физического Ethernet/Wi-Fi адаптера, находящегося в одной сети с Raspberry. Это поле редактируемое специально потому, что VPN/VirtualBox/Hyper-V могут иметь адреса вроде `10.x.x.x` и автоматически выбираться Windows как маршрут по умолчанию.
+В поле **IP Windows, доступный Raspberry** укажите IPv4 физического Ethernet/Wi-Fi адаптера, находящегося в одной сети с Raspberry. VPN/VirtualBox/Hyper-V могут иметь собственные адреса, поэтому поле оставлено редактируемым.
+
+Для этого режима Raspberry работает точно так же, как с реальной IP-камерой: читает RTSP и сама устанавливает исходящее SRT-соединение к центральному серверу.
 
 ## Режим 2 — полный эмулятор трактора
 
-Этот режим вообще не требует Raspberry Pi или ESP32. Windows программа сама:
+Этот режим не требует Raspberry Pi или ESP32. Windows программа моделирует текущую сетевую архитектуру реального трактора:
+
+```text
+Windows emulator
+   ├── SRT/MPEG-TS/H.264 ─────► central Go server ──► WebRTC ──► Browser
+   └── WSS control channel ◄── central Go server ◄────────────── Browser
+```
+
+При запуске полного режима программа:
 
 1. регистрирует `Device ID` на центральном Go-сервере;
-2. получает `video_ingest_port`;
-3. отправляет H.264/RTP тестовое видео прямо на сервер;
-4. слушает UDP control port (по умолчанию `6000`);
-5. принимает те же команды, что реальный трактор;
-6. показывает в GUI:
-   - PAN/TILT камеры;
-   - левую и правую гусеницу;
-   - скорость вращения щётки;
-   - подъём/опускание щётки;
-   - номер и время последней команды.
+2. запрашивает `video_transport = srt`;
+3. получает `srt_ingest_port` и `srt_latency_ms`;
+4. запускает FFmpeg как SRT caller и отправляет MPEG-TS/H.264 на сервер;
+5. сама открывает исходящее `WSS` соединение `/api/devices/<DEVICE_ID>/control-ws`;
+6. принимает тот же фиксированный 16-байтный бинарный протокол, что Raspberry;
+7. показывает в GUI PTZ, гусеницы, щётку, транспорт видео и состояние WSS.
 
-Формат команд полностью совпадает с Raspberry/Orange Pi gateway:
+Формат команды:
+
+```text
+magic:u16 = 0x5354
+version:u8 = 1
+type:u8
+seq:u32
+value1:i16
+value2:i16
+speed:u16
+flags:u16
+```
+
+Типы:
 
 ```text
 type 1 = PTZ
@@ -42,28 +61,67 @@ type 2 = drive left/right
 type 3 = brush spin/lift
 ```
 
-Для запуска полного режима укажите:
+`flags bit0` — CENTER, `flags bit1` — REQUEST_IDR.
+
+### Настройки полного режима
+
+Для production-теста:
 
 ```text
-Server URL: http://SERVER_IP:8000
+Server URL: https://tele.xn----7sbbd7e6b.xn--p1ai
 Device ID:  TRACTOR-WIN-XXXXXXXXXX
-IP Windows: реальный LAN IPv4 этого ПК
-UDP port:   6000
+Legacy UDP port: 6000
 ```
 
-Затем нажмите **Подключить эмулятор к серверу** и добавьте этот Device ID в аккаунт на центральном сайте.
+`Legacy UDP port` оставлен только для совместимости и локальных тестов. Нормальное удалённое управление через Интернет использует WSS и не требует входящего UDP/6000 на Windows.
 
-После этого можно прямо с веб-сайта проверить кнопки PTZ, W/A/S/D, STOP, щётку и подъём. Значения будут меняться в окне Windows-эмулятора.
+После запуска в GUI должно появиться примерно:
+
+```text
+Видео:       SRT UDP/12000
+Управление:  WSS подключён
+Статус:      Подключён: SRT + WSS
+```
+
+В журнале:
+
+```text
+DEVICE READY: ... SRT/12000 latency=200ms ...
+CONTROL/WSS connected: wss://tele.../api/devices/.../control-ws
+```
+
+После этого добавьте тот же `Device ID` в аккаунт на центральном сайте. При нажатии PTZ, W/A/S/D, STOP, щётки и подъёма значения должны меняться прямо в GUI.
 
 ## Быстрый запуск
 
-Установите Python 3 и FFmpeg. FFmpeg должен быть доступен в PATH либо `ffmpeg.exe` можно положить рядом с `emulator.py`.
+Нужны Python 3 и FFmpeg.
 
 ```bat
 run.bat
 ```
 
-При первом запуске RTSP-режима программа сама скачает Windows x64 MediaMTX в подпапку `runtime`.
+`run.bat` автоматически устанавливает:
+
+```text
+websocket-client
+truststore
+```
+
+`truststore` нужен, чтобы WSS использовал штатное хранилище сертификатов Windows. Проверка TLS не отключается.
+
+HTTPS регистрация/телеметрия запускается через системный `curl.exe` / Schannel, как и раньше.
+
+## Проверка поддержки SRT в FFmpeg
+
+Полный режим требует FFmpeg с libsrt:
+
+```bat
+ffmpeg -protocols | findstr /I srt
+```
+
+В выводе должен присутствовать `srt` как поддерживаемый протокол.
+
+Если его нет, установите полноценную Windows-сборку FFmpeg с libsrt.
 
 ## Проверка RTSP на Windows
 
@@ -87,18 +145,17 @@ ffprobe -rtsp_transport tcp rtsp://WINDOWS_IP:8554/camera
 
 ## Windows Firewall
 
-Для режима RTSP разрешите входящий TCP `8554`.
-
-Для полного эмулятора разрешите входящий UDP `6000` (или выбранный вами control port).
-
-Пример PowerShell от администратора:
+Для **режима 1** разрешите входящий TCP `8554`, потому что Raspberry подключается к Windows RTSP-серверу:
 
 ```powershell
 New-NetFirewallRule -DisplayName "RobotLiDAR RTSP Emulator" -Direction Inbound -Protocol TCP -LocalPort 8554 -Action Allow
-New-NetFirewallRule -DisplayName "RobotLiDAR Control Emulator" -Direction Inbound -Protocol UDP -LocalPort 6000 -Action Allow
 ```
 
-## Видео
+Для **режима 2** входящие правила обычно не нужны: SRT и WSS инициируются самим Windows-компьютером наружу.
+
+UDP/6000 требуется только если специально тестируется старый legacy UDP control.
+
+## Видео полного режима
 
 Тестовый поток:
 
@@ -106,8 +163,12 @@ New-NetFirewallRule -DisplayName "RobotLiDAR Control Emulator" -Direction Inboun
 - `yuv420p`;
 - без B-frames;
 - GOP около 1 секунды;
+- SPS/PPS повторяются на keyframe;
+- MPEG-TS поверх SRT;
 - `testsrc2`;
 - разрешение/FPS/битрейт задаются в GUI.
+
+На Go-сервере FFmpeg не используется: SRT/MPEG-TS/H.264 разбирается в Go и передаётся в Pion WebRTC без decode/encode.
 
 ## FFmpeg через winget
 
@@ -115,4 +176,4 @@ New-NetFirewallRule -DisplayName "RobotLiDAR Control Emulator" -Direction Inboun
 winget install Gyan.FFmpeg
 ```
 
-После установки заново откройте терминал/`run.bat`.
+После установки заново откройте терминал и проверьте поддержку SRT командой выше.
