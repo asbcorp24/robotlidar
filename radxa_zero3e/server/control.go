@@ -100,10 +100,9 @@ func (s *server) brush(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "spin": req.Spin, "lift": req.Lift})
 }
 
-// Control packet is deliberately fixed-size and simple so Radxa can forward it
-// to ESP32 almost unchanged later:
-// magic:u16, version:u8, type:u8, seq:u32, value1:i16, value2:i16, reserved:u32.
-func (s *server) sendControl(d *device, packetType byte, value1, value2 int16) error {
+// Control packet format stays identical for UDP and WebSocket:
+// magic:u16, version:u8, type:u8, seq:u32, value1:i16, value2:i16, speed:u16, flags:u16.
+func (s *server) buildControlPacket(packetType byte, value1, value2 int16, speed, flags uint16) []byte {
 	seq := s.seq.Add(1)
 	packet := make([]byte, 16)
 	binary.BigEndian.PutUint16(packet[0:2], ptzMagic)
@@ -112,12 +111,29 @@ func (s *server) sendControl(d *device, packetType byte, value1, value2 int16) e
 	binary.BigEndian.PutUint32(packet[4:8], seq)
 	binary.BigEndian.PutUint16(packet[8:10], uint16(value1))
 	binary.BigEndian.PutUint16(packet[10:12], uint16(value2))
-	binary.BigEndian.PutUint32(packet[12:16], 0)
+	binary.BigEndian.PutUint16(packet[12:14], speed)
+	binary.BigEndian.PutUint16(packet[14:16], flags)
+	return packet
+}
+
+func (s *server) sendDevicePacket(d *device, packet []byte) error {
+	if d.websocketControlConnected() {
+		if err := d.sendControlWebSocket(packet); err == nil {
+			return nil
+		}
+	}
 
 	ip := net.ParseIP(d.IP)
 	if ip == nil {
-		return fmt.Errorf("invalid device ip: %s", d.IP)
+		return fmt.Errorf("control websocket unavailable and invalid device ip: %s", d.IP)
 	}
 	_, err := s.ptzConn.WriteToUDP(packet, &net.UDPAddr{IP: ip, Port: d.PTZPort})
-	return err
+	if err != nil {
+		return fmt.Errorf("control websocket unavailable; UDP fallback failed: %w", err)
+	}
+	return nil
+}
+
+func (s *server) sendControl(d *device, packetType byte, value1, value2 int16) error {
+	return s.sendDevicePacket(d, s.buildControlPacket(packetType, value1, value2, 0, 0))
 }
