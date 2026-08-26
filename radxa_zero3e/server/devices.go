@@ -81,6 +81,8 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 		s.registerDevice(w, r, id)
 	case "telemetry":
 		s.telemetry(w, r, id)
+	case "control-ws":
+		s.controlWebSocket(w, r, id)
 	case "video-status":
 		s.videoStatus(w, r, id)
 	case "webrtc":
@@ -192,6 +194,7 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 		"device":            d.runtimeJSON(),
 		"video_ingest_port": d.RTPPort,
 		"video_transport":   transport,
+		"control_ws_path":   "/api/devices/" + id + "/control-ws",
 	}
 	if transport == "srt" {
 		resp["srt_ingest_port"] = d.SRTPort
@@ -237,6 +240,7 @@ func (s *server) videoStatus(w http.ResponseWriter, r *http.Request, id string) 
 	d, ok := s.ownedDevice(w, u.ID, id); if !ok { return }
 	status := d.stream.status()
 	status["transport"] = d.Transport
+	status["control_transport"] = controlTransportLabel(d)
 	if d.SRTPort > 0 { status["srt_ingest_port"] = d.SRTPort }
 	writeJSON(w, http.StatusOK, status)
 }
@@ -274,12 +278,19 @@ func (d *device) online() bool {
 	return last > 0 && time.Since(time.UnixMilli(last)) <= offlineAfter
 }
 
+func controlTransportLabel(d *device) string {
+	if d.websocketControlConnected() {
+		return "websocket"
+	}
+	return "udp-fallback"
+}
+
 func (d *device) publicJSON(alias string) map[string]any {
 	return map[string]any{
 		"id": d.ID, "device_id": d.ID, "device_type": d.DeviceType, "name": alias,
 		"online": d.online(), "video_online": d.stream.videoOnline(),
 		"streamType": "webrtc", "streamUrl": "/api/devices/" + d.ID + "/webrtc",
-		"video_transport": d.Transport,
+		"video_transport": d.Transport, "control_transport": controlTransportLabel(d),
 		"pan": float64(d.PanCDeg.Load()) / 100.0, "tilt": float64(d.TiltCDeg.Load()) / 100.0,
 		"fps": d.FPS.Load(), "bitrateKbps": d.Bitrate.Load() / 1000,
 		"ethernet": linkLabel(d.LinkMbps.Load()), "uptimeSec": d.UptimeMS.Load() / 1000,
@@ -291,7 +302,8 @@ func (d *device) runtimeJSON() map[string]any {
 	return map[string]any{
 		"device_id": d.ID, "device_type": d.DeviceType, "name": d.Name, "ip": d.IP,
 		"video_ingest_port": d.RTPPort, "srt_ingest_port": d.SRTPort,
-		"video_transport": d.Transport, "ptz_port": d.PTZPort, "online": d.online(),
+		"video_transport": d.Transport, "control_transport": controlTransportLabel(d),
+		"ptz_port": d.PTZPort, "online": d.online(),
 	}
 }
 
@@ -300,6 +312,7 @@ func offlineDeviceJSON(id, name string) map[string]any {
 		"id": id, "device_id": id, "device_type": "unknown", "name": name,
 		"online": false, "video_online": false,
 		"streamType": "webrtc", "streamUrl": "/api/devices/" + id + "/webrtc",
+		"control_transport": "offline",
 		"pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0,
 	}
 }
