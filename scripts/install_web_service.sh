@@ -47,7 +47,7 @@ fi
 
 sudo apt update
 sudo apt install -y \
-  python3-fastapi python3-uvicorn python3-pil python3-serial ffmpeg
+  python3-fastapi python3-uvicorn python3-pil python3-serial python3-websocket ffmpeg
 
 # Разрешения на USB-лидар, UART GPS, ESP32, I2C и GPIO.
 for DEVICE_GROUP in dialout i2c gpio; do
@@ -82,8 +82,9 @@ echo "RobotLidar Web установлен и запущен."
 echo "Порт лидара: $SERIAL_PORT"
 echo "Порт GPS: $GPS_PORT"
 echo "FFmpeg: $(command -v ffmpeg || echo 'не найден')"
+echo "WebSocket client: python3-websocket"
 echo "Статус: sudo systemctl status $SERVICE_NAME"
 echo "Журнал: journalctl -u $SERVICE_NAME -f"
 echo "Панель: http://<IP_RASPBERRY_PI>:8080"
-echo "В панели появился раздел IP-камера: RTSP URL, ID трактора и адрес центрального сервера."
+echo "Удалённое управление подключается исходящим WebSocket к центральному серверу; проброс UDP 6000 не требуется."
 echo "После добавления пользователя в группы dialout/i2c/gpio может потребоваться перезагрузка."
