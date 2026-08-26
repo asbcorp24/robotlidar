@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RobotLiDAR — администратор</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .admin-wrap{max-width:1100px;margin:0 auto;padding:24px}.admin-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.admin-grid{display:grid;grid-template-columns:340px 1fr;gap:18px}.admin-card{padding:18px}.admin-card label{display:block;margin:10px 0}.admin-card input{width:100%;box-sizing:border-box}.admin-actions{display:flex;gap:8px;flex-wrap:wrap}.admin-users{display:flex;flex-direction:column;gap:10px}.admin-user{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:14px;border:1px solid rgba(148,163,184,.18);border-radius:12px}.admin-user small{display:block;opacity:.7;margin-top:4px}.admin-user-actions{display:flex;gap:8px;flex-wrap:wrap}.admin-login{max-width:420px;margin:10vh auto;padding:22px}.hidden{display:none!important}@media(max-width:800px){.admin-grid{grid-template-columns:1fr}.admin-user{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <section id="adminLogin" class="admin-login panel">
+    <div class="brand auth-brand"><div class="brand-mark">◉</div><div><strong>RobotLiDAR</strong><span>Панель администратора</span></div></div>
+    <h1>Вход администратора</h1>
+    <label>Логин<input id="adminName" autocomplete="username" value="admin"></label>
+    <label>Пароль<input id="adminPassword" type="password" autocomplete="current-password"></label>
+    <button id="adminLoginBtn" class="btn primary full">Войти</button>
+    <div id="adminLoginError" class="form-error"></div>
+  </section>
+
+  <div id="adminApp" class="admin-wrap hidden">
+    <header class="admin-head">
+      <div><div class="camera-title">Администрирование RobotLiDAR</div><div class="muted">Пользователи создаются только администратором</div></div>
+      <div class="admin-actions"><span id="adminIdentity" class="muted"></span><a href="/" class="btn secondary">Сайт</a><button id="adminLogoutBtn" class="btn secondary">Выйти</button></div>
+    </header>
+
+    <div class="admin-grid">
+      <section class="panel admin-card">
+        <div class="panel-title">Создать пользователя</div>
+        <label>Логин<input id="newUsername" autocomplete="off" placeholder="operator1"></label>
+        <label>Пароль<input id="newPassword" type="password" autocomplete="new-password" placeholder="Новый пароль"></label>
+        <button id="createUserBtn" class="btn primary full">Создать пользователя</button>
+        <div id="createUserError" class="form-error"></div>
+      </section>
+
+      <section class="panel admin-card">
+        <div class="admin-head"><div><div class="panel-title">Пользователи</div><div id="usersCount" class="muted">0</div></div><button id="refreshUsersBtn" class="btn secondary">Обновить</button></div>
+        <div id="usersList" class="admin-users"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
