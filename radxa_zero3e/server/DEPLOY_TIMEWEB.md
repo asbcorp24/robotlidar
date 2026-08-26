@@ -16,6 +16,8 @@ Raspberry Pi video uses SRT/MPEG-TS by default. H.264 is copied end-to-end. The 
 
 Remote control uses an outbound WebSocket opened by Raspberry Pi to the server. This works through NAT and does not require forwarding UDP port 6000 on the Raspberry-side router. Legacy UDP control remains only as a fallback for local/older clients.
 
+User self-registration is disabled. User accounts are created from the administrator panel at `/admin`.
+
 ## Environment
 
 ```text
@@ -27,9 +29,32 @@ WEBRTC_UDP_MAX=40100
 TURN_URL=turn:tele.xn----7sbbd7e6b.xn--p1ai:3478
 TURN_USERNAME=robotlidar
 TURN_PASSWORD=<strong-random-password>
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<strong-admin-password>
 ```
 
+`ADMIN_PASSWORD` is required for administrator login. If it is absent, `/admin` stays available but administrator authentication is disabled. `ADMIN_USERNAME` is optional and defaults to `admin`.
+
 `TURN_URL` may contain more than one URL separated by commas, for example UDP and TCP variants.
+
+## Administrator panel
+
+Open:
+
+```text
+https://tele.xn----7sbbd7e6b.xn--p1ai/admin
+```
+
+The administrator can:
+
+- create users with login/password;
+- view existing users and their tractor count;
+- reset a user's password;
+- delete users.
+
+Resetting a password or deleting a user invalidates that user's active login sessions. Deleting a user also removes their `user_devices` links through the SQLite foreign key cascade.
+
+Normal users can only log in at `/`; there is no public registration endpoint in the running HTTP router.
 
 ## Server packages
 
@@ -173,20 +198,30 @@ Environment=WEBRTC_UDP_MAX=40100
 Environment=TURN_URL=turn:tele.xn----7sbbd7e6b.xn--p1ai:3478
 Environment=TURN_USERNAME=robotlidar
 EnvironmentFile=-/etc/robotlidar/turn.env
+EnvironmentFile=-/etc/robotlidar/admin.env
 ```
 
-Store the password outside the unit in `/etc/robotlidar/turn.env`:
+Store secrets outside the unit.
+
+`/etc/robotlidar/turn.env`:
 
 ```text
 TURN_PASSWORD=<strong-random-password>
 ```
 
-Protect it:
+`/etc/robotlidar/admin.env`:
+
+```text
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<strong-admin-password>
+```
+
+Protect the files:
 
 ```bash
 mkdir -p /etc/robotlidar
 chmod 700 /etc/robotlidar
-chmod 600 /etc/robotlidar/turn.env
+chmod 600 /etc/robotlidar/turn.env /etc/robotlidar/admin.env
 ```
 
 Then:
