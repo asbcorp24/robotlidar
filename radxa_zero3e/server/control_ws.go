@@ -12,10 +12,10 @@ import (
 )
 
 type controlChannel struct {
-	conn     *websocket.Conn
-	writeM   sync.Mutex
-	lastMS   atomic.Int64
-	closed   atomic.Bool
+	conn   *websocket.Conn
+	writeM sync.Mutex
+	lastMS atomic.Int64
+	closed atomic.Bool
 }
 
 var controlWSUpgrader = websocket.Upgrader{
@@ -36,6 +36,15 @@ func (c *controlChannel) send(packet []byte) error {
 	}
 	c.lastMS.Store(time.Now().UnixMilli())
 	return nil
+}
+
+func (c *controlChannel) pong(appData string) error {
+	if c == nil || c.conn == nil || c.closed.Load() {
+		return nil
+	}
+	c.writeM.Lock()
+	defer c.writeM.Unlock()
+	return c.conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(2*time.Second))
 }
 
 func (c *controlChannel) close() {
@@ -88,6 +97,13 @@ func (s *server) controlWebSocket(w http.ResponseWriter, r *http.Request, id str
 
 	conn.SetReadLimit(4096)
 	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	conn.SetPingHandler(func(appData string) error {
+		ch.lastMS.Store(time.Now().UnixMilli())
+		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			return err
+		}
+		return ch.pong(appData)
+	})
 	conn.SetPongHandler(func(string) error {
 		ch.lastMS.Store(time.Now().UnixMilli())
 		return conn.SetReadDeadline(time.Now().Add(30 * time.Second))
