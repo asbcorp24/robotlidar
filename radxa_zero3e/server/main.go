@@ -32,13 +32,15 @@ const (
 var webFiles embed.FS
 
 type server struct {
-	db       *sql.DB
-	devices  map[string]*device
-	devicesM sync.RWMutex
-	sessions map[string]int64
-	sessionM sync.RWMutex
-	seq      atomic.Uint32
-	ptzConn  *net.UDPConn
+	db            *sql.DB
+	devices       map[string]*device
+	devicesM      sync.RWMutex
+	sessions      map[string]int64
+	sessionM      sync.RWMutex
+	adminSessions map[string]time.Time
+	adminSessionM sync.RWMutex
+	seq           atomic.Uint32
+	ptzConn       *net.UDPConn
 }
 
 type device struct {
@@ -92,14 +94,15 @@ func main() {
 	defer ptzConn.Close()
 
 	s := &server{
-		db:       dbh,
-		devices:  make(map[string]*device),
-		sessions: make(map[string]int64),
-		ptzConn:  ptzConn,
+		db:            dbh,
+		devices:       make(map[string]*device),
+		sessions:      make(map[string]int64),
+		adminSessions: make(map[string]time.Time),
+		ptzConn:       ptzConn,
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth/register", s.authRegister)
+	// User accounts are created only by the administrator. Self-registration is disabled.
 	mux.HandleFunc("/api/auth/login", s.authLogin)
 	mux.HandleFunc("/api/auth/me", s.authMe)
 	mux.HandleFunc("/api/auth/logout", s.authLogout)
@@ -107,6 +110,13 @@ func main() {
 	mux.HandleFunc("/api/settings/devices/", s.settingsDeviceByID)
 	mux.HandleFunc("/api/devices", s.listDevices)
 	mux.HandleFunc("/api/devices/", s.deviceAPI)
+
+	mux.HandleFunc("/api/admin/login", s.adminLogin)
+	mux.HandleFunc("/api/admin/logout", s.adminLogout)
+	mux.HandleFunc("/api/admin/me", s.adminMe)
+	mux.HandleFunc("/api/admin/users", s.adminUsers)
+	mux.HandleFunc("/api/admin/users/", s.adminUserByID)
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
@@ -117,6 +127,19 @@ func main() {
 	}
 	static := http.FileServer(http.FS(webRoot))
 	mux.Handle("/static/", http.StripPrefix("/static/", static))
+	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/admin" {
+			http.NotFound(w, r)
+			return
+		}
+		data, err := fs.ReadFile(webRoot, "admin.html")
+		if err != nil {
+			http.Error(w, "admin unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(data)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -142,6 +165,11 @@ func main() {
 	log.Printf("H.264: direct RTP -> Pion WebRTC, no decode/encode")
 	log.Printf("Reliable uplink: pure-Go SRT/MPEG-TS UDP %d-%d -> H.264 RTP -> Pion", srtPortBase, srtPortMax)
 	log.Printf("Remote control: outbound device WebSocket preferred, UDP fallback")
+	if strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")) == "" {
+		log.Printf("WARNING: ADMIN_PASSWORD is not configured; /admin login is disabled")
+	} else {
+		log.Printf("Admin panel: /admin (username from ADMIN_USERNAME, default admin)")
+	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
