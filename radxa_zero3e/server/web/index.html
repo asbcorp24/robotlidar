@@ -14,7 +14,8 @@
       <label>Логин<input id="loginName" autocomplete="username"></label>
       <label>Пароль<input id="loginPassword" type="password" autocomplete="current-password"></label>
       <button id="loginBtn" class="btn primary">Войти</button>
-      <button id="registerBtn" class="btn secondary full">Создать аккаунт</button>
+      <button id="registerBtn" class="hidden" aria-hidden="true" tabindex="-1"></button>
+      <div class="muted" style="margin-top:12px">Учётную запись создаёт администратор системы.</div>
       <div id="authError" class="form-error"></div>
     </div>
   </section>
