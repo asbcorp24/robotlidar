@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Remote control gateway for central RobotLiDAR server -> Raspberry Pi.
 
-Receives the same 16-byte UDP packets used by the Orange Pi gateway and routes:
+Primary path is an outbound WebSocket opened by Raspberry Pi to the central
+server, so remote control works through NAT without UDP port forwarding.
+Legacy UDP :6000 remains available as a local/fallback transport.
+
+The same fixed 16-byte binary packet is accepted from both transports:
   type 1 -> ONVIF AbsoluteMove for the IP camera
   type 2 -> ROS /cmd_vel for the ESP32 track bridge
   type 3 -> ROS /brush/command and /actuator/command
-
-The ESP32 serial port is intentionally not opened here: esp32_track_bridge_node
-already owns it and performs the watchdog/telemetry protocol.
 """
 from __future__ import annotations
 
@@ -18,11 +19,13 @@ import socket
 import struct
 import threading
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from xml.sax.saxutils import escape
 
+import websocket
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32, Int8
 
@@ -48,7 +51,9 @@ class RemoteControlGateway:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._socket: Optional[socket.socket] = None
+        self._ws: Any = None
         self._listener: Optional[threading.Thread] = None
+        self._ws_thread: Optional[threading.Thread] = None
         self._watchdog: Optional[threading.Thread] = None
         self._config: dict[str, Any] = {}
         self._last_drive_at = 0.0
@@ -62,6 +67,9 @@ class RemoteControlGateway:
         self._tilt_cdeg = 0
         self._arm_in_progress = False
         self._last_arm_try = 0.0
+        self._ws_connected = False
+        self._ws_url = ''
+        self._ws_reconnects = 0
 
         self._cmd_pub = node.create_publisher(Twist, '/cmd_vel', 20)
         self._brush_pub = node.create_publisher(Float32, '/brush/command', 20)
@@ -73,14 +81,18 @@ class RemoteControlGateway:
             if self._listener and self._listener.is_alive():
                 return
             self._listener = threading.Thread(target=self._listen_loop, name='remote-control-udp', daemon=True)
+            self._ws_thread = threading.Thread(target=self._ws_loop, name='remote-control-wss', daemon=True)
             self._watchdog = threading.Thread(target=self._watchdog_loop, name='remote-control-watchdog', daemon=True)
             self._listener.start()
+            self._ws_thread.start()
             self._watchdog.start()
 
     def configure(self, settings: dict[str, Any]) -> None:
         cfg = {
-            'enabled': bool(settings.get('camera_remote_control_enabled', True)),
+            'enabled': bool(settings.get('camera_remote_control_enabled', False)),
             'port': int(settings.get('camera_control_port') or 6000),
+            'server_url': str(settings.get('camera_server_url') or '').strip().rstrip('/'),
+            'device_id': str(settings.get('camera_device_id') or '').strip(),
             'track_width_m': float(settings.get('camera_remote_track_width_m') or 0.60),
             'max_track_speed_mps': float(settings.get('camera_remote_max_track_speed_mps') or 0.50),
             'drive_watchdog_sec': float(settings.get('camera_remote_drive_watchdog_sec') or 0.45),
@@ -94,17 +106,21 @@ class RemoteControlGateway:
             cfg['port'] = 6000
         with self._lock:
             old_port = self._config.get('port')
+            old_ws_key = (self._config.get('server_url'), self._config.get('device_id'), self._config.get('enabled'))
+            new_ws_key = (cfg.get('server_url'), cfg.get('device_id'), cfg.get('enabled'))
             self._config = cfg
         if old_port is not None and old_port != cfg['port']:
             self._close_socket()
+        if old_ws_key != new_ws_key:
+            self._close_ws()
         self._wake.set()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
         self._close_socket()
-        self._publish_drive(0, 0)
-        self._publish_aux(0, 0)
+        self._close_ws()
+        self._safe_stop_outputs('gateway stop')
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -112,6 +128,10 @@ class RemoteControlGateway:
             return {
                 'enabled': bool(cfg.get('enabled')),
                 'listen_port': cfg.get('port', 6000),
+                'control_transport': 'websocket' if self._ws_connected else 'udp-fallback',
+                'websocket_connected': self._ws_connected,
+                'websocket_url': self._ws_url,
+                'websocket_reconnects': self._ws_reconnects,
                 'packet_age_sec': round(time.monotonic() - self._last_packet_at, 3) if self._last_packet_at else None,
                 'last_seq': self._last_seq,
                 'drive': {'left': self._drive[0], 'right': self._drive[1]},
@@ -121,12 +141,89 @@ class RemoteControlGateway:
                 'last_error': self._last_error,
             }
 
+    def _ws_loop(self) -> None:
+        while not self._stop.is_set():
+            cfg = self._snapshot()
+            if not cfg.get('enabled') or not cfg.get('server_url') or not cfg.get('device_id'):
+                self._set_ws_state(False, '')
+                self._wake.wait(0.5)
+                self._wake.clear()
+                continue
+
+            url = self._control_ws_url(str(cfg['server_url']), str(cfg['device_id']))
+            self._set_ws_state(False, url)
+            try:
+                ws = websocket.create_connection(
+                    url,
+                    timeout=8,
+                    enable_multithread=True,
+                )
+                ws.settimeout(10)
+                with self._lock:
+                    self._ws = ws
+                    self._ws_connected = True
+                    self._ws_url = url
+                    self._ws_reconnects += 1
+                    self._last_error = ''
+                self._log(f'CONTROL/WSS: connected {url}')
+
+                while not self._stop.is_set():
+                    try:
+                        message = ws.recv()
+                    except websocket.WebSocketTimeoutException:
+                        ws.ping('robotlidar')
+                        continue
+                    if message is None:
+                        raise RuntimeError('WebSocket closed by server')
+                    if isinstance(message, str):
+                        continue
+                    data = bytes(message)
+                    self._handle_packet(data)
+            except Exception as exc:
+                if not self._stop.is_set():
+                    self._set_error(f'WSS: {exc}')
+                    self._log(f'CONTROL/WSS: disconnected: {exc}')
+            finally:
+                self._close_ws()
+                self._safe_stop_outputs('control WebSocket disconnected')
+
+            self._wake.wait(1.0)
+            self._wake.clear()
+
+    @staticmethod
+    def _control_ws_url(server_url: str, device_id: str) -> str:
+        parsed = urllib.parse.urlparse(server_url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            raise ValueError('Invalid central server URL for WebSocket')
+        scheme = 'wss' if parsed.scheme == 'https' else 'ws'
+        base_path = parsed.path.rstrip('/')
+        path = f'{base_path}/api/devices/{urllib.parse.quote(device_id, safe="")}/control-ws'
+        return urllib.parse.urlunparse((scheme, parsed.netloc, path, '', '', ''))
+
+    def _set_ws_state(self, connected: bool, url: str) -> None:
+        with self._lock:
+            self._ws_connected = connected
+            if url:
+                self._ws_url = url
+
+    def _close_ws(self) -> None:
+        with self._lock:
+            ws = self._ws
+            self._ws = None
+            self._ws_connected = False
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
     def _listen_loop(self) -> None:
         while not self._stop.is_set():
             cfg = self._snapshot()
             if not cfg.get('enabled'):
                 self._close_socket()
-                self._wake.wait(0.5); self._wake.clear()
+                self._wake.wait(0.5)
+                self._wake.clear()
                 continue
             try:
                 sock = self._ensure_socket(int(cfg['port']))
@@ -154,7 +251,7 @@ class RemoteControlGateway:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind(('0.0.0.0', port))
             self._socket = sock
-        self._log(f'CONTROL: listening UDP 0.0.0.0:{port}')
+        self._log(f'CONTROL: legacy UDP listening 0.0.0.0:{port}')
         return sock
 
     def _close_socket(self) -> None:
@@ -162,8 +259,10 @@ class RemoteControlGateway:
             sock = self._socket
             self._socket = None
         if sock:
-            try: sock.close()
-            except OSError: pass
+            try:
+                sock.close()
+            except OSError:
+                pass
 
     def _handle_packet(self, data: bytes) -> None:
         if len(data) != 16:
@@ -199,13 +298,25 @@ class RemoteControlGateway:
             pan = int(value1)
             tilt = int(value2)
             if flags & FLAG_CENTER:
-                pan = 0; tilt = 0
+                pan = 0
+                tilt = 0
             with self._lock:
                 self._pan_cdeg = pan
                 self._tilt_cdeg = tilt
             threading.Thread(target=self._onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
         else:
             raise ValueError(f'unknown packet type {packet_type}')
+
+    def _safe_stop_outputs(self, reason: str) -> None:
+        with self._lock:
+            had_drive = self._drive != (0, 0)
+            had_aux = self._brush != (0, 0)
+            self._drive = (0, 0)
+            self._brush = (0, 0)
+        self._publish_drive(0, 0)
+        self._publish_aux(0, 0)
+        if had_drive or had_aux:
+            self._log(f'CONTROL: {reason} -> STOP')
 
     def _request_arm(self) -> None:
         callback = self._arm_callback
@@ -217,6 +328,7 @@ class RemoteControlGateway:
                 return
             self._arm_in_progress = True
             self._last_arm_try = now
+
         def worker() -> None:
             try:
                 ok, msg = callback(True, 2.0)
@@ -227,6 +339,7 @@ class RemoteControlGateway:
             finally:
                 with self._lock:
                     self._arm_in_progress = False
+
         threading.Thread(target=worker, name='remote-control-arm', daemon=True).start()
 
     def _publish_drive(self, left: int, right: int) -> None:
@@ -242,7 +355,6 @@ class RemoteControlGateway:
 
     def _publish_aux(self, spin: int, lift: int) -> None:
         brush = Float32()
-        # Current physical brush controller is speed-only; negative is magnitude.
         brush.data = min(1.0, abs(float(spin)) / 1000.0)
         actuator = Int8()
         actuator.data = 1 if lift > 0 else (-1 if lift < 0 else 0)
@@ -262,15 +374,19 @@ class RemoteControlGateway:
                 aux_nonzero = self._brush != (0, 0)
             if drive_nonzero and drive_age > float(cfg.get('drive_watchdog_sec', 0.45)):
                 self._publish_drive(0, 0)
-                with self._lock: self._drive = (0, 0)
-                if not drive_stopped: self._log('CONTROL: drive watchdog -> STOP')
+                with self._lock:
+                    self._drive = (0, 0)
+                if not drive_stopped:
+                    self._log('CONTROL: drive watchdog -> STOP')
                 drive_stopped = True
             elif drive_nonzero:
                 drive_stopped = False
             if aux_nonzero and aux_age > float(cfg.get('aux_watchdog_sec', 0.55)):
                 self._publish_aux(0, 0)
-                with self._lock: self._brush = (0, 0)
-                if not aux_stopped: self._log('CONTROL: aux watchdog -> STOP')
+                with self._lock:
+                    self._brush = (0, 0)
+                if not aux_stopped:
+                    self._log('CONTROL: aux watchdog -> STOP')
                 aux_stopped = True
             elif aux_nonzero:
                 aux_stopped = False
@@ -279,8 +395,8 @@ class RemoteControlGateway:
         cfg = self._snapshot()
         url = str(cfg.get('onvif_url') or '')
         if not url:
+            self._log(f'CONTROL/PTZ: received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; ONVIF URL is not configured')
             return
-        # Generic ONVIF position space is normalized to [-1, 1].
         pan = max(-1.0, min(1.0, pan_cdeg / 18000.0))
         tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
         speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
