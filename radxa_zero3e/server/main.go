@@ -60,6 +60,8 @@ type device struct {
 	LinkMbps   atomic.Int64
 	stream     *rtpStream
 	srt        *srtBridge
+	controlM   sync.RWMutex
+	controlWS  *controlChannel
 }
 
 type user struct {
@@ -139,6 +141,7 @@ func main() {
 	log.Printf("SQLite: %s", dbPath)
 	log.Printf("H.264: direct RTP -> Pion WebRTC, no decode/encode")
 	log.Printf("Reliable uplink: pure-Go SRT/MPEG-TS UDP %d-%d -> H.264 RTP -> Pion", srtPortBase, srtPortMax)
+	log.Printf("Remote control: outbound device WebSocket preferred, UDP fallback")
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
