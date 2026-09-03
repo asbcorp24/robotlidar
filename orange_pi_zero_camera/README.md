@@ -1,6 +1,6 @@
 # Orange Pi Zero Camera + PTZ
 
-Отдельное приложение RobotLiDAR для Orange Pi Zero, которое занимается только камерой и её PTZ.
+Отдельное приложение RobotLiDAR для Orange Pi Zero, которое занимается камерой, PTZ и локальной настройкой через веб-интерфейс.
 
 В нём нет ROS, UART/ESP32, гусениц или щётки.
 
@@ -12,6 +12,8 @@ IP/USB camera --H.264--> Orange Pi Zero --SRT--> Go server --WebRTC--> Browser
                                 ^
                                 |
 Browser --PTZ--> Go server --WSS
+
+Local phone/notebook --HTTP :8088--> Orange Pi Zero web config
 ```
 
 ## Папка
@@ -19,13 +21,56 @@ Browser --PTZ--> Go server --WSS
 ```text
 orange_pi_zero_camera/
 ├── camera_streamer.py
+├── onvif_discovery.py
+├── web_config.py
 ├── config.example.json
 ├── install.sh
 ├── orange-pi-zero-camera.service
+├── orange-pi-zero-web.service
 └── README.md
 ```
 
-## Что умеет
+## Веб-настройка
+
+После установки локальная панель работает на:
+
+```text
+http://ORANGE_PI_IP:8088/
+```
+
+В ней можно:
+
+- просканировать доступные Wi-Fi сети;
+- выбрать SSID и подключить Orange Pi к Wi-Fi;
+- увидеть текущие IPv4 адреса;
+- задать `Device ID` и название устройства;
+- изменить адрес центрального сервера;
+- выбрать RTSP / USB H.264 / USB encode / test source;
+- изменить RTSP URL, разрешение, FPS и битрейт;
+- включить PTZ и ONVIF auto-discovery;
+- задать ONVIF логин/пароль;
+- сохранить конфиг;
+- перезапустить сервис трансляции.
+
+Wi-Fi настраивается через NetworkManager / `nmcli`. Пароль Wi-Fi не хранится в конфиге RobotLiDAR — его сохраняет NetworkManager. ONVIF пароль хранится в `/etc/robotlidar/orange-pi-zero-camera.json` с правами `0600` и не возвращается обратно в браузер после сохранения.
+
+### Первичная настройка Wi-Fi
+
+Удобнее всего первый раз подключить Orange Pi кабелем Ethernet к роутеру. Узнать адрес:
+
+```bash
+hostname -I
+```
+
+Например, если Orange Pi получил `192.168.1.80`, открыть на ноутбуке/телефоне:
+
+```text
+http://192.168.1.80:8088/
+```
+
+В разделе Wi-Fi нажать **Обновить сети**, выбрать сеть, ввести пароль и нажать **Подключиться**. После успешного подключения можно отключить Ethernet и открыть панель уже по Wi-Fi адресу Orange Pi.
+
+## Что умеет стример
 
 Видео:
 
@@ -40,7 +85,8 @@ PTZ:
 - принимает тот же 16-байтный RobotLiDAR control packet;
 - обрабатывает только `type=1 PTZ` и `CENTER`;
 - `DRIVE` и `BRUSH` намеренно игнорируются;
-- PTZ передаётся в камеру через ONVIF `AbsoluteMove` с WS-Security PasswordDigest.
+- PTZ передаётся в камеру через ONVIF `AbsoluteMove` с WS-Security PasswordDigest;
+- при `onvif_auto_discovery=true` автоматически ищет ONVIF Device Service, PTZ XAddr и ProfileToken.
 
 ## Установка
 
@@ -61,12 +107,26 @@ cd orange_pi_zero_camera
 sudo ./install.sh
 ```
 
-Установщик ставит `python3`, `python3-websocket`, `ffmpeg`, `v4l-utils`, CA certificates, конфиг и systemd service.
+Установщик ставит `python3`, `python3-websocket`, `ffmpeg`, `v4l-utils`, CA certificates и `network-manager`, создаёт конфиг, устанавливает два systemd сервиса и запускает локальную веб-панель.
 
-## Конфигурация
+После установки выводится адрес вида:
+
+```text
+Web config: http://192.168.1.80:8088/
+```
+
+## Конфигурационный файл
+
+Веб-интерфейс работает с тем же файлом:
 
 ```bash
-nano /etc/robotlidar/orange-pi-zero-camera.json
+/etc/robotlidar/orange-pi-zero-camera.json
+```
+
+При необходимости его можно редактировать вручную:
+
+```bash
+sudo nano /etc/robotlidar/orange-pi-zero-camera.json
 ```
 
 Пример для IP/PTZ камеры:
@@ -93,27 +153,28 @@ nano /etc/robotlidar/orange-pi-zero-camera.json
   "reconnect_delay_sec": 2.0,
 
   "ptz_enabled": true,
-  "onvif_url": "http://192.168.1.149/onvif/ptz_service",
+  "onvif_auto_discovery": true,
+  "onvif_device_url": "",
+  "onvif_url": "",
   "onvif_username": "admin",
   "onvif_password": "CHANGE_ME",
-  "onvif_profile_token": "Profile_1"
+  "onvif_profile_token": ""
 }
 ```
 
 `device_id` должен быть уникальным и затем привязывается к пользователю на центральном сервере.
 
-## Важное про ONVIF URL и ProfileToken
+## ONVIF auto-discovery
 
-`onvif_url` нельзя считать одинаковым для всех камер. Правильный PTZ XAddr обычно определяется через ONVIF `GetCapabilities`, а `onvif_profile_token` — через `GetProfiles`.
+При включённом `onvif_auto_discovery` приложение берёт IP камеры из RTSP URL и пробует стандартные ONVIF Device Service адреса. Затем выполняет `GetCapabilities` и `GetProfiles`, получает PTZ XAddr и ProfileToken.
 
-У разных камер встречаются, например:
+Нормальный лог:
 
 ```text
-http://CAMERA_IP/onvif/ptz_service
-http://CAMERA_IP:80/onvif/PTZ
+ONVIF discovered: device=http://192.168.1.149/onvif/device_service; PTZ=http://192.168.1.149/onvif/ptz_service; profile=Profile_1
 ```
 
-Поэтому перед эксплуатацией нужно проверить конкретную модель камеры.
+Если автопоиск не подходит конкретной камере, значения `onvif_device_url`, `onvif_url` и `onvif_profile_token` можно задать вручную через веб-панель.
 
 ## USB камера
 
@@ -151,7 +212,9 @@ ffmpeg -hide_banner -protocols | grep -w srt
 
 На сервере каждому устройству назначается SRT UDP-порт из диапазона `12000-12099`.
 
-## Запуск
+## Сервисы
+
+Стример:
 
 ```bash
 systemctl restart orange-pi-zero-camera
@@ -159,10 +222,19 @@ systemctl status orange-pi-zero-camera --no-pager
 journalctl -u orange-pi-zero-camera -f
 ```
 
-Нормальный лог:
+Веб-панель:
+
+```bash
+systemctl restart orange-pi-zero-web
+systemctl status orange-pi-zero-web --no-pager
+journalctl -u orange-pi-zero-web -f
+```
+
+Нормальный лог стримера:
 
 ```text
 REGISTERED CAM-OPIZERO-001; SRT tele.xn----7sbbd7e6b.xn--p1ai:12002; latency=200ms
+ONVIF discovered: ...
 FFMPEG START: ... srt://tele.xn----7sbbd7e6b.xn--p1ai:12002?mode=caller...
 CONTROL/WSS connected: wss://tele.xn----7sbbd7e6b.xn--p1ai/api/devices/CAM-OPIZERO-001/control-ws
 ```
@@ -171,12 +243,6 @@ CONTROL/WSS connected: wss://tele.xn----7sbbd7e6b.xn--p1ai/api/devices/CAM-OPIZE
 
 ```text
 CONTROL/PTZ seq=123 pan=10.0 tilt=-5.0
-```
-
-Если WSS работает, но ONVIF ещё не настроен:
-
-```text
-PTZ received pan=... tilt=...; onvif_url is empty
 ```
 
 ## Автовосстановление
@@ -188,6 +254,10 @@ PTZ received pan=... tilt=...; onvif_url is empty
 - перезапускает FFmpeg;
 - регистрируется заново после 404 telemetry;
 - дополнительно перезапускается systemd при аварийном завершении.
+
+## Ограничение первичной Wi-Fi настройки
+
+Локальная веб-панель требует уже существующего сетевого соединения, чтобы до неё можно было достучаться. Для полностью автономного первого запуска без Ethernet потребуется отдельный режим Wi-Fi Access Point / captive portal. Он пока не включён в эту папку.
 
 ## Что намеренно отсутствует
 
