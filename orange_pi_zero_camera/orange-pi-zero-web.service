@@ -1,0 +1,18 @@
+[Unit]
+Description=RobotLiDAR Orange Pi Zero Web Config
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/robotlidar/orange_pi_zero_camera
+Environment=ORANGE_PI_CAMERA_CONFIG=/etc/robotlidar/orange-pi-zero-camera.json
+Environment=ORANGE_PI_WEB_HOST=0.0.0.0
+Environment=ORANGE_PI_WEB_PORT=8088
+ExecStart=/usr/bin/python3 /opt/robotlidar/orange_pi_zero_camera/web_config.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
