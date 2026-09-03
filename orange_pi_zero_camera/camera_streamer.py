@@ -1,21 +1,37 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape
+
+import websocket
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = BASE_DIR / "config.json"
+
+CONTROL_MAGIC = 0x5354
+CONTROL_VERSION = 1
+TYPE_PTZ = 1
+TYPE_DRIVE = 2
+TYPE_BRUSH = 3
+FLAG_CENTER = 1 << 0
 
 
 @dataclass
@@ -36,6 +52,12 @@ class Config:
     telemetry_period_sec: float = 2.0
     reconnect_delay_sec: float = 2.0
 
+    ptz_enabled: bool = True
+    onvif_url: str = ""
+    onvif_username: str = ""
+    onvif_password: str = ""
+    onvif_profile_token: str = "Profile_1"
+
     @classmethod
     def load(cls, path: Path) -> "Config":
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -47,13 +69,20 @@ class CameraStreamer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.proc: Optional[subprocess.Popen] = None
-        self.stop = False
+        self.stop_event = threading.Event()
         self.start_monotonic = time.monotonic()
         self.srt_port = 0
         self.srt_latency_ms = cfg.srt_latency_ms
         self.server_host = urllib.parse.urlparse(cfg.server_url).hostname or ""
         self.last_register = 0.0
         self.restart_count = 0
+        self.ws_thread: Optional[threading.Thread] = None
+        self.ws = None
+        self.ws_connected = False
+        self.ws_url = ""
+        self.last_seq = 0
+        self.pan_cdeg = 0
+        self.tilt_cdeg = 0
 
     def log(self, msg: str) -> None:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -90,7 +119,7 @@ class CameraStreamer:
             "ip": self.local_ip(),
             "rtp_port": 5004,
             "ptz_port": 6000,
-            "device_type": "orange_pi_zero_camera",
+            "device_type": "orange_pi_zero_camera_ptz" if self.cfg.ptz_enabled else "orange_pi_zero_camera",
             "video_transport": "srt",
         }
         try:
@@ -149,6 +178,102 @@ class CameraStreamer:
                 self.proc.kill()
         self.proc = None
 
+    def control_ws_url(self) -> str:
+        parsed = urllib.parse.urlparse(self.cfg.server_url.rstrip("/"))
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        path = f"{parsed.path.rstrip('/')}/api/devices/{urllib.parse.quote(self.cfg.device_id, safe='')}/control-ws"
+        return urllib.parse.urlunparse((scheme, parsed.netloc, path, "", "", ""))
+
+    def start_control(self) -> None:
+        if not self.cfg.ptz_enabled:
+            self.log("PTZ disabled in config")
+            return
+        self.ws_thread = threading.Thread(target=self.control_loop, name="ptz-wss", daemon=True)
+        self.ws_thread.start()
+
+    def control_loop(self) -> None:
+        self.ws_url = self.control_ws_url()
+        while not self.stop_event.is_set():
+            try:
+                ws = websocket.create_connection(self.ws_url, timeout=8, enable_multithread=True)
+                ws.settimeout(10)
+                self.ws = ws
+                self.ws_connected = True
+                self.log(f"CONTROL/WSS connected: {self.ws_url}")
+                while not self.stop_event.is_set():
+                    try:
+                        message = ws.recv()
+                    except websocket.WebSocketTimeoutException:
+                        ws.ping("opizero-camera")
+                        continue
+                    if message is None:
+                        raise RuntimeError("WebSocket closed by server")
+                    if isinstance(message, str):
+                        continue
+                    self.handle_control_packet(bytes(message))
+            except Exception as exc:
+                if not self.stop_event.is_set():
+                    self.log(f"CONTROL/WSS disconnected: {exc}")
+            finally:
+                self.ws_connected = False
+                if self.ws is not None:
+                    try:
+                        self.ws.close()
+                    except Exception:
+                        pass
+                    self.ws = None
+            self.stop_event.wait(self.cfg.reconnect_delay_sec)
+
+    def handle_control_packet(self, data: bytes) -> None:
+        if len(data) != 16:
+            self.log(f"CONTROL ignored: packet size {len(data)}")
+            return
+        magic, version, packet_type, seq, value1, value2, speed, flags = struct.unpack(">HBBIhhHH", data)
+        if magic != CONTROL_MAGIC or version != CONTROL_VERSION:
+            self.log("CONTROL ignored: bad header")
+            return
+        self.last_seq = int(seq)
+        if packet_type == TYPE_PTZ:
+            pan = int(value1)
+            tilt = int(value2)
+            if flags & FLAG_CENTER:
+                pan = 0
+                tilt = 0
+            self.pan_cdeg = pan
+            self.tilt_cdeg = tilt
+            threading.Thread(target=self.onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
+        elif packet_type in (TYPE_DRIVE, TYPE_BRUSH):
+            self.log(f"CONTROL ignored type={packet_type}: camera-only device")
+        else:
+            self.log(f"CONTROL ignored unknown type={packet_type}")
+
+    def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int) -> None:
+        if not self.cfg.onvif_url:
+            self.log(f"PTZ received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; onvif_url is empty")
+            return
+        pan = max(-1.0, min(1.0, pan_cdeg / 18000.0))
+        tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
+        speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
+        token = escape(self.cfg.onvif_profile_token or "Profile_1")
+        security = self.ws_security(self.cfg.onvif_username, self.cfg.onvif_password) if self.cfg.onvif_username else ""
+        envelope = f'''<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+<s:Header>{security}</s:Header><s:Body><tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace"/></tptz:Speed></tptz:AbsoluteMove></s:Body></s:Envelope>'''
+        req = urllib.request.Request(self.cfg.onvif_url, data=envelope.encode("utf-8"), method="POST", headers={"Content-Type": "application/soap+xml; charset=utf-8"})
+        try:
+            with urllib.request.urlopen(req, timeout=2.5) as response:
+                response.read(64)
+            self.log(f"CONTROL/PTZ seq={self.last_seq} pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}")
+        except Exception as exc:
+            self.log(f"CONTROL/PTZ ONVIF error: {exc}")
+
+    @staticmethod
+    def ws_security(username: str, password: str) -> str:
+        nonce = os.urandom(16)
+        created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        digest = hashlib.sha1(nonce + created.encode("utf-8") + password.encode("utf-8")).digest()
+        return f'''<wsse:Security s:mustUnderstand="1"><wsse:UsernameToken><wsse:Username>{escape(username)}</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{base64.b64encode(digest).decode()}</wsse:Password><wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{base64.b64encode(nonce).decode()}</wsse:Nonce><wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security>'''
+
     def send_telemetry(self) -> None:
         url = f"{self.cfg.server_url.rstrip('/')}/api/devices/{urllib.parse.quote(self.cfg.device_id, safe='')}/telemetry"
         running = self.proc is not None and self.proc.poll() is None
@@ -157,6 +282,8 @@ class CameraStreamer:
             "bitrate_bps": self.cfg.bitrate_kbps * 1000 if running else 0,
             "dropped_frames": 0,
             "uptime_ms": int((time.monotonic() - self.start_monotonic) * 1000),
+            "pan_cdeg": self.pan_cdeg,
+            "tilt_cdeg": self.tilt_cdeg,
             "link_mbps": 100,
         }
         try:
@@ -173,14 +300,15 @@ class CameraStreamer:
         if not self.server_host:
             self.log("Invalid server_url")
             return 2
-        while not self.stop and not self.register():
-            time.sleep(self.cfg.reconnect_delay_sec)
-        if self.stop:
+        while not self.stop_event.is_set() and not self.register():
+            self.stop_event.wait(self.cfg.reconnect_delay_sec)
+        if self.stop_event.is_set():
             return 0
         self.start_ffmpeg()
+        self.start_control()
         next_telemetry = 0.0
         try:
-            while not self.stop:
+            while not self.stop_event.is_set():
                 now = time.monotonic()
                 if now >= next_telemetry:
                     self.send_telemetry()
@@ -189,13 +317,18 @@ class CameraStreamer:
                     code = self.proc.returncode
                     self.log(f"FFMPEG EXIT {code}; restart after {self.cfg.reconnect_delay_sec}s")
                     self.stop_ffmpeg()
-                    time.sleep(self.cfg.reconnect_delay_sec)
-                    if not self.stop:
+                    self.stop_event.wait(self.cfg.reconnect_delay_sec)
+                    if not self.stop_event.is_set():
                         if time.monotonic() - self.last_register > 30:
                             self.register()
                         self.start_ffmpeg()
-                time.sleep(0.2)
+                self.stop_event.wait(0.2)
         finally:
+            if self.ws is not None:
+                try:
+                    self.ws.close()
+                except Exception:
+                    pass
             self.stop_ffmpeg()
         return 0
 
@@ -209,7 +342,7 @@ def main() -> int:
     app = CameraStreamer(Config.load(cfg_path))
 
     def handle_signal(_sig, _frame):
-        app.stop = True
+        app.stop_event.set()
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
