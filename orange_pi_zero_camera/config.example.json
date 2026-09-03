@@ -19,8 +19,10 @@
   "reconnect_delay_sec": 2.0,
 
   "ptz_enabled": true,
-  "onvif_url": "http://192.168.1.149/onvif/ptz_service",
+  "onvif_auto_discovery": true,
+  "onvif_device_url": "",
+  "onvif_url": "",
   "onvif_username": "admin",
   "onvif_password": "CHANGE_ME",
-  "onvif_profile_token": "Profile_1"
+  "onvif_profile_token": ""
 }
