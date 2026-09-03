@@ -14,7 +14,7 @@ STREAM_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-camera.service"
 WEB_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-web.service"
 
 apt-get update
-apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates network-manager
+apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates
 
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
@@ -29,8 +29,6 @@ fi
 cp "$APP_DIR/orange-pi-zero-camera.service" "$STREAM_SERVICE_FILE"
 cp "$APP_DIR/orange-pi-zero-web.service" "$WEB_SERVICE_FILE"
 
-systemctl enable NetworkManager.service >/dev/null 2>&1 || true
-systemctl restart NetworkManager.service || true
 systemctl daemon-reload
 systemctl enable orange-pi-zero-camera.service
 systemctl enable orange-pi-zero-web.service
@@ -47,7 +45,7 @@ fi
 echo
 IP_ADDR="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '%s\n' \
-  "Web config: http://${IP_ADDR:-ORANGE_PI_IP}:8088/" \
+  "Ethernet web config: http://${IP_ADDR:-ORANGE_PI_IP}:8088/" \
   "Config file: $CONFIG_FILE" \
   "Streamer: systemctl restart orange-pi-zero-camera" \
   "Web UI: systemctl restart orange-pi-zero-web" \
