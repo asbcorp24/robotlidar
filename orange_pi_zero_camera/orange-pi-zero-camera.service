@@ -1,0 +1,19 @@
+[Unit]
+Description=RobotLiDAR Orange Pi Zero Camera Streamer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/robotlidar/orange_pi_zero_camera
+Environment=PYTHONUNBUFFERED=1
+Environment=ORANGE_PI_CAMERA_CONFIG=/etc/robotlidar/orange-pi-zero-camera.json
+ExecStart=/usr/bin/python3 /opt/robotlidar/orange_pi_zero_camera/camera_streamer.py
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
