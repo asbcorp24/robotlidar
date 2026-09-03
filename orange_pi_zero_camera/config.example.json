@@ -16,5 +16,11 @@
   "ffmpeg": "ffmpeg",
   "srt_latency_ms": 200,
   "telemetry_period_sec": 2.0,
-  "reconnect_delay_sec": 2.0
+  "reconnect_delay_sec": 2.0,
+
+  "ptz_enabled": true,
+  "onvif_url": "http://192.168.1.149/onvif/ptz_service",
+  "onvif_username": "admin",
+  "onvif_password": "CHANGE_ME",
+  "onvif_profile_token": "Profile_1"
 }
