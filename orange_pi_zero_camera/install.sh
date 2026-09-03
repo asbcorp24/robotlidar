@@ -13,7 +13,7 @@ CONFIG_FILE="$CONFIG_DIR/orange-pi-zero-camera.json"
 SERVICE_FILE="/etc/systemd/system/orange-pi-zero-camera.service"
 
 apt-get update
-apt-get install -y python3 ffmpeg v4l-utils ca-certificates
+apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates
 
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
@@ -42,5 +42,6 @@ echo
 printf '%s\n' \
   "1. Edit: nano $CONFIG_FILE" \
   "2. Test camera: v4l2-ctl --list-devices" \
-  "3. Start: systemctl restart orange-pi-zero-camera" \
-  "4. Log: journalctl -u orange-pi-zero-camera -f"
+  "3. Configure ONVIF URL/login/password if PTZ is needed" \
+  "4. Start: systemctl restart orange-pi-zero-camera" \
+  "5. Log: journalctl -u orange-pi-zero-camera -f"
