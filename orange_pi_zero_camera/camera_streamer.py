@@ -22,6 +22,7 @@ from typing import Optional
 from xml.sax.saxutils import escape
 
 import websocket
+from onvif_discovery import discover as discover_onvif
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = BASE_DIR / "config.json"
@@ -39,7 +40,7 @@ class Config:
     device_id: str = "CAM-OPIZERO-001"
     device_name: str = "Orange Pi Zero Camera"
     server_url: str = "https://tele.xn----7sbbd7e6b.xn--p1ai"
-    input_mode: str = "rtsp"  # rtsp | v4l2_h264 | v4l2_encode | test
+    input_mode: str = "rtsp"
     input_url: str = "rtsp://192.168.1.149:8554/camera"
     video_device: str = "/dev/video0"
     width: int = 1280
@@ -53,10 +54,12 @@ class Config:
     reconnect_delay_sec: float = 2.0
 
     ptz_enabled: bool = True
+    onvif_auto_discovery: bool = True
+    onvif_device_url: str = ""
     onvif_url: str = ""
     onvif_username: str = ""
     onvif_password: str = ""
-    onvif_profile_token: str = "Profile_1"
+    onvif_profile_token: str = ""
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -83,6 +86,9 @@ class CameraStreamer:
         self.last_seq = 0
         self.pan_cdeg = 0
         self.tilt_cdeg = 0
+        self.onvif_url = cfg.onvif_url.strip()
+        self.onvif_profile_token = cfg.onvif_profile_token.strip()
+        self.onvif_device_url = cfg.onvif_device_url.strip()
 
     def log(self, msg: str) -> None:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -178,6 +184,38 @@ class CameraStreamer:
                 self.proc.kill()
         self.proc = None
 
+    def discover_onvif_if_needed(self) -> None:
+        if not self.cfg.ptz_enabled:
+            return
+        if self.onvif_url and self.onvif_profile_token:
+            self.log(f"ONVIF manual config: PTZ={self.onvif_url}; profile={self.onvif_profile_token}")
+            return
+        if not self.cfg.onvif_auto_discovery:
+            self.log("ONVIF auto-discovery disabled")
+            return
+        if self.cfg.input_mode.lower().strip() != "rtsp":
+            self.log("ONVIF auto-discovery skipped: input_mode is not rtsp")
+            return
+        try:
+            result = discover_onvif(
+                self.cfg.input_url,
+                username=self.cfg.onvif_username,
+                password=self.cfg.onvif_password,
+                explicit_device_url=self.onvif_device_url,
+            )
+            self.onvif_device_url = result.device_service_url
+            self.onvif_url = result.ptz_url
+            self.onvif_profile_token = result.profile_token
+            self.log(f"ONVIF discovered: device={self.onvif_device_url}; PTZ={self.onvif_url}; profile={self.onvif_profile_token}")
+        except Exception as exc:
+            self.log(f"ONVIF discovery failed: {exc}")
+            if self.cfg.onvif_url:
+                self.onvif_url = self.cfg.onvif_url
+            if self.cfg.onvif_profile_token:
+                self.onvif_profile_token = self.cfg.onvif_profile_token
+            if self.onvif_url:
+                self.log("ONVIF: using manual PTZ URL fallback")
+
     def control_ws_url(self) -> str:
         parsed = urllib.parse.urlparse(self.cfg.server_url.rstrip("/"))
         scheme = "wss" if parsed.scheme == "https" else "ws"
@@ -248,18 +286,18 @@ class CameraStreamer:
             self.log(f"CONTROL ignored unknown type={packet_type}")
 
     def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int) -> None:
-        if not self.cfg.onvif_url:
-            self.log(f"PTZ received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; onvif_url is empty")
+        if not self.onvif_url or not self.onvif_profile_token:
+            self.log(f"PTZ received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; ONVIF PTZ/profile unavailable")
             return
         pan = max(-1.0, min(1.0, pan_cdeg / 18000.0))
         tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
         speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
-        token = escape(self.cfg.onvif_profile_token or "Profile_1")
+        token = escape(self.onvif_profile_token)
         security = self.ws_security(self.cfg.onvif_username, self.cfg.onvif_password) if self.cfg.onvif_username else ""
         envelope = f'''<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
 <s:Header>{security}</s:Header><s:Body><tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace"/></tptz:Speed></tptz:AbsoluteMove></s:Body></s:Envelope>'''
-        req = urllib.request.Request(self.cfg.onvif_url, data=envelope.encode("utf-8"), method="POST", headers={"Content-Type": "application/soap+xml; charset=utf-8"})
+        req = urllib.request.Request(self.onvif_url, data=envelope.encode("utf-8"), method="POST", headers={"Content-Type": "application/soap+xml; charset=utf-8"})
         try:
             with urllib.request.urlopen(req, timeout=2.5) as response:
                 response.read(64)
@@ -304,6 +342,7 @@ class CameraStreamer:
             self.stop_event.wait(self.cfg.reconnect_delay_sec)
         if self.stop_event.is_set():
             return 0
+        self.discover_onvif_if_needed()
         self.start_ffmpeg()
         self.start_control()
         next_telemetry = 0.0
