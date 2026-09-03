@@ -1,24 +1,17 @@
-# Orange Pi Zero Camera Streamer
+# Orange Pi Zero Camera + PTZ
 
-Отдельное минимальное приложение RobotLiDAR только для видеокамеры на Orange Pi Zero.
+Отдельное приложение RobotLiDAR для Orange Pi Zero, которое занимается только камерой и её PTZ.
 
-В нём нет ROS, PTZ, UART/ESP32, гусениц, щётки или удалённого управления. Orange Pi только получает видео от камеры и отправляет его на центральный Go-сервер.
+В нём нет ROS, UART/ESP32, гусениц или щётки.
 
 ```text
-Camera / RTSP / USB V4L2
-          |
-          v
-    Orange Pi Zero
-          |
-          | SRT / MPEG-TS / H.264
-          v
-      Go server
-          |
-          v
-     Pion WebRTC
-          |
-          v
-       Browser
+IP/USB camera --H.264--> Orange Pi Zero --SRT--> Go server --WebRTC--> Browser
+                                ^
+                                |
+                         ONVIF AbsoluteMove
+                                ^
+                                |
+Browser --PTZ--> Go server --WSS
 ```
 
 ## Папка
@@ -32,18 +25,24 @@ orange_pi_zero_camera/
 └── README.md
 ```
 
-## Поддерживаемые источники
+## Что умеет
 
-`input_mode`:
+Видео:
 
-- `rtsp` — рекомендуется, если IP-камера уже выдаёт H.264. FFmpeg делает `-c:v copy`, поэтому Orange Pi почти не тратит CPU на видео;
-- `v4l2_h264` — USB/UVC камера на `/dev/video0`, которая умеет сама выдавать H.264;
-- `v4l2_encode` — USB-камера выдаёт сырой поток, Orange Pi кодирует его. По умолчанию используется `h264_v4l2m2m`; если он недоступен, можно поставить `libx264`, но на слабом Orange Pi Zero это заметно тяжелее;
-- `test` — генератор тестовой картинки для проверки сети/SRT без камеры.
+- `rtsp` — готовый H.264 от IP-камеры, без перекодирования;
+- `v4l2_h264` — USB/UVC камера сама выдаёт H.264;
+- `v4l2_encode` — кодирование на Orange Pi;
+- `test` — тестовая картинка.
+
+PTZ:
+
+- Orange Pi открывает исходящий WSS к центральному серверу;
+- принимает тот же 16-байтный RobotLiDAR control packet;
+- обрабатывает только `type=1 PTZ` и `CENTER`;
+- `DRIVE` и `BRUSH` намеренно игнорируются;
+- PTZ передаётся в камеру через ONVIF `AbsoluteMove` с WS-Security PasswordDigest.
 
 ## Установка
-
-Репозиторий предполагается в `/opt/robotlidar`:
 
 ```bash
 cd /opt
@@ -53,7 +52,7 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-Если репозиторий уже установлен:
+Если репозиторий уже есть:
 
 ```bash
 cd /opt/robotlidar
@@ -62,7 +61,7 @@ cd orange_pi_zero_camera
 sudo ./install.sh
 ```
 
-Установщик ставит `python3`, `ffmpeg`, `v4l-utils`, создаёт конфиг и systemd service.
+Установщик ставит `python3`, `python3-websocket`, `ffmpeg`, `v4l-utils`, CA certificates, конфиг и systemd service.
 
 ## Конфигурация
 
@@ -70,52 +69,66 @@ sudo ./install.sh
 nano /etc/robotlidar/orange-pi-zero-camera.json
 ```
 
-Для IP/RTSP камеры:
+Пример для IP/PTZ камеры:
 
 ```json
 {
   "device_id": "CAM-OPIZERO-001",
-  "device_name": "Передняя камера",
+  "device_name": "Передняя PTZ камера",
   "server_url": "https://tele.xn----7sbbd7e6b.xn--p1ai",
+
   "input_mode": "rtsp",
   "input_url": "rtsp://192.168.1.149:8554/camera",
   "video_device": "/dev/video0",
+
   "width": 1280,
   "height": 720,
   "fps": 20,
   "bitrate_kbps": 1500,
+
   "encoder": "h264_v4l2m2m",
   "ffmpeg": "ffmpeg",
   "srt_latency_ms": 200,
   "telemetry_period_sec": 2.0,
-  "reconnect_delay_sec": 2.0
+  "reconnect_delay_sec": 2.0,
+
+  "ptz_enabled": true,
+  "onvif_url": "http://192.168.1.149/onvif/ptz_service",
+  "onvif_username": "admin",
+  "onvif_password": "CHANGE_ME",
+  "onvif_profile_token": "Profile_1"
 }
 ```
 
-`device_id` должен быть уникальным. Именно этот ID затем привязывается к пользователю на центральном сервере.
+`device_id` должен быть уникальным и затем привязывается к пользователю на центральном сервере.
+
+## Важное про ONVIF URL и ProfileToken
+
+`onvif_url` нельзя считать одинаковым для всех камер. Правильный PTZ XAddr обычно определяется через ONVIF `GetCapabilities`, а `onvif_profile_token` — через `GetProfiles`.
+
+У разных камер встречаются, например:
+
+```text
+http://CAMERA_IP/onvif/ptz_service
+http://CAMERA_IP:80/onvif/PTZ
+```
+
+Поэтому перед эксплуатацией нужно проверить конкретную модель камеры.
 
 ## USB камера
 
-Посмотреть камеры:
-
 ```bash
 v4l2-ctl --list-devices
-ls -l /dev/video*
-```
-
-Посмотреть форматы `/dev/video0`:
-
-```bash
 v4l2-ctl -d /dev/video0 --list-formats-ext
 ```
 
-Если камера умеет H.264, использовать:
+Если камера умеет H.264:
 
 ```json
 "input_mode": "v4l2_h264"
 ```
 
-Это лучший вариант для Orange Pi Zero, потому что H.264 формирует сама камера.
+Это предпочтительный вариант для слабого Orange Pi Zero.
 
 Если есть только MJPEG/YUYV:
 
@@ -124,7 +137,7 @@ v4l2-ctl -d /dev/video0 --list-formats-ext
 "encoder": "h264_v4l2m2m"
 ```
 
-Проверить доступные H.264 encoder'ы:
+Проверка encoder'ов:
 
 ```bash
 ffmpeg -hide_banner -encoders | grep -E '264|v4l2'
@@ -136,7 +149,7 @@ ffmpeg -hide_banner -encoders | grep -E '264|v4l2'
 ffmpeg -hide_banner -protocols | grep -w srt
 ```
 
-Строка `srt` обязательна. Сервер назначает каждому устройству отдельный UDP SRT port из диапазона `12000-12099`.
+На сервере каждому устройству назначается SRT UDP-порт из диапазона `12000-12099`.
 
 ## Запуск
 
@@ -146,30 +159,36 @@ systemctl status orange-pi-zero-camera --no-pager
 journalctl -u orange-pi-zero-camera -f
 ```
 
-Нормальный старт выглядит примерно так:
+Нормальный лог:
 
 ```text
 REGISTERED CAM-OPIZERO-001; SRT tele.xn----7sbbd7e6b.xn--p1ai:12002; latency=200ms
 FFMPEG START: ... srt://tele.xn----7sbbd7e6b.xn--p1ai:12002?mode=caller...
+CONTROL/WSS connected: wss://tele.xn----7sbbd7e6b.xn--p1ai/api/devices/CAM-OPIZERO-001/control-ws
 ```
 
-На центральном сервере:
+При управлении камерой с сайта:
 
-```bash
-journalctl -u robotlidar -f
+```text
+CONTROL/PTZ seq=123 pan=10.0 tilt=-5.0
 ```
 
-ожидается подключение SRT publisher для этого Device ID.
+Если WSS работает, но ONVIF ещё не настроен:
+
+```text
+PTZ received pan=... tilt=...; onvif_url is empty
+```
 
 ## Автовосстановление
 
-Приложение рассчитано на автономную работу:
+Приложение автоматически:
 
-- если сервер временно недоступен — повторяет регистрацию;
-- если FFmpeg завершился — перезапускает его;
-- если сервер после рестарта потерял регистрацию устройства — telemetry получает 404 и приложение регистрируется заново;
-- systemd дополнительно перезапускает процесс приложения при аварийном завершении.
+- повторяет регистрацию при недоступности сервера;
+- переподключает WSS;
+- перезапускает FFmpeg;
+- регистрируется заново после 404 telemetry;
+- дополнительно перезапускается systemd при аварийном завершении.
 
 ## Что намеренно отсутствует
 
-Это камера-only приложение. Оно не открывает WSS control channel и не принимает команды `DRIVE`, `BRUSH` или `PTZ`. Для полноценного трактора используются Raspberry/Radxa приложения проекта.
+Это камера + PTZ приложение. Команды `DRIVE` и `BRUSH` принимаются по общему каналу только для совместимости протокола и сразу игнорируются. Управление ходовой частью остаётся в Raspberry/Radxa приложениях RobotLiDAR.
