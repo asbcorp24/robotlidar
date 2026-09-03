@@ -1,0 +1,20 @@
+{
+  "device_id": "CAM-OPIZERO-001",
+  "device_name": "Orange Pi Zero Camera",
+  "server_url": "https://tele.xn----7sbbd7e6b.xn--p1ai",
+
+  "input_mode": "rtsp",
+  "input_url": "rtsp://192.168.1.149:8554/camera",
+  "video_device": "/dev/video0",
+
+  "width": 1280,
+  "height": 720,
+  "fps": 20,
+  "bitrate_kbps": 1500,
+
+  "encoder": "h264_v4l2m2m",
+  "ffmpeg": "ffmpeg",
+  "srt_latency_ms": 200,
+  "telemetry_period_sec": 2.0,
+  "reconnect_delay_sec": 2.0
+}
