@@ -45,6 +45,24 @@ uint16_t espSettingActuatorTimeoutMs(); uint16_t espSettingActuatorGuardMs(); bo
 void initializeBrushController(); void updateBrushController(); void stopBrushController(); void setBrushRosCommand(uint16_t);
 uint16_t getBrushRcPulseUs(); bool getBrushRcValid(); uint16_t getBrushRosCommand(); uint16_t getBrushThrottleMv(); bool getBrushBrakeActive(); bool getBrushMcpReady();
 
+// Front RCWL-1655 ultrasonic API
+void initializeUltrasonicController();
+void updateUltrasonicController();
+bool ultrasonicIsValid();
+bool ultrasonicIsNear();
+bool ultrasonicStopRequested();
+bool ultrasonicEmergencyRequested();
+uint16_t ultrasonicDistanceMillimeters();
+
+// INA228 battery monitor API
+void initializeBatteryMonitor();
+void updateBatteryMonitor();
+bool batteryMonitorOnline();
+float batteryVoltageVolts();
+float batteryCurrentAmps();
+float batteryPowerWatts();
+float batteryTemperatureC();
+
 enum class ControlMode:uint8_t{Safe,RcManual,RosAutonomous}; enum class TrackSide:uint8_t{Left,Right};
 struct Track{TrackSide side;uint8_t throttlePin,reversePin,brakePin;int16_t target=0,actual=0;int8_t appliedSign=1;enum class Phase:uint8_t{Normal,BrakeBeforeReverse,ReverseSettle};Phase phase=Phase::Normal;uint32_t deadlineMs=0;};
 struct RcCapture{volatile uint32_t riseUs=0,lastPulseUs=0;volatile uint16_t pulseUs=0;};
@@ -127,15 +145,30 @@ void readSerialFrames(){while(Serial.available()){char c=Serial.read();if(c=='\r
 void sendTelemetry(uint32_t now){int64_t lt,rt;uint32_t lp,rp;portENTER_CRITICAL(&hallMux);lt=leftTicks;rt=rightTicks;lp=leftWindowPulses;rp=rightWindowPulses;leftWindowPulses=rightWindowPulses=0;portEXIT_CRITICAL(&hallMux);uint32_t e=now-lastTelemetryPulseMs;if(!e)e=1;lastTelemetryPulseMs=now;char b[460];snprintf(b,sizeof(b),"TEL,%lu,%d,%d,%d,%d,%d,%d,%lld,%lld,%lu,%lu,%d,%s,%u,%u,%u,0,%d,BOAT_MIX,%u,%d,%d,%d,%u,%d,%u,%u,%d,%d",(unsigned long)now,armed,estopOkay(),leftTrack.target,rightTrack.target,leftTrack.actual,rightTrack.actual,(long long)lt,(long long)rt,(unsigned long)(lp*1000/e),(unsigned long)(rp*1000/e),watchdogTripped,modeName(controlMode),lastRcSnapshot.channel1Us,lastRcSnapshot.channel2Us,lastRcSnapshot.modeUs,lastRcValid,lastRcSnapshot.actuatorUs,lastRcSnapshot.actuatorValid,actuatorAppliedDirection,actuatorTimeoutLatched,getBrushRcPulseUs(),getBrushRcValid(),getBrushRosCommand(),getBrushThrottleMv(),getBrushBrakeActive(),getBrushMcpReady());sendFrame(String(b));}
 
 #if ROBOTLIDAR_ENABLE_OLED
-bool oledDevicePresent(uint8_t a){OledWire.beginTransmission(a);return OledWire.endTransmission()==0;}bool initializeOled(){if(oledDevicePresent(Fixed::OLED_ADDRESS_PRIMARY))oledAddress=Fixed::OLED_ADDRESS_PRIMARY;else if(oledDevicePresent(Fixed::OLED_ADDRESS_SECONDARY))oledAddress=Fixed::OLED_ADDRESS_SECONDARY;else return false;oledReady=oled.begin(SSD1306_SWITCHCAPVCC,oledAddress,false,false);return oledReady;}void printRc(uint8_t ch,uint16_t p,uint32_t a){if(pulseValid(ch,p,a))oled.print(p);else oled.print(F("----"));}void updateOled(){if(!oledReady)return;oled.clearDisplay();oled.setTextColor(SSD1306_WHITE);oled.setTextSize(1);oled.setCursor(0,0);oled.print(modeName(controlMode));oled.print(armed?F(" A1 "):F(" A0 "));oled.print(estopOkay()?F("EST:OK"):F("EST:STOP"));oled.setCursor(0,8);oled.print(F("CH1:"));printRc(1,lastRcSnapshot.channel1Us,lastRcSnapshot.channel1AgeUs);oled.setCursor(66,8);oled.print(F("CH2:"));printRc(2,lastRcSnapshot.channel2Us,lastRcSnapshot.channel2AgeUs);oled.setCursor(0,16);oled.print(F("CMD:L"));oled.print(leftTrack.target);oled.setCursor(66,16);oled.print(F("R:"));oled.print(rightTrack.target);oled.setCursor(0,24);oled.print(F("DAC:"));oled.print(leftThrottleMv);oled.setCursor(66,24);oled.print(rightThrottleMv);oled.setCursor(0,32);oled.print(F("RV:"));oled.print(leftTrack.appliedSign<0);oled.print('/');oled.print(rightTrack.appliedSign<0);oled.setCursor(66,32);oled.print(F("BK:"));oled.print(leftBrakeActive);oled.print('/');oled.print(rightBrakeActive);oled.setCursor(0,40);oled.print(F("CH3:"));printRc(3,lastRcSnapshot.actuatorUs,lastRcSnapshot.actuatorAgeUs);oled.setCursor(66,40);oled.print(F("CH5:"));printRc(5,lastRcSnapshot.modeUs,lastRcSnapshot.modeAgeUs);oled.setCursor(0,48);oled.print(F("HL:"));if(espSettingHallEnabled())oled.print((long long)leftTicks);else oled.print(F("OFF"));oled.setCursor(66,48);oled.print(F("HR:"));if(espSettingHallEnabled())oled.print((long long)rightTicks);else oled.print(F("OFF"));oled.setCursor(0,56);oled.print(F("A:"));oled.print(actuatorName());oled.setCursor(48,56);oled.print(F("B:"));oled.print(getBrushRosCommand());oled.display();}
+bool oledDevicePresent(uint8_t a){OledWire.beginTransmission(a);return OledWire.endTransmission()==0;}
+bool initializeOled(){if(oledDevicePresent(Fixed::OLED_ADDRESS_PRIMARY))oledAddress=Fixed::OLED_ADDRESS_PRIMARY;else if(oledDevicePresent(Fixed::OLED_ADDRESS_SECONDARY))oledAddress=Fixed::OLED_ADDRESS_SECONDARY;else return false;oledReady=oled.begin(SSD1306_SWITCHCAPVCC,oledAddress,false,false);return oledReady;}
+void printRc(uint8_t ch,uint16_t p,uint32_t a){if(pulseValid(ch,p,a))oled.print(p);else oled.print(F("----"));}
+void updateOled(){
+  if(!oledReady)return;
+  oled.clearDisplay();oled.setTextColor(SSD1306_WHITE);oled.setTextSize(1);
+  oled.setCursor(0,0);oled.print(modeName(controlMode));oled.print(armed?F(" A1 "):F(" A0 "));oled.print(estopOkay()?F("EST:OK"):F("EST:STOP"));
+  oled.setCursor(0,8);oled.print(F("CH1:"));printRc(1,lastRcSnapshot.channel1Us,lastRcSnapshot.channel1AgeUs);oled.setCursor(66,8);oled.print(F("CH2:"));printRc(2,lastRcSnapshot.channel2Us,lastRcSnapshot.channel2AgeUs);
+  oled.setCursor(0,16);oled.print(F("CMD:L"));oled.print(leftTrack.target);oled.setCursor(66,16);oled.print(F("R:"));oled.print(rightTrack.target);
+  oled.setCursor(0,24);oled.print(F("DAC:"));oled.print(leftThrottleMv);oled.setCursor(66,24);oled.print(rightThrottleMv);
+  oled.setCursor(0,32);oled.print(F("RV:"));oled.print(leftTrack.appliedSign<0);oled.print('/');oled.print(rightTrack.appliedSign<0);oled.setCursor(66,32);oled.print(F("BK:"));oled.print(leftBrakeActive);oled.print('/');oled.print(rightBrakeActive);
+  oled.setCursor(0,40);oled.print(F("CH3:"));printRc(3,lastRcSnapshot.actuatorUs,lastRcSnapshot.actuatorAgeUs);oled.setCursor(66,40);oled.print(F("CH5:"));printRc(5,lastRcSnapshot.modeUs,lastRcSnapshot.modeAgeUs);
+  oled.setCursor(0,48);oled.print(F("H:"));if(espSettingHallEnabled()){oled.print((long long)leftTicks);oled.print('/');oled.print((long long)rightTicks);}else oled.print(F("OFF"));oled.setCursor(88,48);oled.print(F("A:"));oled.print(actuatorName());
+  oled.setCursor(0,56);oled.print(F("B:"));oled.print(getBrushRosCommand());oled.print(F(" U:"));if(ultrasonicIsValid()){uint16_t mm=ultrasonicDistanceMillimeters();if(mm<1000){oled.print(mm);oled.print(F("mm"));}else{oled.print(mm/10);oled.print(F("cm"));}}else oled.print(F("---"));oled.print(' ');if(batteryMonitorOnline()){oled.print(batteryVoltageVolts(),1);oled.print('V');}else oled.print(F("--.-V"));
+  oled.display();
+}
 #endif
 
 void setup(){Serial.begin(Fixed::SERIAL_BAUD);delay(200);initializeEsp32SettingsController();pinMode(Pins::LEFT_REVERSE,OUTPUT);pinMode(Pins::RIGHT_REVERSE,OUTPUT);pinMode(Pins::LEFT_BRAKE,OUTPUT);pinMode(Pins::RIGHT_BRAKE,OUTPUT);pinMode(Pins::ESTOP_OK,INPUT_PULLUP);pinMode(Pins::RC_CHANNEL_1,INPUT_PULLDOWN);pinMode(Pins::RC_CHANNEL_2,INPUT_PULLDOWN);pinMode(Pins::RC_ACTUATOR,INPUT_PULLDOWN);pinMode(Pins::RC_MODE,INPUT_PULLDOWN);digitalWrite(Pins::LEFT_BRAKE,HIGH);digitalWrite(Pins::RIGHT_BRAKE,HIGH);setReverse(leftTrack,false);setReverse(rightTrack,false);initializeActuator();stopActuatorOutput();initializeThrottleBackend();applyTrackSafe(leftTrack);applyTrackSafe(rightTrack);OledWire.begin(Pins::OLED_SDA,Pins::OLED_SCL);OledWire.setClock(Fixed::OLED_I2C_HZ);
 #if ROBOTLIDAR_ENABLE_OLED
 initializeOled();
 #endif
-initializeBrushController();attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1),onRc1,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2),onRc2,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR),onRc3,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE),onRc5,CHANGE);lastControlMs=lastTelemetryMs=lastTelemetryPulseMs=lastOledMs=millis();String boot=String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,16,")+hardwareProfileName()+",40PIN,RUNTIME_CONFIG_V2,RC_SAFE_ROS,ROS_AUX_ACTUATOR_BRUSH";boot+=espSettingHallEnabled()?",HALL_ON":",HALL_OFF";sendFrame(boot);}
-void loop(){readSerialFrames();uint32_t now=millis();if(!estopOkay()&&armed)disarmSystem("ESTOP");if(!throttleBackendReady&&armed)disarmSystem("THROTTLE_DAC");if(now-lastControlMs>=Fixed::CONTROL_PERIOD_MS){lastControlMs=now;updateCommandSource();updateActuator(lastRcSnapshot,now);updateBrushController();if(controlMode==ControlMode::RosAutonomous&&armed&&now-lastDriveFrameMs>Fixed::COMMAND_WATCHDOG_MS){watchdogTripped=true;disarmSystem("WATCHDOG");}if(controlMode==ControlMode::RosAutonomous&&(lastAuxFrameMs==0||now-lastAuxFrameMs>espSettingRosAuxTimeoutMs())){rosActuatorCommand=0;setBrushRosCommand(0);}updateTrack(leftTrack,now);updateTrack(rightTrack,now);}if(now-lastTelemetryMs>=Fixed::TELEMETRY_PERIOD_MS){lastTelemetryMs=now;sendTelemetry(now);}
+initializeBatteryMonitor();initializeUltrasonicController();initializeBrushController();attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1),onRc1,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2),onRc2,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR),onRc3,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE),onRc5,CHANGE);lastControlMs=lastTelemetryMs=lastTelemetryPulseMs=lastOledMs=millis();String boot=String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,17,")+hardwareProfileName()+",40PIN,RUNTIME_CONFIG_V2,RC_SAFE_ROS,ROS_AUX_ACTUATOR_BRUSH,OLED_USONIC_BATTERY";boot+=espSettingHallEnabled()?",HALL_ON":",HALL_OFF";sendFrame(boot);}
+void loop(){readSerialFrames();uint32_t now=millis();updateUltrasonicController();updateBatteryMonitor();if(!estopOkay()&&armed)disarmSystem("ESTOP");if(!throttleBackendReady&&armed)disarmSystem("THROTTLE_DAC");if(now-lastControlMs>=Fixed::CONTROL_PERIOD_MS){lastControlMs=now;updateCommandSource();updateActuator(lastRcSnapshot,now);updateBrushController();if(controlMode==ControlMode::RosAutonomous&&armed&&now-lastDriveFrameMs>Fixed::COMMAND_WATCHDOG_MS){watchdogTripped=true;disarmSystem("WATCHDOG");}if(controlMode==ControlMode::RosAutonomous&&(lastAuxFrameMs==0||now-lastAuxFrameMs>espSettingRosAuxTimeoutMs())){rosActuatorCommand=0;setBrushRosCommand(0);}updateTrack(leftTrack,now);updateTrack(rightTrack,now);}if(now-lastTelemetryMs>=Fixed::TELEMETRY_PERIOD_MS){lastTelemetryMs=now;sendTelemetry(now);}
 #if ROBOTLIDAR_ENABLE_OLED
 if(now-lastOledMs>=Fixed::OLED_PERIOD_MS){lastOledMs=now;updateOled();}
 #endif
