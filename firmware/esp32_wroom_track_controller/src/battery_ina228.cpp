@@ -12,6 +12,10 @@ Adafruit_INA228 ina228;
 bool initialized = false;
 bool online = false;
 uint32_t lastSampleMs = 0;
+float lastVoltage = 0.0f;
+float lastCurrent = 0.0f;
+float lastPower = 0.0f;
+float lastTemperature = 0.0f;
 constexpr uint8_t INA228_ADDRESS = 0x40;
 constexpr uint32_t SHARED_I2C_HZ = 100000;
 constexpr uint32_t SAMPLE_PERIOD_MS = 1000;
@@ -82,6 +86,17 @@ void updateBatteryMonitor() {
         }
     }
 
+    lastVoltage = voltage;
+    lastCurrent = current;
+    lastPower = power;
+    lastTemperature = temperature;
+
     OledWire.setClock(SHARED_I2C_HZ);
     publishBattery(now, voltage, current, power, temperature);
 }
+
+bool batteryMonitorOnline() { return online; }
+float batteryVoltageVolts() { return lastVoltage; }
+float batteryCurrentAmps() { return lastCurrent; }
+float batteryPowerWatts() { return lastPower; }
+float batteryTemperatureC() { return lastTemperature; }
