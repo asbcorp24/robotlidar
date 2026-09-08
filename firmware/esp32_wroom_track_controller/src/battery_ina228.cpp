@@ -39,20 +39,32 @@ void restoreSharedBus() {
     OledWire.setClock(SHARED_I2C_HZ);
 }
 
-void reportSharedBus() {
-    const uint8_t addresses[] = {0x3C, 0x3D, 0x40, 0x60, 0x61};
-    bool any = false;
-    for (uint8_t address : addresses) {
-        if (i2cPresent(address)) {
-            any = true;
+void scanSharedBus() {
+    Serial.println("I2C,SCAN_BEGIN,SDA4,SCL23,100KHZ");
+
+    uint8_t found = 0;
+    for (uint8_t address = 0x08; address <= 0x77; ++address) {
+        OledWire.beginTransmission(address);
+        const uint8_t error = OledWire.endTransmission();
+
+        if (error == 0) {
+            ++found;
             Serial.print("I2C,FOUND,0x");
+            if (address < 0x10) Serial.print('0');
+            Serial.println(address, HEX);
+        } else if (error == 4) {
+            Serial.print("I2C,ERROR,0x");
             if (address < 0x10) Serial.print('0');
             Serial.println(address, HEX);
         }
     }
-    if (!any) {
+
+    if (found == 0) {
         Serial.println("I2C,NO_DEVICES,SDA4,SCL23");
     }
+
+    Serial.print("I2C,SCAN_END,FOUND=");
+    Serial.println(found);
 }
 
 void publishBattery(uint32_t now, float voltage, float current, float power, float temperature) {
@@ -78,12 +90,10 @@ void initializeBatteryMonitor() {
     if (initialized) return;
     initialized = true;
 
-    // The OLED is already initialized by main.cpp on this bus. Do a plain
-    // address probe first. If INA228 is absent, do NOT call Adafruit begin(),
-    // because that routine can touch/reinitialize the shared TwoWire instance.
     OledWire.setClock(SHARED_I2C_HZ);
-    reportSharedBus();
+    scanSharedBus();
 
+    // If INA228 is absent, do not call Adafruit begin() on the shared bus.
     if (!i2cPresent(INA228_ADDRESS)) {
         online = false;
         Serial.println("ERR,INA228_NOT_FOUND,0x40");
@@ -93,8 +103,7 @@ void initializeBatteryMonitor() {
 
     online = ina228.begin(INA228_ADDRESS, &OledWire);
 
-    // Adafruit BusIO may call TwoWire::begin(). Restore our explicit pins
-    // afterwards so OLED and the MCP4725 devices stay on GPIO4/GPIO23.
+    // Adafruit BusIO may touch the TwoWire instance. Restore explicit pins.
     restoreSharedBus();
 
     if (online) Serial.println("EVT,INA228,ONLINE,0x40");
@@ -108,8 +117,6 @@ void updateBatteryMonitor() {
     if (now - lastSampleMs < SAMPLE_PERIOD_MS) return;
     lastSampleMs = now;
 
-    // Do not repeatedly initialize a missing INA228. This keeps the OLED bus
-    // untouched when the battery monitor is not installed or disconnected.
     if (!online) {
         lastVoltage = lastCurrent = lastPower = lastTemperature = 0.0f;
         publishBattery(now, 0.0f, 0.0f, 0.0f, 0.0f);
