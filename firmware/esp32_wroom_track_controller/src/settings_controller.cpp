@@ -69,6 +69,7 @@ struct PersistentSettings {
 static Preferences prefs;
 static PersistentSettings settings;
 static bool settingsInitialized=false, configDirty=true;
+static bool hallInterruptsAttached=false;
 static uint32_t lastHandledSequence=0, lastConfigTelemetryMs=0;
 
 static uint8_t checksum(const char* text){ uint8_t v=0; while(*text) v^=(uint8_t)*text++; return v; }
@@ -113,7 +114,15 @@ static void normalizeSettings(){
 static void saveSettings(){ normalizeSettings(); prefs.putBytes("cfg2", &settings, sizeof(settings)); }
 static void loadSettings(){
   loadDefaults();
-  if(prefs.getBytesLength("cfg2")==sizeof(settings)) prefs.getBytes("cfg2", &settings, sizeof(settings));
+  if(prefs.isKey("cfg2")) {
+    if(prefs.getBytesLength("cfg2")==sizeof(settings)) {
+      prefs.getBytes("cfg2", &settings, sizeof(settings));
+    } else {
+      saveSettings();
+    }
+  } else {
+    saveSettings();
+  }
   normalizeSettings();
 }
 
@@ -129,10 +138,15 @@ static void IRAM_ATTR onSettingsHallRight(){
 }
 static void configureHallInputs(){
   pinMode(HallPins::LEFT,INPUT); pinMode(HallPins::RIGHT,INPUT);
-  detachInterrupt(digitalPinToInterrupt(HallPins::LEFT)); detachInterrupt(digitalPinToInterrupt(HallPins::RIGHT));
+  if(hallInterruptsAttached){
+    detachInterrupt(digitalPinToInterrupt(HallPins::LEFT));
+    detachInterrupt(digitalPinToInterrupt(HallPins::RIGHT));
+    hallInterruptsAttached=false;
+  }
   if(settings.hallEnabled){
     attachInterrupt(digitalPinToInterrupt(HallPins::LEFT),onSettingsHallLeft,CHANGE);
     attachInterrupt(digitalPinToInterrupt(HallPins::RIGHT),onSettingsHallRight,CHANGE);
+    hallInterruptsAttached=true;
   }
 }
 
@@ -201,15 +215,14 @@ uint16_t espSettingWheelCircumferenceMm(){return settings.wheelCircumferenceMm;}
 uint16_t espSettingTrackWidthMm(){return settings.trackWidthMm;}
 uint16_t espSettingRcDeadbandUs(){return settings.rcDeadbandUs;}
 uint16_t espSettingRcTimeoutMs(){return settings.rcTimeoutMs;}
-uint16_t espSettingRcMinUs(uint8_t channel){return settings.rc[constrain((int)channel,1,6)-1].minUs;}
-uint16_t espSettingRcCenterUs(uint8_t channel){return settings.rc[constrain((int)channel,1,6)-1].centerUs;}
-uint16_t espSettingRcMaxUs(uint8_t channel){return settings.rc[constrain((int)channel,1,6)-1].maxUs;}
+uint16_t espSettingRcMinUs(uint8_t ch){return ch>=1&&ch<=6?settings.rc[ch-1].minUs:1000;}
+uint16_t espSettingRcCenterUs(uint8_t ch){return ch>=1&&ch<=6?settings.rc[ch-1].centerUs:1500;}
+uint16_t espSettingRcMaxUs(uint8_t ch){return ch>=1&&ch<=6?settings.rc[ch-1].maxUs:2000;}
 uint16_t espSettingThrottleIdleMv(){return settings.throttleIdleMv;}
 uint16_t espSettingThrottleMaxMv(){return settings.throttleMaxMv;}
 uint16_t espSettingReverseBrakeMs(){return settings.reverseBrakeMs;}
 uint16_t espSettingReverseSettleMs(){return settings.reverseSettleMs;}
 uint16_t espSettingRampStep(){return settings.rampStep;}
-bool espSettingTrackReverseActiveHigh(){return settings.trackReverseActiveHigh;}
 uint16_t espSettingActuatorTimeoutMs(){return settings.actuatorTimeoutMs;}
 uint16_t espSettingActuatorGuardMs(){return settings.actuatorGuardMs;}
 bool espSettingActuatorReversed(){return settings.actuatorReversed;}
@@ -223,3 +236,4 @@ uint16_t espSettingAuxReverseGuardMs(){return settings.auxReverseGuardMs;}
 uint16_t espSettingAuxRampStep(){return settings.auxRampStep;}
 bool espSettingAuxReverseActiveHigh(){return settings.auxReverseActiveHigh;}
 uint16_t espSettingRosAuxTimeoutMs(){return settings.rosAuxTimeoutMs;}
+bool espSettingTrackReverseActiveHigh(){return settings.trackReverseActiveHigh;}
