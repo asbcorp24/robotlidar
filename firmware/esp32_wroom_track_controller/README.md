@@ -10,6 +10,8 @@
 
 Основное ручное управление выполняется с пульта. Raspberry Pi получает телеметрию по USB и управляет движением только в режиме `ROS`.
 
+> **Важно:** Raspberry Pi НЕ управляет гусеницами напрямую через 40-pin GPIO. Все сигналы газа, Reverse, Brake, Hall и аварийной цепи подключаются к ESP32. Между Raspberry Pi и ESP32 используется только USB Serial 115200.
+
 ## 1. Окончательная архитектура
 
 ```text
@@ -35,6 +37,42 @@ ESP32-WROOM-32 30 pin <---- USB Serial 115200 ----> Raspberry Pi 4
 ```
 
 `GPIO21` и `GPIO22` свободны. ESP32 не управляет `Lock/Ignition` силовых контроллеров.
+
+### 1.1. Что подключается к 40-pin Raspberry Pi
+
+В актуальной архитектуре управление гусеницами к 40-pin Raspberry Pi не подключается.
+
+40-pin Raspberry Pi используется только для периферии самой Raspberry Pi, если она установлена:
+
+```text
+Physical pin 1   3.3V          -> MPU6050 VCC
+Physical pin 3   GPIO2 / SDA1  -> MPU6050 SDA
+Physical pin 5   GPIO3 / SCL1  -> MPU6050 SCL
+Physical pin 6   GND           -> MPU6050 GND
+
+Physical pin 8   GPIO14 / TXD  -> GPS RX   (опционально)
+Physical pin 10  GPIO15 / RXD  <- GPS TX
+Physical pin 9   GND           -> GPS GND
+```
+
+ESP32 подключается к обычному USB-порту Raspberry Pi:
+
+```text
+Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
+```
+
+Лидар STL-19P/D500 также подключается к Raspberry Pi через USB-UART и не занимает GPIO 40-pin.
+
+Не подключать к Raspberry Pi GPIO напрямую:
+
+- газ LEFT/RIGHT;
+- Reverse LEFT/RIGHT;
+- Low Brake LEFT/RIGHT;
+- Hall/Speed LEFT/RIGHT;
+- RC-приёмник MC8RE-V2;
+- аварийную петлю ESP32.
+
+Все перечисленные сигналы относятся к ESP32.
 
 ## 2. Полная распиновка ESP32
 
@@ -374,21 +412,19 @@ BOOT,ESP32_WROOM_TRACK_CONTROLLER,4,TLP240A_GPIO21_22_FREE*HH
 
 ## 13. Итоговая таблица соединений
 
-| Источник | Через что | Назначение |
+| Источник | Сигнал | Назначение |
 |---|---|---|
-| GPIO16 | 330 Ом + TLP240A №1 | Reverse LEFT |
-| GPIO17 | 330 Ом + TLP240A №2 | Reverse RIGHT |
-| GPIO18 | 330 Ом + TLP240A №3 | Low brake LEFT |
-| GPIO19 | 330 Ом + TLP240A №4 | Low brake RIGHT |
-| GPIO25 | аналоговый буфер | Turn handle LEFT |
-| GPIO26 | аналоговый буфер | Turn handle RIGHT |
-| GPIO27 | 1 кОм | MC8RE CH1 |
-| GPIO33 | 1 кОм | MC8RE CH2 |
-| GPIO13 | 1 кОм | MC8RE CH5 |
-| GPIO14 | 1 кОм | MC8RE CH6 |
-| GPIO32 | NC-кнопка | аварийная петля |
-| GPIO34 | согласование 5->3,3 В | Hall LEFT |
-| GPIO35 | согласование 5->3,3 В | Hall RIGHT |
-| GPIO21 | — | свободен |
-| GPIO22 | — | свободен |
-| USB | USB-кабель | Raspberry Pi 4 |
+| Raspberry Pi USB | USB Serial 115200 | связь ROS/Nav2 с ESP32 |
+| ESP32 GPIO25 | DAC | газ LEFT |
+| ESP32 GPIO26 | DAC | газ RIGHT |
+| ESP32 GPIO16 | TLP240A №1 | Reverse LEFT |
+| ESP32 GPIO17 | TLP240A №2 | Reverse RIGHT |
+| ESP32 GPIO18 | TLP240A №3 | Low brake LEFT |
+| ESP32 GPIO19 | TLP240A №4 | Low brake RIGHT |
+| ESP32 GPIO27 | PWM IN | MC8RE CH1 |
+| ESP32 GPIO33 | PWM IN | MC8RE CH2 |
+| ESP32 GPIO13 | PWM IN | MC8RE CH5 RC/SAFE/ROS |
+| ESP32 GPIO14 | PWM IN | MC8RE CH6 ARM |
+| ESP32 GPIO32 | digital IN | NC аварийная петля |
+| ESP32 GPIO34 | Hall IN | скорость LEFT |
+| ESP32 GPIO35 | Hall IN | скорость RIGHT |
