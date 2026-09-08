@@ -39,34 +39,6 @@ void restoreSharedBus() {
     OledWire.setClock(SHARED_I2C_HZ);
 }
 
-void scanSharedBus() {
-    Serial.println("I2C,SCAN_BEGIN,SDA4,SCL23,100KHZ");
-
-    uint8_t found = 0;
-    for (uint8_t address = 0x08; address <= 0x77; ++address) {
-        OledWire.beginTransmission(address);
-        const uint8_t error = OledWire.endTransmission();
-
-        if (error == 0) {
-            ++found;
-            Serial.print("I2C,FOUND,0x");
-            if (address < 0x10) Serial.print('0');
-            Serial.println(address, HEX);
-        } else if (error == 4) {
-            Serial.print("I2C,ERROR,0x");
-            if (address < 0x10) Serial.print('0');
-            Serial.println(address, HEX);
-        }
-    }
-
-    if (found == 0) {
-        Serial.println("I2C,NO_DEVICES,SDA4,SCL23");
-    }
-
-    Serial.print("I2C,SCAN_END,FOUND=");
-    Serial.println(found);
-}
-
 void publishBattery(uint32_t now, float voltage, float current, float power, float temperature) {
     char body[112];
     char frame[120];
@@ -91,7 +63,6 @@ void initializeBatteryMonitor() {
     initialized = true;
 
     OledWire.setClock(SHARED_I2C_HZ);
-    scanSharedBus();
 
     // If INA228 is absent, do not call Adafruit begin() on the shared bus.
     if (!i2cPresent(INA228_ADDRESS)) {
