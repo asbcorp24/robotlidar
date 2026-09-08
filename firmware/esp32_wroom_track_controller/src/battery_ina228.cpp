@@ -24,8 +24,11 @@ bool present(uint8_t address) {
 
 void initializeBatteryMonitor() {
     // INA228 intentionally disabled.
-    // Re-open the shared bus at 100 kHz because the standalone OLED test
-    // is stable at this speed while the former 400 kHz main setting was not.
+    // Recreate the bus startup sequence exactly like the known-good OLED test.
+    pinMode(OLED_SDA, INPUT_PULLUP);
+    pinMode(OLED_SCL, INPUT_PULLUP);
+    delay(5);
+
     OledWire.begin(OLED_SDA, OLED_SCL);
     OledWire.setClock(OLED_I2C_HZ);
     delay(20);
