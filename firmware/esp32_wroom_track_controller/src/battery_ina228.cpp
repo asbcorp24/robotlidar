@@ -17,6 +17,8 @@ float lastCurrent = 0.0f;
 float lastPower = 0.0f;
 float lastTemperature = 0.0f;
 constexpr uint8_t INA228_ADDRESS = 0x40;
+constexpr uint8_t SHARED_I2C_SDA = 4;
+constexpr uint8_t SHARED_I2C_SCL = 23;
 constexpr uint32_t SHARED_I2C_HZ = 100000;
 constexpr uint32_t SAMPLE_PERIOD_MS = 1000;
 
@@ -24,6 +26,11 @@ uint8_t checksum(const char* text) {
     uint8_t c = 0;
     while (*text) c ^= static_cast<uint8_t>(*text++);
     return c;
+}
+
+void restoreSharedBus() {
+    OledWire.begin(SHARED_I2C_SDA, SHARED_I2C_SCL);
+    OledWire.setClock(SHARED_I2C_HZ);
 }
 
 void publishBattery(uint32_t now, float voltage, float current, float power, float temperature) {
@@ -48,9 +55,14 @@ void publishBattery(uint32_t now, float voltage, float current, float power, flo
 void initializeBatteryMonitor() {
     if (initialized) return;
     initialized = true;
+
     OledWire.setClock(SHARED_I2C_HZ);
     online = ina228.begin(INA228_ADDRESS, &OledWire);
-    OledWire.setClock(SHARED_I2C_HZ);
+
+    // Adafruit INA228 may touch the TwoWire instance during begin().
+    // Put the shared bus back on the pins used by OLED/INA228/MCP4725.
+    restoreSharedBus();
+
     if (online) Serial.println("EVT,INA228,ONLINE,0x40");
     else Serial.println("ERR,INA228_NOT_FOUND,0x40");
     lastSampleMs = millis();
@@ -62,28 +74,25 @@ void updateBatteryMonitor() {
     if (now - lastSampleMs < SAMPLE_PERIOD_MS) return;
     lastSampleMs = now;
 
-    OledWire.setClock(SHARED_I2C_HZ);
+    // Do not repeatedly call ina228.begin() when the device is absent.
+    // Reinitializing the shared TwoWire bus here can make the OLED disappear.
     if (!online) {
-        online = ina228.begin(INA228_ADDRESS, &OledWire);
-        OledWire.setClock(SHARED_I2C_HZ);
-        if (online) Serial.println("EVT,INA228,ONLINE,0x40");
+        lastVoltage = lastCurrent = lastPower = lastTemperature = 0.0f;
+        publishBattery(now, 0.0f, 0.0f, 0.0f, 0.0f);
+        return;
     }
 
-    float voltage = 0.0f;
-    float current = 0.0f;
-    float power = 0.0f;
-    float temperature = 0.0f;
+    OledWire.setClock(SHARED_I2C_HZ);
 
-    if (online) {
-        voltage = ina228.getBusVoltage_V();
-        current = ina228.getCurrent_mA() / 1000.0f;
-        power = ina228.getPower_mW() / 1000.0f;
-        temperature = ina228.readDieTemp();
-        if (!isfinite(voltage) || !isfinite(current) || !isfinite(power) || !isfinite(temperature)) {
-            online = false;
-            voltage = current = power = temperature = 0.0f;
-            Serial.println("ERR,INA228_INVALID_DATA");
-        }
+    float voltage = ina228.getBusVoltage_V();
+    float current = ina228.getCurrent_mA() / 1000.0f;
+    float power = ina228.getPower_mW() / 1000.0f;
+    float temperature = ina228.readDieTemp();
+
+    if (!isfinite(voltage) || !isfinite(current) || !isfinite(power) || !isfinite(temperature)) {
+        online = false;
+        voltage = current = power = temperature = 0.0f;
+        Serial.println("ERR,INA228_INVALID_DATA");
     }
 
     lastVoltage = voltage;
