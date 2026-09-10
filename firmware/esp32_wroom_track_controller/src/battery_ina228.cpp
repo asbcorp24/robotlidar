@@ -2,25 +2,21 @@
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_INA228.h>
-#include <U8g2lib.h>
 
-// Shared physical I2C bus on ESP32:
-// SDA GPIO4 / SCL GPIO23 / 100 kHz
-// SSD1315 OLED: 0x3C or 0x3D
+// Shared hardware I2C bus is created once in main.cpp:
+//   OledWire.begin(GPIO4, GPIO23)
+// This module must NOT call begin() again.
+//
+// Devices on the same bus:
+// SSD1315 OLED: 0x3C / 0x3D (7-bit, datasheet 0x78 / 0x7A)
 // INA228:       0x40
 // MCP4725:      0x60 / 0x61
-//
-// The OLED is initialized with U8g2's native SSD1315 driver using software I2C.
-// INA228 and the existing runtime OLED framebuffer use OledWire (hardware I2C).
-// This prevents the OLED init code from reconfiguring the hardware Wire bus.
 extern TwoWire OledWire;
 extern Adafruit_SSD1306 oled;
 extern bool oledReady;
 extern uint8_t oledAddress;
 
 namespace {
-constexpr uint8_t I2C_SDA = 4;
-constexpr uint8_t I2C_SCL = 23;
 constexpr uint32_t I2C_HZ = 100000;
 constexpr uint8_t OLED_ADDR_1 = 0x3C;
 constexpr uint8_t OLED_ADDR_2 = 0x3D;
@@ -28,13 +24,6 @@ constexpr uint8_t INA228_ADDRESS = 0x40;
 constexpr uint32_t BATTERY_SAMPLE_PERIOD_MS = 1000;
 
 Adafruit_INA228 ina228;
-U8G2_SSD1315_128X64_NONAME_F_SW_I2C ssd1315(
-    U8G2_R0,
-    /* clock=*/ I2C_SCL,
-    /* data=*/ I2C_SDA,
-    /* reset=*/ U8X8_PIN_NONE
-);
-
 bool batteryInitialized = false;
 bool batteryOnline = false;
 uint32_t lastBatterySampleMs = 0;
@@ -46,33 +35,6 @@ float lastTemperature = 0.0f;
 bool present(uint8_t address) {
     OledWire.beginTransmission(address);
     return OledWire.endTransmission() == 0;
-}
-
-void restoreSharedBus() {
-    OledWire.begin(I2C_SDA, I2C_SCL);
-    OledWire.setClock(I2C_HZ);
-}
-
-void initializeSsd1315Native(uint8_t address) {
-    // U8g2 expects the 8-bit I2C address, so shift the normal 7-bit address.
-    ssd1315.setI2CAddress(static_cast<uint8_t>(address << 1));
-    ssd1315.setBusClock(I2C_HZ);
-    ssd1315.begin();
-    ssd1315.clearBuffer();
-    ssd1315.setFont(u8g2_font_6x10_tf);
-    ssd1315.drawStr(0, 10, "RobotLidar SSD1315");
-    ssd1315.drawStr(0, 22, "native init OK");
-    ssd1315.sendBuffer();
-    delay(120);
-
-    // main.cpp already allocated the Adafruit framebuffer before this function.
-    // After native SSD1315 init, clear that framebuffer and switch back to the
-    // existing runtime UI renderer.
-    if (oledReady) {
-        restoreSharedBus();
-        oled.clearDisplay();
-        oled.display();
-    }
 }
 
 uint8_t checksum(const char* text) {
@@ -96,29 +58,41 @@ void initializeBatteryMonitor() {
     if (batteryInitialized) return;
     batteryInitialized = true;
 
-    pinMode(I2C_SDA, INPUT_PULLUP);
-    pinMode(I2C_SCL, INPUT_PULLUP);
-    delay(5);
-    restoreSharedBus();
+    // main.cpp has already called OledWire.begin(4,23).
+    // Only normalize the clock; do not recreate/rebind the bus.
+    OledWire.setClock(I2C_HZ);
     delay(20);
 
-    uint8_t displayAddress = 0;
-    if (present(OLED_ADDR_1)) displayAddress = OLED_ADDR_1;
-    else if (present(OLED_ADDR_2)) displayAddress = OLED_ADDR_2;
+    // Retry OLED at the known-good 100 kHz speed.
+    uint8_t address = 0;
+    if (present(OLED_ADDR_1)) address = OLED_ADDR_1;
+    else if (present(OLED_ADDR_2)) address = OLED_ADDR_2;
 
-    if (displayAddress) {
-        oledAddress = displayAddress;
-        initializeSsd1315Native(displayAddress);
-        Serial.print("SSD1315,NATIVE_ONLINE,0x");
-        Serial.print(displayAddress, HEX);
-        Serial.println(",128X64,100KHZ");
+    if (address) {
+        oledAddress = address;
+        oledReady = oled.begin(SSD1306_SWITCHCAPVCC, oledAddress, false, false);
+        OledWire.setClock(I2C_HZ);
+        if (oledReady) {
+            oled.clearDisplay();
+            oled.setTextColor(SSD1306_WHITE);
+            oled.setTextSize(1);
+            oled.setCursor(0, 0);
+            oled.println("RobotLidar SSD1315");
+            oled.println("I2C 100k OK");
+            oled.display();
+            Serial.print("SSD1315,ONLINE,0x");
+            Serial.print(oledAddress, HEX);
+            Serial.println(",128X64,100KHZ");
+        } else {
+            Serial.println("SSD1315,BEGIN_FAILED,100KHZ");
+        }
     } else {
         oledReady = false;
         Serial.println("SSD1315,NOT_FOUND,100KHZ");
     }
 
-    // INA228 stays enabled on the hardware I2C bus.
-    restoreSharedBus();
+    // INA228 uses exactly the same already-running TwoWire instance.
+    OledWire.setClock(I2C_HZ);
     if (!present(INA228_ADDRESS)) {
         batteryOnline = false;
         Serial.println("ERR,INA228_NOT_FOUND,0x40");
@@ -127,7 +101,7 @@ void initializeBatteryMonitor() {
     }
 
     batteryOnline = ina228.begin(INA228_ADDRESS, &OledWire);
-    restoreSharedBus();
+    OledWire.setClock(I2C_HZ);
 
     if (batteryOnline) Serial.println("EVT,INA228,ONLINE,0x40");
     else Serial.println("ERR,INA228_INIT_FAILED,0x40");
