@@ -24,5 +24,11 @@
   "onvif_url": "",
   "onvif_username": "admin",
   "onvif_password": "CHANGE_ME",
-  "onvif_profile_token": ""
+  "onvif_profile_token": "",
+
+  "display_enabled": true,
+  "display_i2c_bus": "auto",
+  "display_i2c_address": "0x3c",
+  "display_rotate_sec": 4,
+  "display_flip": false
 }
