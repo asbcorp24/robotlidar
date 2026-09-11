@@ -95,6 +95,9 @@ static void normalizeSettings(){
   settings.rcDeadbandUs=constrain(settings.rcDeadbandUs,0,250);
   settings.rcTimeoutMs=constrain(settings.rcTimeoutMs,50,1000);
   for(auto& c: settings.rc) normalizeRc(c);
+  // MC8RE-V2 may output CH5 below 1000 us in its normal low position.
+  // Treat 750..999 us as a valid RC mode signal instead of forcing SAFE.
+  settings.rc[4].minUs=750;
   settings.throttleIdleMv=constrain(settings.throttleIdleMv,0,4000);
   settings.throttleMaxMv=constrain(settings.throttleMaxMv,settings.throttleIdleMv,5000);
   settings.reverseBrakeMs=constrain(settings.reverseBrakeMs,0,5000);
