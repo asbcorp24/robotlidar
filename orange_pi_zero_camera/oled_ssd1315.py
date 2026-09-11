@@ -128,7 +128,8 @@ def render(lines):
 
 def pages(cfg,dev,addr):
     iface,ip=network(); mode=str(cfg.get("input_mode","rtsp")); cam=host(cfg.get("input_url","")) if mode=="rtsp" else cfg.get("video_device","/dev/video0")
-    p1=["ROBOTLIDAR ORANGE PI","IP "+ip,"NET {} {}".format(iface,"UP" if ip!="0.0.0.0" else "DOWN"),"WEB "+service("orange-pi-zero-web.service"),"STREAM "+service("orange-pi-zero-camera.service"),"SRT {}MS".format(cfg.get("srt_latency_ms",200)),"SERVER "+host(cfg.get("server_url","")),"ID "+str(cfg.get("device_id","?"))]
+    web_addr="WEB {}:8088".format(ip)
+    p1=["ROBOTLIDAR ORANGE PI","IP "+ip,web_addr,"WEB "+service("orange-pi-zero-web.service"),"STREAM "+service("orange-pi-zero-camera.service"),"SRT {}MS".format(cfg.get("srt_latency_ms",200)),"SERVER "+host(cfg.get("server_url","")),"ID "+str(cfg.get("device_id","?"))]
     p2=["VIDEO SETTINGS","MODE "+mode,"CAM "+str(cam),"RES {}X{}".format(cfg.get("width","?"),cfg.get("height","?")),"FPS {}".format(cfg.get("fps","?")),"BIT {}K".format(cfg.get("bitrate_kbps","?")),"PTZ "+("ON" if cfg.get("ptz_enabled",False) else "OFF"),"ONVIF "+("AUTO" if cfg.get("onvif_auto_discovery",False) else "MANUAL")]
     try: load=os.getloadavg()[0]
     except Exception: load=0.0
