@@ -1,5 +1,5 @@
 [Unit]
-Description=RobotLiDAR Orange Pi Zero OLED Status Display
+Description=RobotLiDAR Orange Pi One SSD1315 Status Display
 After=local-fs.target network.target
 Wants=network.target
 
@@ -9,7 +9,7 @@ User=root
 WorkingDirectory=/opt/robotlidar/orange_pi_zero_camera
 Environment=PYTHONUNBUFFERED=1
 Environment=ORANGE_PI_CAMERA_CONFIG=/etc/robotlidar/orange-pi-zero-camera.json
-ExecStart=/usr/bin/python3 /opt/robotlidar/orange_pi_zero_camera/oled_display.py
+ExecStart=/usr/bin/python3 /opt/robotlidar/orange_pi_zero_camera/oled_ssd1315.py
 Restart=always
 RestartSec=5
 
