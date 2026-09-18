@@ -45,7 +45,7 @@ enum SettingKey : uint8_t {
   KEY_ROS_AUX_TIMEOUT_MS=59, KEY_TRACK_REVERSE_HIGH=60
 };
 
-struct RcCalibration { uint16_t minUs=1000, centerUs=1500, maxUs=2000; };
+struct RcCalibration { uint16_t minUs=750, centerUs=1500, maxUs=2250; };
 struct PersistentSettings {
   bool usEnabled=true;
   uint16_t usWarnMm=1000, usStopMm=500, usEmergencyMm=300, usClearMm=100;
@@ -77,7 +77,7 @@ static void sendFrame(const String& body){ Serial.print(body); Serial.print('*')
 static void loadDefaults(){ settings = PersistentSettings{}; }
 
 static void normalizeRc(RcCalibration& c){
-  c.minUs=constrain(c.minUs,800,1400); c.centerUs=constrain(c.centerUs,1200,1800); c.maxUs=constrain(c.maxUs,1600,2200);
+  c.minUs=constrain(c.minUs,750,1400); c.centerUs=constrain(c.centerUs,1200,1800); c.maxUs=constrain(c.maxUs,1600,2250);
   if(c.centerUs<=c.minUs+50) c.centerUs=c.minUs+50;
   if(c.maxUs<=c.centerUs+50) c.maxUs=c.centerUs+50;
 }
