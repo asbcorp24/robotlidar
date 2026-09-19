@@ -25,6 +25,7 @@ type telemetryRequest struct {
 	PanCDeg       *int64 `json:"pan_cdeg"`
 	TiltCDeg      *int64 `json:"tilt_cdeg"`
 	LinkMbps      *int64 `json:"link_mbps"`
+	ActiveCamera  *int64 `json:"active_camera"`
 }
 
 func (s *server) listDevices(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +238,7 @@ func (s *server) telemetry(w http.ResponseWriter, r *http.Request, id string) {
 	if req.PanCDeg != nil { d.PanCDeg.Store(*req.PanCDeg) }
 	if req.TiltCDeg != nil { d.TiltCDeg.Store(*req.TiltCDeg) }
 	if req.LinkMbps != nil { d.LinkMbps.Store(*req.LinkMbps) }
+	if req.ActiveCamera != nil && (*req.ActiveCamera == 1 || *req.ActiveCamera == 2) { d.ActiveCamera.Store(*req.ActiveCamera) }
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
