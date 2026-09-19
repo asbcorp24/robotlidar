@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	controlTypeDrive = 2
-	controlTypeBrush = 3
+	controlTypeDrive  = 2
+	controlTypeBrush  = 3
+	controlTypeCamera = 4
 )
 
 type driveRequest struct {
@@ -20,6 +21,39 @@ type driveRequest struct {
 type brushRequest struct {
 	Spin int16 `json:"spin"`
 	Lift int16 `json:"lift"`
+}
+
+type cameraRequest struct {
+	Camera int `json:"camera"`
+}
+
+func (s *server) cameraSelect(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	u, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	d, ok := s.ownedDevice(w, u.ID, id)
+	if !ok {
+		return
+	}
+	var req cameraRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Camera != 1 && req.Camera != 2 {
+		writeError(w, http.StatusBadRequest, "camera must be 1 or 2")
+		return
+	}
+	if err := s.sendControl(d, controlTypeCamera, int16(req.Camera), 0); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	d.ActiveCamera.Store(int64(req.Camera))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "camera": req.Camera})
 }
 
 func (s *server) drive(w http.ResponseWriter, r *http.Request, id string) {
