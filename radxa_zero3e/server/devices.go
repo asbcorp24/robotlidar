@@ -99,6 +99,8 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 		s.driveStop(w, r, id)
 	case "brush":
 		s.brush(w, r, id)
+	case "camera":
+		s.cameraSelect(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "Not found")
 	}
@@ -158,8 +160,12 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 			Transport:  transport,
 			stream:     stream,
 		}
+		d.ActiveCamera.Store(1)
 		s.devices[id] = d
 	} else {
+		if d.ActiveCamera.Load() == 0 {
+			d.ActiveCamera.Store(1)
+		}
 		d.Name = req.Name
 		d.DeviceType = req.DeviceType
 		d.IP = req.IP
@@ -294,6 +300,7 @@ func (d *device) publicJSON(alias string) map[string]any {
 		"pan": float64(d.PanCDeg.Load()) / 100.0, "tilt": float64(d.TiltCDeg.Load()) / 100.0,
 		"fps": d.FPS.Load(), "bitrateKbps": d.Bitrate.Load() / 1000,
 		"ethernet": linkLabel(d.LinkMbps.Load()), "uptimeSec": d.UptimeMS.Load() / 1000,
+		"active_camera": maxInt64(d.ActiveCamera.Load(), 1),
 		"video_packets": d.stream.Packets.Load(), "video_bytes": d.stream.Bytes.Load(), "viewers": d.stream.Viewers.Load(),
 	}
 }
@@ -303,7 +310,7 @@ func (d *device) runtimeJSON() map[string]any {
 		"device_id": d.ID, "device_type": d.DeviceType, "name": d.Name, "ip": d.IP,
 		"video_ingest_port": d.RTPPort, "srt_ingest_port": d.SRTPort,
 		"video_transport": d.Transport, "control_transport": controlTransportLabel(d),
-		"ptz_port": d.PTZPort, "online": d.online(),
+		"ptz_port": d.PTZPort, "online": d.online(), "active_camera": maxInt64(d.ActiveCamera.Load(), 1),
 	}
 }
 
@@ -313,11 +320,19 @@ func offlineDeviceJSON(id, name string) map[string]any {
 		"online": false, "video_online": false,
 		"streamType": "webrtc", "streamUrl": "/api/devices/" + id + "/webrtc",
 		"control_transport": "offline",
-		"pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0,
+		"pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0, "active_camera": 1,
 	}
 }
 
 func linkLabel(v int64) string {
 	if v <= 0 { return "—" }
 	return fmt.Sprintf("%d Mbit/s", v)
+}
+
+
+func maxInt64(v, fallback int64) int64 {
+	if v <= 0 {
+		return fallback
+	}
+	return v
 }
