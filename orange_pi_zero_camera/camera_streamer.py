@@ -32,6 +32,7 @@ CONTROL_VERSION = 1
 TYPE_PTZ = 1
 TYPE_DRIVE = 2
 TYPE_BRUSH = 3
+TYPE_CAMERA = 4
 FLAG_CENTER = 1 << 0
 
 
@@ -42,6 +43,11 @@ class Config:
     server_url: str = "https://tele.xn----7sbbd7e6b.xn--p1ai"
     input_mode: str = "rtsp"
     input_url: str = "rtsp://192.168.1.149:8554/camera"
+    camera1_name: str = "Camera 1"
+    camera1_url: str = ""
+    camera2_name: str = "Camera 2"
+    camera2_url: str = ""
+    active_camera: int = 1
     video_device: str = "/dev/video0"
     width: int = 1280
     height: int = 720
@@ -89,6 +95,9 @@ class CameraStreamer:
         self.onvif_url = cfg.onvif_url.strip()
         self.onvif_profile_token = cfg.onvif_profile_token.strip()
         self.onvif_device_url = cfg.onvif_device_url.strip()
+        self.active_camera = 2 if int(cfg.active_camera or 1) == 2 else 1
+        self.restart_requested = threading.Event()
+        self.switch_lock = threading.RLock()
 
     def log(self, msg: str) -> None:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -145,11 +154,21 @@ class CameraStreamer:
             self.log(f"REGISTER ERROR: {exc}")
             return False
 
+    def active_rtsp_url(self) -> str:
+        if self.active_camera == 2 and self.cfg.camera2_url.strip():
+            return self.cfg.camera2_url.strip()
+        if self.cfg.camera1_url.strip():
+            return self.cfg.camera1_url.strip()
+        return self.cfg.input_url.strip()
+
+    def active_camera_name(self) -> str:
+        return self.cfg.camera2_name if self.active_camera == 2 else self.cfg.camera1_name
+
     def input_args(self) -> list[str]:
         c = self.cfg
         mode = c.input_mode.lower().strip()
         if mode == "rtsp":
-            return ["-rtsp_transport", "tcp", "-i", c.input_url, "-map", "0:v:0", "-an", "-c:v", "copy", "-bsf:v", "dump_extra=freq=keyframe"]
+            return ["-rtsp_transport", "tcp", "-i", self.active_rtsp_url(), "-map", "0:v:0", "-an", "-c:v", "copy", "-bsf:v", "dump_extra=freq=keyframe"]
         if mode == "v4l2_h264":
             return ["-f", "v4l2", "-input_format", "h264", "-video_size", f"{c.width}x{c.height}", "-framerate", str(c.fps), "-i", c.video_device, "-an", "-c:v", "copy"]
         if mode == "v4l2_encode":
@@ -198,7 +217,7 @@ class CameraStreamer:
             return
         try:
             result = discover_onvif(
-                self.cfg.input_url,
+                self.active_rtsp_url(),
                 username=self.cfg.onvif_username,
                 password=self.cfg.onvif_password,
                 explicit_device_url=self.onvif_device_url,
@@ -223,10 +242,7 @@ class CameraStreamer:
         return urllib.parse.urlunparse((scheme, parsed.netloc, path, "", "", ""))
 
     def start_control(self) -> None:
-        if not self.cfg.ptz_enabled:
-            self.log("PTZ disabled in config")
-            return
-        self.ws_thread = threading.Thread(target=self.control_loop, name="ptz-wss", daemon=True)
+        self.ws_thread = threading.Thread(target=self.control_loop, name="control-wss", daemon=True)
         self.ws_thread.start()
 
     def control_loop(self) -> None:
@@ -280,10 +296,25 @@ class CameraStreamer:
             self.pan_cdeg = pan
             self.tilt_cdeg = tilt
             threading.Thread(target=self.onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
+        elif packet_type == TYPE_CAMERA:
+            target = 2 if int(value1) == 2 else 1
+            self.switch_camera(target)
         elif packet_type in (TYPE_DRIVE, TYPE_BRUSH):
             self.log(f"CONTROL ignored type={packet_type}: camera-only device")
         else:
             self.log(f"CONTROL ignored unknown type={packet_type}")
+
+    def switch_camera(self, target: int) -> None:
+        target = 2 if target == 2 else 1
+        if target == 2 and not self.cfg.camera2_url.strip():
+            self.log("CAMERA SWITCH ignored: Camera 2 URL is empty")
+            return
+        if target == self.active_camera:
+            return
+        with self.switch_lock:
+            self.active_camera = target
+            self.log(f"CAMERA SWITCH -> {target} {self.active_camera_name()} {self.active_rtsp_url()}")
+            self.restart_requested.set()
 
     def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int) -> None:
         if not self.onvif_url or not self.onvif_profile_token:
@@ -323,6 +354,7 @@ class CameraStreamer:
             "pan_cdeg": self.pan_cdeg,
             "tilt_cdeg": self.tilt_cdeg,
             "link_mbps": 100,
+            "active_camera": self.active_camera,
         }
         try:
             status, data = self.json_request("POST", url, payload)
@@ -352,6 +384,12 @@ class CameraStreamer:
                 if now >= next_telemetry:
                     self.send_telemetry()
                     next_telemetry = now + self.cfg.telemetry_period_sec
+                if self.restart_requested.is_set():
+                    self.restart_requested.clear()
+                    self.stop_ffmpeg()
+                    self.stop_event.wait(0.15)
+                    if not self.stop_event.is_set():
+                        self.start_ffmpeg()
                 if self.proc and self.proc.poll() is not None:
                     code = self.proc.returncode
                     self.log(f"FFMPEG EXIT {code}; restart after {self.cfg.reconnect_delay_sec}s")
