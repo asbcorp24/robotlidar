@@ -344,6 +344,7 @@ class IpCameraRelayManager:
             'dropped_frames': 0,
             'uptime_ms': int((time.monotonic() - self._started_at) * 1000),
             'link_mbps': self._ethernet_speed_mbps(),
+            'active_camera': int(cfg.get('active_camera') or 1),
         }
         try:
             self._json_request(
