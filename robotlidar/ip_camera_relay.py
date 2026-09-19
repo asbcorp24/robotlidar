@@ -308,7 +308,9 @@ class IpCameraRelayManager:
 
     @staticmethod
     def _active_camera_name(cfg: dict[str, Any]) -> str:
-        return str(cfg.get('camera2_name') if int(cfg.get('active_camera') or 1) == 2 else cfg.get('camera1_name') or 'Camera 1')
+        if int(cfg.get('active_camera') or 1) == 2:
+            return str(cfg.get('camera2_name') or 'Camera 2')
+        return str(cfg.get('camera1_name') or 'Camera 1')
 
     def _read_ffmpeg_stderr(self, process: subprocess.Popen) -> None:
         if process.stderr is None:
