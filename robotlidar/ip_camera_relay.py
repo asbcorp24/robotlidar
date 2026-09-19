@@ -80,6 +80,11 @@ class IpCameraRelayManager:
                 'device_id': cfg.get('device_id') or '',
                 'server_url': cfg.get('server_url') or '',
                 'rtsp_configured': bool(cfg.get('rtsp_url')),
+                'camera1_url': cfg.get('camera1_url') or '',
+                'camera2_url': cfg.get('camera2_url') or '',
+                'camera1_name': cfg.get('camera1_name') or 'Camera 1',
+                'camera2_name': cfg.get('camera2_name') or 'Camera 2',
+                'active_camera': int(cfg.get('active_camera') or 1),
                 'registered': self._registered,
                 'video_transport': self._transport,
                 'video_ingest_port': self._video_port,
@@ -106,6 +111,11 @@ class IpCameraRelayManager:
             'remote_control_enabled': bool(settings.get('camera_remote_control_enabled', False)),
             'device_id': str(settings.get('camera_device_id') or self.default_device_id()).strip(),
             'rtsp_url': str(settings.get('camera_rtsp_url') or '').strip(),
+            'camera1_url': str(settings.get('camera1_rtsp_url') or settings.get('camera_rtsp_url') or '').strip(),
+            'camera2_url': str(settings.get('camera2_rtsp_url') or '').strip(),
+            'camera1_name': str(settings.get('camera1_name') or 'Camera 1').strip() or 'Camera 1',
+            'camera2_name': str(settings.get('camera2_name') or 'Camera 2').strip() or 'Camera 2',
+            'active_camera': 2 if int(settings.get('camera_active_camera') or 1) == 2 else 1,
             'server_url': str(settings.get('camera_server_url') or '').strip().rstrip('/'),
             'ffmpeg': str(settings.get('camera_ffmpeg') or 'ffmpeg').strip() or 'ffmpeg',
             'control_port': int(settings.get('camera_control_port') or 6000),
@@ -127,7 +137,7 @@ class IpCameraRelayManager:
                 self._stop_ffmpeg()
                 self._sleep(1.0)
                 continue
-            if cfg.get('enabled') and not cfg.get('rtsp_url'):
+            if cfg.get('enabled') and not self._active_rtsp_url(cfg):
                 self._set_error('RTSP URL is required while video relay is enabled')
                 self._stop_ffmpeg()
                 self._sleep(1.0)
@@ -228,7 +238,7 @@ class IpCameraRelayManager:
             '-hide_banner', '-loglevel', 'warning',
             '-fflags', 'nobuffer',
             '-rtsp_transport', 'tcp',
-            '-i', cfg['rtsp_url'],
+            '-i', self._active_rtsp_url(cfg),
             '-map', '0:v:0', '-an',
             '-c:v', 'copy',
             '-bsf:v', 'dump_extra=freq=keyframe',
@@ -248,8 +258,9 @@ class IpCameraRelayManager:
                 '-f', 'mpegts', target,
             ]
             self._log(
-                f'CAMERA: starting RTSP/TCP -> H264 copy -> SRT/MPEG-TS '
-                f'{server_host}:{srt_port} latency={cfg["srt_latency_ms"]}ms'
+                f'CAMERA: Camera {cfg["active_camera"]} {self._active_camera_name(cfg)} -> '
+                f'RTSP/TCP -> H264 copy -> SRT/MPEG-TS {server_host}:{srt_port} '
+                f'latency={cfg["srt_latency_ms"]}ms'
             )
         else:
             target = f'rtp://{server_host}:{rtp_port}?pkt_size=1200'
@@ -273,6 +284,31 @@ class IpCameraRelayManager:
             name='robotlidar-camera-ffmpeg-log',
             daemon=True,
         ).start()
+
+    def select_camera(self, camera: int) -> tuple[bool, str]:
+        camera = 2 if int(camera) == 2 else 1
+        with self._lock:
+            cfg = dict(self._config)
+            if camera == 2 and not str(cfg.get('camera2_url') or '').strip():
+                return False, 'Camera 2 RTSP URL is empty'
+            if int(cfg.get('active_camera') or 1) == camera:
+                return True, f'Camera {camera} already active'
+            self._config['active_camera'] = camera
+            self._registered = self._registered
+        self._log(f'CAMERA: switch request -> Camera {camera}')
+        self._stop_ffmpeg()
+        self._wake.set()
+        return True, f'Camera {camera} selected'
+
+    @staticmethod
+    def _active_rtsp_url(cfg: dict[str, Any]) -> str:
+        if int(cfg.get('active_camera') or 1) == 2 and str(cfg.get('camera2_url') or '').strip():
+            return str(cfg.get('camera2_url') or '').strip()
+        return str(cfg.get('camera1_url') or cfg.get('rtsp_url') or '').strip()
+
+    @staticmethod
+    def _active_camera_name(cfg: dict[str, Any]) -> str:
+        return str(cfg.get('camera2_name') if int(cfg.get('active_camera') or 1) == 2 else cfg.get('camera1_name') or 'Camera 1')
 
     def _read_ffmpeg_stderr(self, process: subprocess.Popen) -> None:
         if process.stderr is None:
