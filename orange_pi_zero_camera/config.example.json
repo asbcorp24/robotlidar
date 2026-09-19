@@ -2,22 +2,18 @@
   "device_id": "CAM-OPIZERO-001",
   "device_name": "Orange Pi Zero Camera",
   "server_url": "https://tele.xn----7sbbd7e6b.xn--p1ai",
-
   "input_mode": "rtsp",
   "input_url": "rtsp://192.168.1.149:8554/camera",
   "video_device": "/dev/video0",
-
   "width": 1280,
   "height": 720,
   "fps": 20,
   "bitrate_kbps": 1500,
-
   "encoder": "h264_v4l2m2m",
   "ffmpeg": "ffmpeg",
   "srt_latency_ms": 200,
-  "telemetry_period_sec": 2.0,
-  "reconnect_delay_sec": 2.0,
-
+  "telemetry_period_sec": 2,
+  "reconnect_delay_sec": 2,
   "ptz_enabled": true,
   "onvif_auto_discovery": true,
   "onvif_device_url": "",
@@ -25,10 +21,14 @@
   "onvif_username": "admin",
   "onvif_password": "CHANGE_ME",
   "onvif_profile_token": "",
-
   "display_enabled": true,
   "display_i2c_bus": "auto",
   "display_i2c_address": "0x3c",
   "display_rotate_sec": 4,
-  "display_flip": false
+  "display_flip": false,
+  "camera1_name": "Передняя",
+  "camera1_url": "rtsp://192.168.1.149:8554/camera",
+  "camera2_name": "Задняя",
+  "camera2_url": "",
+  "active_camera": 1
 }
