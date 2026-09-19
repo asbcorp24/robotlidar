@@ -126,11 +126,20 @@ def render(lines):
             if x>=128: break
     return b
 
+def active_camera(cfg):
+    try:
+        n=int(open("/run/robotlidar-active-camera").read().strip())
+        return 2 if n==2 else 1
+    except Exception:
+        return 2 if int(cfg.get("active_camera",1) or 1)==2 else 1
+
 def pages(cfg,dev,addr):
-    iface,ip=network(); mode=str(cfg.get("input_mode","rtsp")); cam=host(cfg.get("input_url","")) if mode=="rtsp" else cfg.get("video_device","/dev/video0")
+    iface,ip=network(); mode=str(cfg.get("input_mode","rtsp")); ac=active_camera(cfg)
+    cam_url=(cfg.get("camera2_url","") if ac==2 else cfg.get("camera1_url","")) or cfg.get("input_url","")
+    cam=host(cam_url) if mode=="rtsp" else cfg.get("video_device","/dev/video0")
     web_addr="WEB {}:8088".format(ip)
     p1=["ROBOTLIDAR ORANGE PI","IP "+ip,web_addr,"WEB "+service("orange-pi-zero-web.service"),"STREAM "+service("orange-pi-zero-camera.service"),"SRT {}MS".format(cfg.get("srt_latency_ms",200)),"SERVER "+host(cfg.get("server_url","")),"ID "+str(cfg.get("device_id","?"))]
-    p2=["VIDEO SETTINGS","MODE "+mode,"CAM "+str(cam),"RES {}X{}".format(cfg.get("width","?"),cfg.get("height","?")),"FPS {}".format(cfg.get("fps","?")),"BIT {}K".format(cfg.get("bitrate_kbps","?")),"PTZ "+("ON" if cfg.get("ptz_enabled",False) else "OFF"),"ONVIF "+("AUTO" if cfg.get("onvif_auto_discovery",False) else "MANUAL")]
+    p2=["VIDEO SETTINGS","ACTIVE CAM {}".format(ac),"CAM "+str(cam),"RES {}X{}".format(cfg.get("width","?"),cfg.get("height","?")),"FPS {}".format(cfg.get("fps","?")),"BIT {}K".format(cfg.get("bitrate_kbps","?")),"PTZ "+("ON" if cfg.get("ptz_enabled",False) else "OFF"),"ONVIF "+("AUTO" if cfg.get("onvif_auto_discovery",False) else "MANUAL")]
     try: load=os.getloadavg()[0]
     except Exception: load=0.0
     p3=["SYSTEM","UP "+uptime(),"LOAD {:.2f}".format(load),"RAM "+memory(),"DISK "+disk(),"TEMP "+temp(),"I2C "+os.path.basename(dev),"SSD1315 0X{:02X}".format(addr)]
