@@ -363,6 +363,7 @@ class CameraStreamer:
             "pan_cdeg": self.pan_cdeg,
             "tilt_cdeg": self.tilt_cdeg,
             "link_mbps": 100,
+            "active_camera": self.active_camera,
         }
         try:
             status, data = self.json_request("POST", url, payload)
