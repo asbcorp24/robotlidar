@@ -60,6 +60,7 @@ type device struct {
 	PanCDeg    atomic.Int64
 	TiltCDeg   atomic.Int64
 	LinkMbps   atomic.Int64
+	ActiveCamera atomic.Int64
 	stream     *rtpStream
 	srt        *srtBridge
 	controlM   sync.RWMutex
