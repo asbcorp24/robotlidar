@@ -98,6 +98,8 @@ class CameraStreamer:
         self.active_camera = 2 if int(cfg.active_camera or 1) == 2 else 1
         self.restart_requested = threading.Event()
         self.switch_lock = threading.RLock()
+        self.runtime_camera_file = Path("/run/robotlidar-active-camera")
+        self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -163,6 +165,12 @@ class CameraStreamer:
 
     def active_camera_name(self) -> str:
         return self.cfg.camera2_name if self.active_camera == 2 else self.cfg.camera1_name
+
+    def write_active_camera_state(self) -> None:
+        try:
+            self.runtime_camera_file.write_text(str(self.active_camera), encoding="ascii")
+        except Exception:
+            pass
 
     def input_args(self) -> list[str]:
         c = self.cfg
@@ -314,6 +322,7 @@ class CameraStreamer:
         with self.switch_lock:
             self.active_camera = target
             self.log(f"CAMERA SWITCH -> {target} {self.active_camera_name()} {self.active_rtsp_url()}")
+            self.write_active_camera_state()
             self.restart_requested.set()
 
     def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int) -> None:
