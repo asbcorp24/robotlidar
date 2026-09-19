@@ -34,6 +34,7 @@ CONTROL_VERSION = 1
 TYPE_PTZ = 1
 TYPE_DRIVE = 2
 TYPE_BRUSH = 3
+TYPE_CAMERA = 4
 FLAG_CENTER = 1 << 0
 
 
@@ -42,10 +43,12 @@ class RemoteControlGateway:
         self,
         node,
         arm_callback: Optional[Callable[[bool, float], tuple[bool, str]]] = None,
+        camera_callback: Optional[Callable[[int], tuple[bool, str]]] = None,
         log_callback=None,
     ) -> None:
         self._node = node
         self._arm_callback = arm_callback
+        self._camera_callback = camera_callback
         self._log_callback = log_callback
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -138,6 +141,7 @@ class RemoteControlGateway:
                 'drive': {'left': self._drive[0], 'right': self._drive[1]},
                 'brush': {'spin': self._brush[0], 'lift': self._brush[1]},
                 'ptz': {'pan_cdeg': self._pan_cdeg, 'tilt_cdeg': self._tilt_cdeg},
+                'camera_switch_supported': self._camera_callback is not None,
                 'onvif_configured': bool(cfg.get('onvif_url')),
                 'last_error': self._last_error,
             }
@@ -314,6 +318,15 @@ class RemoteControlGateway:
                 self._pan_cdeg = pan
                 self._tilt_cdeg = tilt
             threading.Thread(target=self._onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
+        elif packet_type == TYPE_CAMERA:
+            camera = 2 if int(value1) == 2 else 1
+            callback = self._camera_callback
+            if callback is None:
+                raise ValueError('camera switch callback is not configured')
+            ok, message = callback(camera)
+            if not ok:
+                raise ValueError(message)
+            self._log(f'CONTROL/CAMERA: {message}')
         else:
             raise ValueError(f'unknown packet type {packet_type}')
 
