@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from onvif_discovery import discover as discover_onvif, diagnose_ptz, ws_security
+from onvif_discovery import discover as discover_onvif, diagnose_ptz, get_ptz_status, ws_security
 
 CONFIG_PATH = Path(os.environ.get("ORANGE_PI_CAMERA_CONFIG", "/etc/robotlidar/orange-pi-zero-camera.json"))
 LISTEN_HOST = os.environ.get("ORANGE_PI_WEB_HOST", "0.0.0.0")
@@ -337,6 +337,62 @@ def local_ptz(cfg: dict[str, Any], direction: str, speed: float) -> str:
     return "{} {:.2f}".format(direction, speed)
 
 
+def save_software_home(cfg: dict[str, Any]) -> dict:
+    status = get_ptz_status(
+        active_rtsp_url(cfg),
+        username=str(cfg.get("onvif_username") or ""),
+        password=str(cfg.get("onvif_password") or ""),
+        explicit_device_url=str(cfg.get("onvif_device_url") or ""),
+    )
+    cfg["ptz_software_home_pan"] = float(status["pan"])
+    cfg["ptz_software_home_tilt"] = float(status["tilt"])
+    cfg["ptz_software_home_enabled"] = True
+    save_config(cfg)
+    return {"pan": cfg["ptz_software_home_pan"], "tilt": cfg["ptz_software_home_tilt"]}
+
+
+def return_to_software_home(cfg: dict[str, Any], speed: float = 0.30) -> dict:
+    if not bool(cfg.get("ptz_software_home_enabled")):
+        raise RuntimeError("Базовое положение ещё не сохранено")
+    target_pan = float(cfg.get("ptz_software_home_pan"))
+    target_tilt = float(cfg.get("ptz_software_home_tilt"))
+    speed = max(0.10, min(0.60, float(speed)))
+    tolerance = 0.035
+
+    url, token_raw = onvif_runtime(cfg)
+    _ = url
+    token = escape(token_raw)
+    username = str(cfg.get("onvif_username") or "")
+    password = str(cfg.get("onvif_password") or "")
+    explicit = str(cfg.get("onvif_device_url") or "")
+    rtsp = active_rtsp_url(cfg)
+
+    for _step in range(28):
+        status = get_ptz_status(rtsp, username=username, password=password, explicit_device_url=explicit)
+        pan = float(status["pan"])
+        tilt = float(status["tilt"])
+        ep = target_pan - pan
+        et = target_tilt - tilt
+        if abs(ep) <= tolerance and abs(et) <= tolerance:
+            return {"ok": True, "pan": pan, "tilt": tilt, "target_pan": target_pan, "target_tilt": target_tilt}
+
+        vx = 0.0 if abs(ep) <= tolerance else (speed if ep > 0 else -speed)
+        vy = 0.0 if abs(et) <= tolerance else (speed if et > 0 else -speed)
+        move = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.3f}" y="{vy:.3f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+        stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+        onvif_post(cfg, move)
+        time.sleep(0.12)
+        onvif_post(cfg, stop)
+        time.sleep(0.08)
+
+    status = get_ptz_status(rtsp, username=username, password=password, explicit_device_url=explicit)
+    raise RuntimeError(
+        "Не удалось точно вернуться в базовое положение: pan={:.3f}, tilt={:.3f}".format(
+            float(status["pan"]), float(status["tilt"])
+        )
+    )
+
+
 CAMERA_HTML = r'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RobotLiDAR · Локальная камера</title>
@@ -355,7 +411,7 @@ CAMERA_HTML = r'''<!doctype html>
 <button class="right" onclick="ptz('right')">▶</button>
 <button class="down" onclick="ptz('down')">▼</button>
 </div>
-<div class="row"><label>Скорость PTZ <input id="speed" type="range" min="10" max="100" value="35"></label><span id="speedText">35%</span><button class="btn" onclick="reloadPreview()">Обновить видео</button></div>
+<div class="row"><label>Скорость PTZ <input id="speed" type="range" min="10" max="100" value="35"></label><span id="speedText">35%</span><button class="btn" onclick="reloadPreview()">Обновить видео</button></div><div class="row" style="margin-top:10px"><button class="btn" onclick="saveHome()">Запомнить базовое положение</button><button class="btn" onclick="goHome()">Вернуться в базовое</button><span id="homeState" class="status"></span></div>
 <h3>PTZ журнал</h3><div id="ptzlog" class="log"></div>
 </div></div></div>
 <script>
@@ -364,6 +420,8 @@ $('speed').oninput=()=>{$('speedText').textContent=$('speed').value+'%'};
 async function init(){const r=await fetch('/api/status');const d=await r.json();const c=d.config||{};const en=c.local_preview_enabled!==false;$('enabled').style.display=en?'block':'none';$('disabled').style.display=en?'none':'block';$('state').textContent=(c.camera1_name||'Camera 1')+' · local preview '+(en?'ON':'OFF')+(c.ptz_enabled===false?' · PTZ OFF':' · PTZ ON');if(en)reloadPreview()}
 function reloadPreview(){const img=$('cam');img.src='/api/preview.mjpg?t='+Date.now()}
 async function ptz(dir){try{const speed=Number($('speed').value)/100;const r=await fetch('/api/local-ptz',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction:dir,speed})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'PTZ error');addLog('OK '+(d.message||dir))}catch(e){addLog('ERR '+e.message);if(dir==='home'&&String(e.message).includes('не поддерживается')){const b=$('homeBtn');if(b){b.disabled=true;b.title='Home не поддерживается камерой';b.style.opacity='.45'}}}}
+async function saveHome(){try{const r=await fetch('/api/software-home/save',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Ошибка');$('homeState').textContent='База: '+Number(d.pan).toFixed(3)+' / '+Number(d.tilt).toFixed(3);addLog('BASE SAVED '+$('homeState').textContent)}catch(e){addLog('ERR '+e.message)}}
+async function goHome(){try{$('homeState').textContent='Возврат...';const speed=Number($('speed').value)/100;const r=await fetch('/api/software-home/goto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({speed})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Ошибка');$('homeState').textContent='В базовом положении';addLog('BASE OK pan='+Number(d.pan).toFixed(3)+' tilt='+Number(d.tilt).toFixed(3))}catch(e){$('homeState').textContent='Ошибка возврата';addLog('ERR '+e.message)}}
 init();
 </script></body></html>'''
 
@@ -407,7 +465,7 @@ load();loadLog();setInterval(()=>{if($('logAuto')?.checked&&!document.hidden)loa
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RobotLiDAROrangePiWeb/1.9"
+    server_version = "RobotLiDAROrangePiWeb/2.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("WEB:", fmt % args, flush=True)
@@ -509,6 +567,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if self.path == "/api/software-home/save":
+                cfg = load_config()
+                try:
+                    result = save_software_home(cfg)
+                    self.send_json(200, {"ok": True, **result})
+                except Exception as exc:
+                    self.send_json(500, {"detail": str(exc)})
+                return
+            if self.path == "/api/software-home/goto":
+                req = self.read_json()
+                cfg = load_config()
+                try:
+                    result = return_to_software_home(cfg, float(req.get("speed") or 0.30))
+                    self.send_json(200, result)
+                except Exception as exc:
+                    self.send_json(500, {"detail": str(exc)})
+                return
             if self.path == "/api/onvif-diagnose":
                 cfg = load_config()
                 try:
