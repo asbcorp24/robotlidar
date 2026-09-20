@@ -19,6 +19,7 @@ import socket
 import struct
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -73,6 +74,8 @@ class RemoteControlGateway:
         self._ws_connected = False
         self._ws_url = ''
         self._ws_reconnects = 0
+        self._ptz_move_mode = 'auto'
+        self._ptz_home_supported: Optional[bool] = None
 
         self._cmd_pub = node.create_publisher(Twist, '/cmd_vel', 20)
         self._brush_pub = node.create_publisher(Float32, '/brush/command', 20)
@@ -111,7 +114,12 @@ class RemoteControlGateway:
             old_port = self._config.get('port')
             old_ws_key = (self._config.get('server_url'), self._config.get('device_id'), self._config.get('enabled'))
             new_ws_key = (cfg.get('server_url'), cfg.get('device_id'), cfg.get('enabled'))
+            old_onvif = (self._config.get('onvif_url'), self._config.get('onvif_username'), self._config.get('onvif_profile_token'))
+            new_onvif = (cfg.get('onvif_url'), cfg.get('onvif_username'), cfg.get('onvif_profile_token'))
             self._config = cfg
+            if old_onvif != new_onvif:
+                self._ptz_move_mode = 'auto'
+                self._ptz_home_supported = None
         if old_port is not None and old_port != cfg['port']:
             self._close_socket()
         if old_ws_key != new_ws_key:
@@ -311,13 +319,21 @@ class RemoteControlGateway:
         elif packet_type == TYPE_PTZ:
             pan = int(value1)
             tilt = int(value2)
-            if flags & FLAG_CENTER:
+            center = bool(flags & FLAG_CENTER)
+            if center:
                 pan = 0
                 tilt = 0
             with self._lock:
+                prev_pan = self._pan_cdeg
+                prev_tilt = self._tilt_cdeg
                 self._pan_cdeg = pan
                 self._tilt_cdeg = tilt
-            threading.Thread(target=self._onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
+            self._log(f'CONTROL/PTZ: received seq={seq} pan={pan/100:.1f} tilt={tilt/100:.1f} speed={int(speed)/100:.1f}')
+            threading.Thread(
+                target=self._onvif_move,
+                args=(pan, tilt, int(speed), pan - prev_pan, tilt - prev_tilt, center),
+                daemon=True,
+            ).start()
         elif packet_type == TYPE_CAMERA:
             camera = 2 if int(value1) == 2 else 1
             callback = self._camera_callback
@@ -429,30 +445,125 @@ class RemoteControlGateway:
             elif aux_nonzero:
                 aux_stopped = False
 
-    def _onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int) -> None:
-        cfg = self._snapshot()
+    def _onvif_post(self, cfg: dict[str, Any], body: str, timeout: float = 2.5) -> None:
         url = str(cfg.get('onvif_url') or '')
         if not url:
-            self._log(f'CONTROL/PTZ: received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; ONVIF URL is not configured')
-            return
-        pan = max(-1.0, min(1.0, pan_cdeg / 18000.0))
-        tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
-        speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
+            raise RuntimeError('ONVIF URL is not configured')
         username = str(cfg.get('onvif_username') or '')
         password = str(cfg.get('onvif_password') or '')
-        token = escape(str(cfg.get('onvif_profile_token') or 'Profile_1'))
         security = self._ws_security(username, password) if username else ''
         envelope = f'''<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
-<s:Header>{security}</s:Header><s:Body><tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace"/></tptz:Speed></tptz:AbsoluteMove></s:Body></s:Envelope>'''
-        req = urllib.request.Request(url, data=envelope.encode('utf-8'), method='POST', headers={'Content-Type': 'application/soap+xml; charset=utf-8'})
+<s:Header>{security}</s:Header><s:Body>{body}</s:Body></s:Envelope>'''
+        req = urllib.request.Request(url, data=envelope.encode('utf-8'), method='POST',
+                                     headers={'Content-Type': 'application/soap+xml; charset=utf-8'})
         try:
-            with urllib.request.urlopen(req, timeout=2.0) as response:
-                response.read(64)
-            self._log(f'CONTROL/PTZ: pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}')
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                response.read(256)
+        except urllib.error.HTTPError as exc:
+            detail = ''
+            try:
+                detail = exc.read(1000).decode('utf-8', 'ignore').replace('\n', ' ').strip()
+            except Exception:
+                pass
+            reason = detail or str(exc.reason)
+            if 'ServiceNotSupported' in reason or 'Service Not Supported' in reason:
+                reason = 'ServiceNotSupported'
+            elif 'ActionNotSupported' in reason or 'Action Not Supported' in reason:
+                reason = 'ActionNotSupported'
+            elif len(reason) > 220:
+                reason = reason[:220] + '...'
+            raise RuntimeError(f'HTTP {exc.code}: {reason}') from exc
+
+    def local_ptz(self, direction: str, speed: float = 0.35) -> tuple[bool, str]:
+        cfg = self._snapshot()
+        if not str(cfg.get('onvif_url') or ''):
+            return False, 'ONVIF URL не настроен'
+        token = escape(str(cfg.get('onvif_profile_token') or 'Profile_1'))
+        speed = max(0.05, min(1.0, float(speed)))
+        direction = str(direction or '').lower()
+
+        if direction == 'home':
+            if self._ptz_home_supported is False:
+                return False, 'Home не поддерживается этой камерой'
+            body = f'''<tptz:GotoHomePosition><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Speed><tt:PanTilt x="{speed:.3f}" y="{speed:.3f}"/></tptz:Speed></tptz:GotoHomePosition>'''
+            try:
+                self._onvif_post(cfg, body)
+                self._ptz_home_supported = True
+                return True, 'Home'
+            except Exception as exc:
+                if 'ServiceNotSupported' in str(exc) or 'ActionNotSupported' in str(exc):
+                    self._ptz_home_supported = False
+                    return False, 'Home не поддерживается этой камерой'
+                return False, str(exc)
+
+        vx = 0.0
+        vy = 0.0
+        if direction == 'left':
+            vx = -speed
+        elif direction == 'right':
+            vx = speed
+        elif direction == 'up':
+            vy = speed
+        elif direction == 'down':
+            vy = -speed
+        else:
+            return False, 'Неизвестное направление PTZ'
+
+        move = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.3f}" y="{vy:.3f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+        stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+        try:
+            self._onvif_post(cfg, move)
+            time.sleep(0.22)
+            self._onvif_post(cfg, stop)
+            self._ptz_move_mode = 'continuous'
+            return True, f'{direction} {speed:.2f}'
+        except Exception as exc:
+            try:
+                self._onvif_post(cfg, stop)
+            except Exception:
+                pass
+            return False, str(exc)
+
+    def _onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int,
+                    delta_pan_cdeg: int = 0, delta_tilt_cdeg: int = 0, center: bool = False) -> None:
+        cfg = self._snapshot()
+        if not str(cfg.get('onvif_url') or ''):
+            self._log(f'CONTROL/PTZ: received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; ONVIF URL is not configured')
+            return
+        token = escape(str(cfg.get('onvif_profile_token') or 'Profile_1'))
+        speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
+
+        if center:
+            ok, message = self.local_ptz('home', speed)
+            if ok:
+                self._log('CONTROL/PTZ: GotoHomePosition OK')
+            else:
+                self._log(f'CONTROL/PTZ: {message}')
+            return
+
+        if not (delta_pan_cdeg or delta_tilt_cdeg):
+            return
+
+        # Prefer the camera-compatible ContinuousMove path. It also works on
+        # inexpensive ONVIF PTZ cameras that reject AbsoluteMove/RelativeMove.
+        vx = speed if delta_pan_cdeg > 0 else (-speed if delta_pan_cdeg < 0 else 0.0)
+        vy = speed if delta_tilt_cdeg > 0 else (-speed if delta_tilt_cdeg < 0 else 0.0)
+        move = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.4f}" y="{vy:.4f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+        stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+        try:
+            self._onvif_post(cfg, move)
+            time.sleep(0.22)
+            self._onvif_post(cfg, stop)
+            self._ptz_move_mode = 'continuous'
+            self._log(f'CONTROL/PTZ: ContinuousMove OK vx={vx:.2f} vy={vy:.2f}')
         except Exception as exc:
             self._set_error(f'ONVIF: {exc}')
-            self._log(f'CONTROL/PTZ: ONVIF error: {exc}')
+            self._log(f'CONTROL/PTZ: ContinuousMove error: {exc}')
+            try:
+                self._onvif_post(cfg, stop)
+            except Exception:
+                pass
 
     @staticmethod
     def _ws_security(username: str, password: str) -> str:
