@@ -87,19 +87,24 @@ def discover(input_url: str, username: str = "", password: str = "", explicit_de
             capabilities_body = '''<tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl"><tds:Category>All</tds:Category></tds:GetCapabilities>'''
             caps_raw = soap_request(device_url, capabilities_body, username, password)
             caps_root = ET.fromstring(caps_raw)
-            ptz_url = _first_text(caps_root, "XAddr")
-            if not ptz_url:
-                raise RuntimeError("PTZ XAddr not found in GetCapabilities")
-
+            ptz_url = ""
             media_url = ""
             for el in caps_root.iter():
-                if el.tag.rsplit("}", 1)[-1] == "Media":
+                local = el.tag.rsplit("}", 1)[-1]
+                if local == "PTZ":
+                    for child in el.iter():
+                        if child.tag.rsplit("}", 1)[-1] == "XAddr" and child.text:
+                            ptz_url = child.text.strip()
+                            break
+                elif local == "Media":
                     for child in el.iter():
                         if child.tag.rsplit("}", 1)[-1] == "XAddr" and child.text:
                             media_url = child.text.strip()
                             break
-                if media_url:
+                if ptz_url and media_url:
                     break
+            if not ptz_url:
+                raise RuntimeError("PTZ XAddr not found in GetCapabilities")
             if not media_url:
                 media_url = device_url
 
