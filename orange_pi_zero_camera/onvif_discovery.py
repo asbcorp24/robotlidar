@@ -120,3 +120,134 @@ def discover(input_url: str, username: str = "", password: str = "", explicit_de
     if last_error:
         raise RuntimeError(f"ONVIF auto-discovery failed: {last_error}") from last_error
     raise RuntimeError("ONVIF auto-discovery failed: no camera host/candidates")
+
+
+def _local(el: ET.Element) -> str:
+    return el.tag.rsplit("}", 1)[-1]
+
+
+def _xml_summary(raw: bytes) -> dict:
+    root = ET.fromstring(raw)
+    result: dict = {"root": _local(root)}
+    fault = ""
+    reason = ""
+    for el in root.iter():
+        name = _local(el)
+        text = (el.text or "").strip()
+        if name in ("Value", "Text") and text:
+            if "Fault" in [_local(x) for x in list(root.iter())[:3]]:
+                fault = fault or text
+        if name == "Text" and text:
+            reason = text
+    if reason:
+        result["reason"] = reason
+    return result
+
+
+def diagnose_ptz(input_url: str, username: str = "", password: str = "", explicit_device_url: str = "") -> dict:
+    discovery = discover(input_url, username=username, password=password, explicit_device_url=explicit_device_url)
+    ptz_url = discovery.ptz_url
+    token = discovery.profile_token
+
+    def call(name: str, body: str) -> dict:
+        try:
+            raw = soap_request(ptz_url, body, username, password, timeout=3.5)
+            root = ET.fromstring(raw)
+            out = {"supported": True, "http_ok": True}
+            if name == "GetStatus":
+                for el in root.iter():
+                    lname = _local(el)
+                    if lname == "PanTilt":
+                        if "x" in el.attrib: out["pan_x"] = el.attrib.get("x")
+                        if "y" in el.attrib: out["tilt_y"] = el.attrib.get("y")
+                    elif lname == "Zoom" and "x" in el.attrib:
+                        out["zoom_x"] = el.attrib.get("x")
+                    elif lname == "MoveStatus":
+                        values = {}
+                        for child in el.iter():
+                            if child is el:
+                                continue
+                            txt = (child.text or "").strip()
+                            if txt:
+                                values[_local(child)] = txt
+                        if values:
+                            out["move_status"] = values
+            elif name == "GetConfigurations":
+                configs = []
+                for el in root.iter():
+                    if _local(el) in ("PTZConfiguration", "Configurations"):
+                        token_attr = el.attrib.get("token") or el.attrib.get("Token") or ""
+                        if token_attr:
+                            item = {"token": token_attr}
+                            name_el = next((x for x in el.iter() if _local(x) == "Name" and (x.text or "").strip()), None)
+                            if name_el is not None:
+                                item["name"] = name_el.text.strip()
+                            configs.append(item)
+                out["configurations"] = configs
+            elif name == "GetConfigurationOptions":
+                spaces = []
+                for el in root.iter():
+                    lname = _local(el)
+                    if lname.endswith("Space") or lname.endswith("Spaces"):
+                        text = (el.text or "").strip()
+                        if text and text.startswith("http"):
+                            spaces.append(text)
+                    if lname == "URI" and (el.text or "").strip():
+                        spaces.append(el.text.strip())
+                out["spaces"] = sorted(set(spaces))
+            elif name == "GetPresets":
+                presets = []
+                for el in root.iter():
+                    if _local(el) == "Preset":
+                        item = {
+                            "token": el.attrib.get("token") or el.attrib.get("Token") or ""
+                        }
+                        for child in el.iter():
+                            if _local(child) == "Name" and (child.text or "").strip():
+                                item["name"] = child.text.strip()
+                                break
+                        presets.append(item)
+                out["presets"] = presets
+            return out
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read(1600).decode("utf-8", "ignore").replace("\n", " ").strip()
+            except Exception:
+                pass
+            reason = "HTTP {}".format(exc.code)
+            if "ServiceNotSupported" in detail or "Service Not Supported" in detail:
+                reason = "ServiceNotSupported"
+            elif "ActionNotSupported" in detail or "Action Not Supported" in detail:
+                reason = "ActionNotSupported"
+            return {"supported": False, "http_ok": False, "error": reason}
+        except Exception as exc:
+            return {"supported": False, "http_ok": False, "error": str(exc)[:220]}
+
+    config_token = token
+    configs_result = call(
+        "GetConfigurations",
+        '<tptz:GetConfigurations xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"/>'
+    )
+    if configs_result.get("configurations"):
+        config_token = configs_result["configurations"][0].get("token") or token
+
+    results = {
+        "device_service_url": discovery.device_service_url,
+        "ptz_url": ptz_url,
+        "profile_token": token,
+        "GetStatus": call(
+            "GetStatus",
+            '<tptz:GetStatus xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"><tptz:ProfileToken>{}</tptz:ProfileToken></tptz:GetStatus>'.format(escape(token))
+        ),
+        "GetConfigurations": configs_result,
+        "GetConfigurationOptions": call(
+            "GetConfigurationOptions",
+            '<tptz:GetConfigurationOptions xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"><tptz:ConfigurationToken>{}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>'.format(escape(config_token))
+        ),
+        "GetPresets": call(
+            "GetPresets",
+            '<tptz:GetPresets xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"><tptz:ProfileToken>{}</tptz:ProfileToken></tptz:GetPresets>'.format(escape(token))
+        ),
+    }
+    return results
