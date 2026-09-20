@@ -41,6 +41,7 @@ class Config:
     device_id: str = "CAM-OPIZERO-001"
     device_name: str = "Orange Pi Zero Camera"
     server_url: str = "https://tele.xn----7sbbd7e6b.xn--p1ai"
+    stream_enabled: bool = True
     input_mode: str = "rtsp"
     input_url: str = "rtsp://192.168.1.149:8554/camera"
     camera1_name: str = "Camera 1"
@@ -196,6 +197,9 @@ class CameraStreamer:
         return [self.cfg.ffmpeg, "-hide_banner", "-loglevel", "warning"] + self.input_args() + ["-avoid_negative_ts", "make_non_negative", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", target]
 
     def start_ffmpeg(self) -> None:
+        if not self.cfg.stream_enabled:
+            self.log("STREAM disabled by config; SRT/FFmpeg not started")
+            return
         cmd = self.ffmpeg_command()
         self.log("FFMPEG START: " + " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
@@ -467,7 +471,10 @@ class CameraStreamer:
         if self.stop_event.is_set():
             return 0
         self.discover_onvif_if_needed()
-        self.start_ffmpeg()
+        if self.cfg.stream_enabled:
+            self.start_ffmpeg()
+        else:
+            self.log("STREAM disabled; device stays registered for WSS/ONVIF/PTZ")
         self.start_control()
         next_telemetry = 0.0
         try:
@@ -480,14 +487,14 @@ class CameraStreamer:
                     self.restart_requested.clear()
                     self.stop_ffmpeg()
                     self.stop_event.wait(0.15)
-                    if not self.stop_event.is_set():
+                    if not self.stop_event.is_set() and self.cfg.stream_enabled:
                         self.start_ffmpeg()
                 if self.proc and self.proc.poll() is not None:
                     code = self.proc.returncode
                     self.log(f"FFMPEG EXIT {code}; restart after {self.cfg.reconnect_delay_sec}s")
                     self.stop_ffmpeg()
                     self.stop_event.wait(self.cfg.reconnect_delay_sec)
-                    if not self.stop_event.is_set():
+                    if not self.stop_event.is_set() and self.cfg.stream_enabled:
                         if time.monotonic() - self.last_register > 30:
                             self.register()
                         self.start_ffmpeg()
