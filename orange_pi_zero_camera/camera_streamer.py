@@ -176,7 +176,7 @@ class CameraStreamer:
         c = self.cfg
         mode = c.input_mode.lower().strip()
         if mode == "rtsp":
-            return ["-rtsp_transport", "tcp", "-i", self.active_rtsp_url(), "-map", "0:v:0", "-an", "-c:v", "copy", "-bsf:v", "dump_extra=freq=keyframe"]
+            return ["-fflags", "+genpts+discardcorrupt", "-use_wallclock_as_timestamps", "1", "-rtsp_transport", "tcp", "-i", self.active_rtsp_url(), "-map", "0:v:0", "-an", "-c:v", "copy", "-bsf:v", "dump_extra=freq=keyframe"]
         if mode == "v4l2_h264":
             return ["-f", "v4l2", "-input_format", "h264", "-video_size", f"{c.width}x{c.height}", "-framerate", str(c.fps), "-i", c.video_device, "-an", "-c:v", "copy"]
         if mode == "v4l2_encode":
@@ -192,7 +192,7 @@ class CameraStreamer:
 
     def ffmpeg_command(self) -> list[str]:
         target = f"srt://{self.server_host}:{self.srt_port}?mode=caller&transtype=live&latency={self.srt_latency_ms * 1000}&pkt_size=1316"
-        return [self.cfg.ffmpeg, "-hide_banner", "-loglevel", "warning"] + self.input_args() + ["-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", target]
+        return [self.cfg.ffmpeg, "-hide_banner", "-loglevel", "warning"] + self.input_args() + ["-avoid_negative_ts", "make_non_negative", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", target]
 
     def start_ffmpeg(self) -> None:
         cmd = self.ffmpeg_command()
@@ -303,6 +303,7 @@ class CameraStreamer:
                 tilt = 0
             self.pan_cdeg = pan
             self.tilt_cdeg = tilt
+            self.log(f"CONTROL/PTZ received seq={seq} pan={pan/100:.1f} tilt={tilt/100:.1f} speed={int(speed)/100:.1f}")
             threading.Thread(target=self.onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
         elif packet_type == TYPE_CAMERA:
             target = 2 if int(value1) == 2 else 1
