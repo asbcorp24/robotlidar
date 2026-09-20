@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import subprocess
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,28 @@ def service_state(name: str) -> dict[str, Any]:
 def restart_streamer() -> tuple[bool, str]:
     code, out = run_cmd(["systemctl", "restart", STREAM_SERVICE], 15)
     return code == 0, out
+
+
+def streamer_log(kind: str = "all", lines: int = 80) -> dict[str, Any]:
+    lines = max(20, min(120, int(lines)))
+    code, out = run_cmd([
+        "journalctl", "-u", STREAM_SERVICE,
+        "-n", str(lines), "--no-pager", "-o", "short-iso"
+    ], 5)
+    if code != 0:
+        return {"ok": False, "kind": kind, "lines": [], "detail": out or "journalctl error"}
+
+    raw = out.splitlines()
+    if kind == "video":
+        words = ("FFMPEG", "SRT", "RTSP", "REGISTER", "CAMERA SWITCH", "STREAM")
+        raw = [line for line in raw if any(word in line.upper() for word in words)]
+    elif kind == "ptz":
+        words = ("ONVIF", "PTZ", "CONTROL/WSS", "CONTROL/PTZ")
+        raw = [line for line in raw if any(word in line.upper() for word in words)]
+
+    # Keep the response small even if a journal line is unexpectedly huge.
+    raw = [line[-1000:] for line in raw[-80:]]
+    return {"ok": True, "kind": kind, "lines": raw}
 
 
 def tcp_open(ip: str, port: int, timeout: float = 0.18) -> bool:
@@ -198,7 +221,7 @@ HTML = r'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RobotLiDAR · Orange Pi One Camera</title>
 <style>
-:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#15202b;background:#eef2f6}*{box-sizing:border-box}body{margin:0}.wrap{max-width:1100px;margin:auto;padding:20px}.top{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:18px}.brand h1{margin:0;font-size:24px}.muted{color:#687684;font-size:13px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 4px 20px #0000000c}.card h2{margin:0 0 14px;font-size:18px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:13px;color:#53606d;margin:10px 0 5px}input,select{width:100%;padding:10px 11px;border:1px solid #ccd5df;border-radius:8px;font-size:14px;background:#fff}button{border:0;border-radius:8px;padding:10px 14px;font-weight:600;cursor:pointer}.primary{background:#1769e0;color:#fff}.secondary{background:#e8eef6;color:#213044}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.status{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:20px;background:#eef2f6;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#9aa6b2}.dot.ok{background:#20a66a}.net{padding:11px;border:1px solid #dde4eb;border-radius:9px;background:#f9fbfd}.msg{margin-top:10px;white-space:pre-wrap;font-size:13px}.oktxt{color:#168252}.errtxt{color:#b62f2f}.scanTable{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}.scanTable th,.scanTable td{text-align:left;padding:9px;border-bottom:1px solid #e4e9ef;vertical-align:top}.scanTable th{color:#53606d}.pill{display:inline-block;background:#eef2f6;border-radius:12px;padding:3px 7px;margin:2px}.url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}@media(max-width:760px){.grid,.row{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.scanTable{display:block;overflow:auto}}</style></head>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#15202b;background:#eef2f6}*{box-sizing:border-box}body{margin:0}.wrap{max-width:1100px;margin:auto;padding:20px}.top{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:18px}.brand h1{margin:0;font-size:24px}.muted{color:#687684;font-size:13px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 4px 20px #0000000c}.card h2{margin:0 0 14px;font-size:18px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:13px;color:#53606d;margin:10px 0 5px}input,select{width:100%;padding:10px 11px;border:1px solid #ccd5df;border-radius:8px;font-size:14px;background:#fff}button{border:0;border-radius:8px;padding:10px 14px;font-weight:600;cursor:pointer}.primary{background:#1769e0;color:#fff}.secondary{background:#e8eef6;color:#213044}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.status{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:20px;background:#eef2f6;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#9aa6b2}.dot.ok{background:#20a66a}.net{padding:11px;border:1px solid #dde4eb;border-radius:9px;background:#f9fbfd}.msg{margin-top:10px;white-space:pre-wrap;font-size:13px}.oktxt{color:#168252}.errtxt{color:#b62f2f}.scanTable{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}.scanTable th,.scanTable td{text-align:left;padding:9px;border-bottom:1px solid #e4e9ef;vertical-align:top}.scanTable th{color:#53606d}.pill{display:inline-block;background:#eef2f6;border-radius:12px;padding:3px 7px;margin:2px}.url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}.logbox{margin:12px 0 0;background:#111820;color:#d8e2ec;border-radius:10px;padding:12px;height:260px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}.logmeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.logmeta label{margin:0}.logmeta input{width:auto}@media(max-width:760px){.grid,.row{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.scanTable{display:block;overflow:auto}}</style></head>
 <body><div class="wrap">
 <div class="top"><div class="brand"><h1>Orange Pi One · Camera + PTZ</h1><div class="muted">Локальная настройка RobotLiDAR через Ethernet</div></div><div id="svc" class="status"><span class="dot"></span><span>проверка...</span></div></div>
 <div class="grid">
@@ -208,6 +231,7 @@ HTML = r'''<!doctype html>
 <section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"></section>
 </div>
 <section class="card" style="margin-top:16px"><h2>Поиск RTSP / ONVIF камер</h2><p class="muted">Сканируется локальный проводной сегмент. Проверяются RTSP-порты 554, 8554, 10554 и типовые ONVIF HTTP-порты. Сканируйте только сеть, которой вы управляете или имеете разрешение проверять.</p><div class="actions"><button id="scanBtn" class="primary" onclick="scanCameras()">Сканировать сеть</button></div><div id="scanMsg" class="msg"></div><div id="scanResults"></div></section>
+<section class="card" style="margin-top:16px"><h2>Журнал трансляции / ONVIF / PTZ</h2><div class="logmeta"><button class="secondary" onclick="setLogKind('all')">Все</button><button class="secondary" onclick="setLogKind('video')">Видео / SRT</button><button class="secondary" onclick="setLogKind('ptz')">ONVIF / PTZ</button><button class="secondary" onclick="loadLog()">Обновить</button><label><input id="logAuto" type="checkbox" style="width:auto" checked> авто 3 сек</label><span id="logInfo" class="muted"></span></div><pre id="streamLog" class="logbox">Загрузка журнала...</pre><p class="muted">Показываются только последние строки systemd-журнала сервиса трансляции. Отдельный лог-файл не создаётся, поэтому лишней записи на SD-карту нет.</p></section>
 <section class="card" style="margin-top:16px"><h2>Применение</h2><div class="actions"><button class="primary" onclick="saveConfig(true)">Сохранить и перезапустить</button><button class="secondary" onclick="saveConfig(false)">Только сохранить</button><button class="secondary" onclick="restartService()">Перезапустить трансляцию</button></div><div id="saveMsg" class="msg"></div></section>
 </div><script>
 const $=id=>document.getElementById(id);let cfg={};
@@ -220,12 +244,15 @@ async function restartService(){try{const d=await api('/api/restart',{method:'PO
 function useCamera(slot,url,ip,onvifPort){$('input_mode').value='rtsp';$('camera'+slot+'_url').value=url;if(slot===1)$('input_url').value=url;if(onvifPort&&slot===1){$('onvif_auto_discovery').checked=true;$('onvif_device_url').value=`http://${ip}:${onvifPort}/onvif/device_service`}$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Камера добавлена как Camera ${slot}. Сохраните настройки.`;window.scrollTo({top:$('camera'+slot+'_url').getBoundingClientRect().top+window.scrollY-100,behavior:'smooth'})}
 function renderScan(d){const devs=d.devices||[];if(!devs.length){$('scanResults').innerHTML='';$('scanMsg').className='msg';$('scanMsg').textContent=`Сканирование ${d.network||''} завершено. RTSP/ONVIF устройств не найдено.`;return}let h='<table class="scanTable"><thead><tr><th>IP</th><th>RTSP</th><th>ONVIF</th><th></th></tr></thead><tbody>';for(const x of devs){const r=(x.rtsp||[]);const o=(x.onvif_ports||[]);const rt=r.length?r.map(v=>`<div><span class="pill">:${v.port}</span> <span class="url">${v.url}</span><br><span class="muted">${v.response||''}</span></div>`).join(''):'—';const ov=o.length?o.map(p=>`<span class="pill">:${p}</span>`).join(' '):'—';let btn='';if(r.length){const u=JSON.stringify(r[0].url),ip=JSON.stringify(x.ip),op=o.length?o[0]:0;btn=`<button class="secondary" onclick='useCamera(1,${u},${ip},${op})'>В Camera 1</button> <button class="secondary" onclick='useCamera(2,${u},${ip},0)'>В Camera 2</button>`}h+=`<tr><td><strong>${x.ip}</strong>${x.hostname?`<div class="muted">${x.hostname}</div>`:''}</td><td>${rt}</td><td>${ov}</td><td>${btn}</td></tr>`}h+='</tbody></table>';$('scanResults').innerHTML=h;$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Найдено устройств: ${devs.length}. Сеть: ${d.network||''}`}
 async function scanCameras(){const b=$('scanBtn'),m=$('scanMsg');b.disabled=true;b.textContent='Сканирование...';m.className='msg';m.textContent='Проверяю локальную сеть. Это может занять несколько секунд...';$('scanResults').innerHTML='';try{const d=await api('/api/camera-scan',{method:'POST'});renderScan(d)}catch(e){m.className='msg errtxt';m.textContent=e.message}finally{b.disabled=false;b.textContent='Сканировать сеть'}}
-load();
+let logKind='all';
+function setLogKind(k){logKind=k;loadLog()}
+async function loadLog(){if(document.hidden)return;try{const d=await api('/api/log?kind='+encodeURIComponent(logKind));const box=$('streamLog');const stick=box.scrollTop+box.clientHeight>=box.scrollHeight-25;box.textContent=(d.lines||[]).join('\n')||'Нет строк для выбранного фильтра.';$('logInfo').textContent=(logKind==='all'?'все события':logKind==='video'?'видео / SRT':'ONVIF / PTZ')+' · '+(d.lines||[]).length+' строк';if(stick)box.scrollTop=box.scrollHeight}catch(e){$('streamLog').textContent='Ошибка журнала: '+e.message}}
+load();loadLog();setInterval(()=>{if($('logAuto')?.checked&&!document.hidden)loadLog()},3000);
 </script></body></html>'''
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RobotLiDAROrangePiWeb/1.3"
+    server_version = "RobotLiDAROrangePiWeb/1.4"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("WEB:", fmt % args, flush=True)
@@ -253,6 +280,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if self.path.startswith("/api/log"):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            kind = str(params.get("kind", ["all"])[0]).lower()
+            if kind not in ("all", "video", "ptz"):
+                kind = "all"
+            self.send_json(200, streamer_log(kind))
             return
         if self.path == "/api/status":
             cfg = load_config()
