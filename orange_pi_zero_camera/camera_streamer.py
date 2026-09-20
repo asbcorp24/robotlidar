@@ -99,6 +99,7 @@ class CameraStreamer:
         self.restart_requested = threading.Event()
         self.switch_lock = threading.RLock()
         self.runtime_camera_file = Path("/run/robotlidar-active-camera")
+        self.ptz_move_mode = "auto"
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -356,46 +357,76 @@ class CameraStreamer:
         tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
         speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
 
-        absolute = f'''<tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:AbsoluteMove>'''
-        try:
-            self.onvif_post(absolute)
-            self.log(f"CONTROL/PTZ AbsoluteMove OK seq={self.last_seq} pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}")
-            return
-        except Exception as abs_exc:
-            self.log(f"CONTROL/PTZ AbsoluteMove rejected: {abs_exc}")
+        if center:
+            home = f'''<tptz:GotoHomePosition><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:GotoHomePosition>'''
+            try:
+                self.onvif_post(home)
+                self.pan_cdeg = 0
+                self.tilt_cdeg = 0
+                self.log(f"CONTROL/PTZ GotoHomePosition OK seq={self.last_seq}")
+                return
+            except Exception as home_exc:
+                self.log(f"CONTROL/PTZ GotoHomePosition rejected: {home_exc}")
 
-        if not center and (delta_pan_cdeg or delta_tilt_cdeg):
+            if self.ptz_move_mode != "continuous":
+                absolute = f'''<tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="0.000000" y="0.000000"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:AbsoluteMove>'''
+                try:
+                    self.onvif_post(absolute)
+                    self.pan_cdeg = 0
+                    self.tilt_cdeg = 0
+                    self.ptz_move_mode = "absolute"
+                    self.log(f"CONTROL/PTZ AbsoluteMove center OK seq={self.last_seq}")
+                    return
+                except Exception as abs_exc:
+                    self.log(f"CONTROL/PTZ center AbsoluteMove rejected: {abs_exc}")
+            self.log("CONTROL/PTZ center unavailable: camera has no usable home/absolute positioning")
+            return
+
+        if not (delta_pan_cdeg or delta_tilt_cdeg):
+            return
+
+        if self.ptz_move_mode in ("auto", "absolute"):
+            absolute = f'''<tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:AbsoluteMove>'''
+            try:
+                self.onvif_post(absolute)
+                self.ptz_move_mode = "absolute"
+                self.log(f"CONTROL/PTZ AbsoluteMove OK seq={self.last_seq} pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}")
+                return
+            except Exception as abs_exc:
+                if self.ptz_move_mode == "auto":
+                    self.log(f"CONTROL/PTZ AbsoluteMove unsupported, trying fallbacks: {abs_exc}")
+
+        if self.ptz_move_mode in ("auto", "relative"):
             rel_pan = max(-1.0, min(1.0, delta_pan_cdeg / 18000.0))
             rel_tilt = max(-1.0, min(1.0, delta_tilt_cdeg / 9000.0))
             relative = f'''<tptz:RelativeMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Translation><tt:PanTilt x="{rel_pan:.6f}" y="{rel_tilt:.6f}"/></tptz:Translation><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:RelativeMove>'''
             try:
                 self.onvif_post(relative)
+                self.ptz_move_mode = "relative"
                 self.log(f"CONTROL/PTZ RelativeMove OK seq={self.last_seq} dpan={delta_pan_cdeg/100:.1f} dtilt={delta_tilt_cdeg/100:.1f}")
                 return
             except Exception as rel_exc:
-                self.log(f"CONTROL/PTZ RelativeMove rejected: {rel_exc}")
+                if self.ptz_move_mode == "auto":
+                    self.log(f"CONTROL/PTZ RelativeMove unsupported, using ContinuousMove: {rel_exc}")
 
-            vx = speed if delta_pan_cdeg > 0 else (-speed if delta_pan_cdeg < 0 else 0.0)
-            vy = speed if delta_tilt_cdeg > 0 else (-speed if delta_tilt_cdeg < 0 else 0.0)
-            continuous = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.4f}" y="{vy:.4f}"/></tptz:Velocity></tptz:ContinuousMove>'''
-            stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+        vx = speed if delta_pan_cdeg > 0 else (-speed if delta_pan_cdeg < 0 else 0.0)
+        vy = speed if delta_tilt_cdeg > 0 else (-speed if delta_tilt_cdeg < 0 else 0.0)
+        continuous = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.4f}" y="{vy:.4f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+        stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+        try:
+            self.onvif_post(continuous)
+            time.sleep(0.22)
+            self.onvif_post(stop)
+            if self.ptz_move_mode != "continuous":
+                self.ptz_move_mode = "continuous"
+                self.log("CONTROL/PTZ mode selected: ContinuousMove")
+            self.log(f"CONTROL/PTZ ContinuousMove OK seq={self.last_seq} vx={vx:.2f} vy={vy:.2f}")
+        except Exception as cont_exc:
+            self.log(f"CONTROL/PTZ ContinuousMove rejected: {cont_exc}")
             try:
-                self.onvif_post(continuous)
-                time.sleep(0.22)
                 self.onvif_post(stop)
-                self.log(f"CONTROL/PTZ ContinuousMove OK seq={self.last_seq} vx={vx:.2f} vy={vy:.2f}")
-                return
-            except Exception as cont_exc:
-                self.log(f"CONTROL/PTZ ContinuousMove rejected: {cont_exc}")
-                try:
-                    self.onvif_post(stop)
-                except Exception:
-                    pass
-
-        if center:
-            self.log("CONTROL/PTZ center unavailable: camera rejected AbsoluteMove")
-        else:
-            self.log("CONTROL/PTZ failed: camera rejected AbsoluteMove, RelativeMove and ContinuousMove")
+            except Exception:
+                pass
 
     @staticmethod
     def ws_security(username: str, password: str) -> str:
