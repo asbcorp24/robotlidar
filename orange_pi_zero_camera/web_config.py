@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from onvif_discovery import discover as discover_onvif, ws_security
+from onvif_discovery import discover as discover_onvif, diagnose_ptz, ws_security
 
 CONFIG_PATH = Path(os.environ.get("ORANGE_PI_CAMERA_CONFIG", "/etc/robotlidar/orange-pi-zero-camera.json"))
 LISTEN_HOST = os.environ.get("ORANGE_PI_WEB_HOST", "0.0.0.0")
@@ -380,7 +380,7 @@ HTML = r'''<!doctype html>
 <section class="card"><h2>Ethernet</h2><div class="net"><strong>Проводное подключение</strong><div id="ethernet" class="muted" style="margin-top:6px">Определение адреса...</div></div><p class="muted">IP выдаётся вашей проводной сетью/DHCP либо задаётся средствами ОС Orange Pi.</p></section>
 <section class="card"><h2>Сервер и устройство</h2><label>Device ID</label><input id="device_id"><label>Название</label><input id="device_name"><label>Адрес центрального сервера</label><input id="server_url"><label><input id="stream_enabled" type="checkbox" style="width:auto"> Транслировать видео на центральный сервер</label><label><input id="local_preview_enabled" type="checkbox" style="width:auto"> Разрешить локальный просмотр камеры</label><p class="muted">Обе функции независимы: можно отдельно включать SRT на сервер и локальный просмотр. ONVIF/PTZ работают независимо от них.</p><div class="row"><div><label>SRT latency, мс</label><input id="srt_latency_ms" type="number"></div><div><label>Telemetry, сек</label><input id="telemetry_period_sec" type="number" step="0.5"></div></div></section>
 <section class="card"><h2>Камеры H.264</h2><label>Источник</label><select id="input_mode"><option value="rtsp">RTSP H.264 (copy)</option><option value="v4l2_h264">USB H.264</option><option value="v4l2_encode">USB + encode</option><option value="test">Тестовая картинка</option></select><div class="row"><div><label>Имя Camera 1</label><input id="camera1_name" placeholder="Передняя"></div><div><label>Имя Camera 2</label><input id="camera2_name" placeholder="Задняя"></div></div><label>RTSP Camera 1</label><input id="camera1_url" placeholder="rtsp://192.168.1.149:554/stream1"><label>RTSP Camera 2</label><input id="camera2_url" placeholder="rtsp://192.168.1.150:554/stream1"><label>Активная камера при запуске</label><select id="active_camera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select><input id="input_url" type="hidden"><label>V4L2 устройство</label><input id="video_device"><div class="row"><div><label>Ширина</label><input id="width" type="number"></div><div><label>Высота</label><input id="height" type="number"></div><div><label>FPS</label><input id="fps" type="number"></div><div><label>Битрейт, kbps</label><input id="bitrate_kbps" type="number"></div></div><label>Encoder</label><input id="encoder"><p class="muted">Через SRT передаётся только одна выбранная камера. Переключение Camera 1 / Camera 2 приходит с центрального сервера без второго SRT-потока.</p></section>
-<section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"></section>
+<section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"><div class="actions"><button class="secondary" onclick="probeOnvif()">Проверить возможности ONVIF</button></div><pre id="onvifDiag" class="logbox" style="height:220px">Диагностика ещё не запускалась.</pre></section>
 </div>
 <section class="card" style="margin-top:16px"><h2>Поиск RTSP / ONVIF камер</h2><p class="muted">Сканируется локальный проводной сегмент. Проверяются RTSP-порты 554, 8554, 10554 и типовые ONVIF HTTP-порты. Сканируйте только сеть, которой вы управляете или имеете разрешение проверять.</p><div class="actions"><button id="scanBtn" class="primary" onclick="scanCameras()">Сканировать сеть</button></div><div id="scanMsg" class="msg"></div><div id="scanResults"></div></section>
 <section class="card" style="margin-top:16px"><h2>Журнал трансляции / ONVIF / PTZ</h2><div class="logmeta"><button class="secondary" onclick="setLogKind('all')">Все</button><button class="secondary" onclick="setLogKind('video')">Видео / SRT</button><button class="secondary" onclick="setLogKind('ptz')">ONVIF / PTZ</button><button class="secondary" onclick="loadLog()">Обновить</button><label><input id="logAuto" type="checkbox" style="width:auto" checked> авто 3 сек</label><span id="logInfo" class="muted"></span></div><pre id="streamLog" class="logbox">Загрузка журнала...</pre><p class="muted">Показываются только последние строки systemd-журнала сервиса трансляции. Отдельный лог-файл не создаётся, поэтому лишней записи на SD-карту нет.</p></section>
@@ -396,6 +396,9 @@ async function restartService(){try{const d=await api('/api/restart',{method:'PO
 function useCamera(slot,url,ip,onvifPort){$('input_mode').value='rtsp';$('camera'+slot+'_url').value=url;if(slot===1)$('input_url').value=url;if(onvifPort&&slot===1){$('onvif_auto_discovery').checked=true;$('onvif_device_url').value=`http://${ip}:${onvifPort}/onvif/device_service`}$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Камера добавлена как Camera ${slot}. Сохраните настройки.`;window.scrollTo({top:$('camera'+slot+'_url').getBoundingClientRect().top+window.scrollY-100,behavior:'smooth'})}
 function renderScan(d){const devs=d.devices||[];if(!devs.length){$('scanResults').innerHTML='';$('scanMsg').className='msg';$('scanMsg').textContent=`Сканирование ${d.network||''} завершено. RTSP/ONVIF устройств не найдено.`;return}let h='<table class="scanTable"><thead><tr><th>IP</th><th>RTSP</th><th>ONVIF</th><th></th></tr></thead><tbody>';for(const x of devs){const r=(x.rtsp||[]);const o=(x.onvif_ports||[]);const rt=r.length?r.map(v=>`<div><span class="pill">:${v.port}</span> <span class="url">${v.url}</span><br><span class="muted">${v.response||''}</span></div>`).join(''):'—';const ov=o.length?o.map(p=>`<span class="pill">:${p}</span>`).join(' '):'—';let btn='';if(r.length){const u=JSON.stringify(r[0].url),ip=JSON.stringify(x.ip),op=o.length?o[0]:0;btn=`<button class="secondary" onclick='useCamera(1,${u},${ip},${op})'>В Camera 1</button> <button class="secondary" onclick='useCamera(2,${u},${ip},0)'>В Camera 2</button>`}h+=`<tr><td><strong>${x.ip}</strong>${x.hostname?`<div class="muted">${x.hostname}</div>`:''}</td><td>${rt}</td><td>${ov}</td><td>${btn}</td></tr>`}h+='</tbody></table>';$('scanResults').innerHTML=h;$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Найдено устройств: ${devs.length}. Сеть: ${d.network||''}`}
 async function scanCameras(){const b=$('scanBtn'),m=$('scanMsg');b.disabled=true;b.textContent='Сканирование...';m.className='msg';m.textContent='Проверяю локальную сеть. Это может занять несколько секунд...';$('scanResults').innerHTML='';try{const d=await api('/api/camera-scan',{method:'POST'});renderScan(d)}catch(e){m.className='msg errtxt';m.textContent=e.message}finally{b.disabled=false;b.textContent='Сканировать сеть'}}
+
+async function probeOnvif(){const box=$('onvifDiag');box.textContent='Опрос камеры...';try{const d=await api('/api/onvif-diagnose',{method:'POST'});const lines=[];lines.push('PTZ URL: '+(d.ptz_url||'—'));lines.push('Profile: '+(d.profile_token||'—'));for(const k of ['GetStatus','GetConfigurations','GetConfigurationOptions','GetPresets']){const x=d[k]||{};lines.push('');lines.push(k+': '+(x.supported?'SUPPORTED':'NOT SUPPORTED'));if(x.error)lines.push('  error: '+x.error);if(x.pan_x!=null||x.tilt_y!=null)lines.push('  pan='+String(x.pan_x??'—')+' tilt='+String(x.tilt_y??'—'));if(x.zoom_x!=null)lines.push('  zoom='+x.zoom_x);if(x.move_status)lines.push('  move_status='+JSON.stringify(x.move_status));if(x.configurations)lines.push('  configs='+JSON.stringify(x.configurations));if(x.spaces)lines.push('  spaces='+JSON.stringify(x.spaces));if(x.presets)lines.push('  presets='+JSON.stringify(x.presets));}box.textContent=lines.join('\n')}catch(e){box.textContent='Ошибка: '+e.message}}
+
 let logKind='all';
 function setLogKind(k){logKind=k;loadLog()}
 async function loadLog(){if(document.hidden)return;try{const d=await api('/api/log?kind='+encodeURIComponent(logKind));const box=$('streamLog');const stick=box.scrollTop+box.clientHeight>=box.scrollHeight-25;box.textContent=(d.lines||[]).join('\n')||'Нет строк для выбранного фильтра.';$('logInfo').textContent=(logKind==='all'?'все события':logKind==='video'?'видео / SRT':'ONVIF / PTZ')+' · '+(d.lines||[]).length+' строк';if(stick)box.scrollTop=box.scrollHeight}catch(e){$('streamLog').textContent='Ошибка журнала: '+e.message}}
@@ -404,7 +407,7 @@ load();loadLog();setInterval(()=>{if($('logAuto')?.checked&&!document.hidden)loa
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RobotLiDAROrangePiWeb/1.8"
+    server_version = "RobotLiDAROrangePiWeb/1.9"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("WEB:", fmt % args, flush=True)
@@ -506,6 +509,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if self.path == "/api/onvif-diagnose":
+                cfg = load_config()
+                try:
+                    result = diagnose_ptz(
+                        active_rtsp_url(cfg),
+                        username=str(cfg.get("onvif_username") or ""),
+                        password=str(cfg.get("onvif_password") or ""),
+                        explicit_device_url=str(cfg.get("onvif_device_url") or ""),
+                    )
+                    self.send_json(200, {"ok": True, **result})
+                except Exception as exc:
+                    self.send_json(500, {"detail": str(exc)})
+                return
             if self.path == "/api/local-ptz":
                 req = self.read_json()
                 cfg = load_config()
