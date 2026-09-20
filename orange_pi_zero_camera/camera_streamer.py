@@ -22,7 +22,7 @@ from typing import Optional
 from xml.sax.saxutils import escape
 
 import websocket
-from onvif_discovery import discover as discover_onvif
+from onvif_discovery import discover as discover_onvif, get_ptz_status
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = BASE_DIR / "config.json"
@@ -67,6 +67,9 @@ class Config:
     onvif_username: str = ""
     onvif_password: str = ""
     onvif_profile_token: str = ""
+    ptz_software_home_enabled: bool = False
+    ptz_software_home_pan: float = 0.0
+    ptz_software_home_tilt: float = 0.0
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -350,6 +353,51 @@ class CameraStreamer:
                 pass
             raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
 
+    def return_to_software_home(self, speed: float = 0.30) -> bool:
+        if not self.cfg.ptz_software_home_enabled:
+            return False
+        target_pan = float(self.cfg.ptz_software_home_pan)
+        target_tilt = float(self.cfg.ptz_software_home_tilt)
+        speed = max(0.10, min(0.60, float(speed)))
+        tolerance = 0.035
+        token = escape(self.onvif_profile_token)
+        for _step in range(28):
+            status = get_ptz_status(
+                self.active_rtsp_url(),
+                username=self.cfg.onvif_username,
+                password=self.cfg.onvif_password,
+                explicit_device_url=self.onvif_device_url,
+            )
+            pan = float(status["pan"])
+            tilt = float(status["tilt"])
+            ep = target_pan - pan
+            et = target_tilt - tilt
+            if abs(ep) <= tolerance and abs(et) <= tolerance:
+                self.log(f"CONTROL/PTZ software HOME OK seq={self.last_seq} pan={pan:.3f} tilt={tilt:.3f}")
+                return True
+
+            vx = 0.0 if abs(ep) <= tolerance else (speed if ep > 0 else -speed)
+            vy = 0.0 if abs(et) <= tolerance else (speed if et > 0 else -speed)
+            move = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.3f}" y="{vy:.3f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+            stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+            self.onvif_post(move)
+            time.sleep(0.12)
+            self.onvif_post(stop)
+            time.sleep(0.08)
+
+        status = get_ptz_status(
+            self.active_rtsp_url(),
+            username=self.cfg.onvif_username,
+            password=self.cfg.onvif_password,
+            explicit_device_url=self.onvif_device_url,
+        )
+        self.log(
+            "CONTROL/PTZ software HOME failed seq={} pan={:.3f} tilt={:.3f} target={:.3f}/{:.3f}".format(
+                self.last_seq, float(status["pan"]), float(status["tilt"]), target_pan, target_tilt
+            )
+        )
+        return False
+
     def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int,
                    delta_pan_cdeg: int = 0, delta_tilt_cdeg: int = 0, center: bool = False) -> None:
         if not self.onvif_url or not self.onvif_profile_token:
@@ -362,6 +410,16 @@ class CameraStreamer:
         speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
 
         if center:
+            if self.cfg.ptz_software_home_enabled:
+                try:
+                    if self.return_to_software_home(speed):
+                        return
+                except Exception as exc:
+                    self.log(f"CONTROL/PTZ software HOME error: {exc}")
+                    return
+                self.log("CONTROL/PTZ software HOME unavailable: target was not reached")
+                return
+
             home = f'''<tptz:GotoHomePosition><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:GotoHomePosition>'''
             try:
                 self.onvif_post(home)
@@ -371,19 +429,7 @@ class CameraStreamer:
                 return
             except Exception as home_exc:
                 self.log(f"CONTROL/PTZ GotoHomePosition rejected: {home_exc}")
-
-            if self.ptz_move_mode != "continuous":
-                absolute = f'''<tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="0.000000" y="0.000000"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:AbsoluteMove>'''
-                try:
-                    self.onvif_post(absolute)
-                    self.pan_cdeg = 0
-                    self.tilt_cdeg = 0
-                    self.ptz_move_mode = "absolute"
-                    self.log(f"CONTROL/PTZ AbsoluteMove center OK seq={self.last_seq}")
-                    return
-                except Exception as abs_exc:
-                    self.log(f"CONTROL/PTZ center AbsoluteMove rejected: {abs_exc}")
-            self.log("CONTROL/PTZ center unavailable: camera has no usable home/absolute positioning")
+            self.log("CONTROL/PTZ center unavailable: save a software home position in the local web UI")
             return
 
         if not (delta_pan_cdeg or delta_tilt_cdeg):
