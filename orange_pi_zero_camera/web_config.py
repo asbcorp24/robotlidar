@@ -7,10 +7,17 @@ import json
 import os
 import socket
 import subprocess
+import threading
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
+
+from onvif_discovery import discover as discover_onvif, ws_security
 
 CONFIG_PATH = Path(os.environ.get("ORANGE_PI_CAMERA_CONFIG", "/etc/robotlidar/orange-pi-zero-camera.json"))
 LISTEN_HOST = os.environ.get("ORANGE_PI_WEB_HOST", "0.0.0.0")
@@ -217,6 +224,133 @@ def scan_network() -> dict[str, Any]:
     return {"interface": iface, "network": str(network), "devices": devices}
 
 
+PTZ_LOCK = threading.Lock()
+PTZ_CACHE: dict[str, str] = {}
+
+
+def active_rtsp_url(cfg: dict[str, Any]) -> str:
+    active = 2 if int(cfg.get("active_camera") or 1) == 2 else 1
+    if active == 2 and str(cfg.get("camera2_url") or "").strip():
+        return str(cfg.get("camera2_url") or "").strip()
+    return str(cfg.get("camera1_url") or cfg.get("input_url") or "").strip()
+
+
+def preview_ffmpeg_cmd(cfg: dict[str, Any]) -> list[str]:
+    ffmpeg = str(cfg.get("ffmpeg") or "/usr/local/bin/ffmpeg")
+    url = active_rtsp_url(cfg)
+    return [
+        ffmpeg, "-hide_banner", "-loglevel", "error",
+        "-rtsp_transport", "tcp", "-i", url,
+        "-an", "-vf", "fps=3,scale=640:-2",
+        "-q:v", "7", "-f", "mjpeg", "pipe:1"
+    ]
+
+
+def onvif_runtime(cfg: dict[str, Any]) -> tuple[str, str]:
+    key = active_rtsp_url(cfg)
+    with PTZ_LOCK:
+        if PTZ_CACHE.get("key") == key and PTZ_CACHE.get("url") and PTZ_CACHE.get("token"):
+            return PTZ_CACHE["url"], PTZ_CACHE["token"]
+    result = discover_onvif(
+        key,
+        username=str(cfg.get("onvif_username") or ""),
+        password=str(cfg.get("onvif_password") or ""),
+        explicit_device_url=str(cfg.get("onvif_device_url") or ""),
+    )
+    with PTZ_LOCK:
+        PTZ_CACHE["key"] = key
+        PTZ_CACHE["url"] = result.ptz_url
+        PTZ_CACHE["token"] = result.profile_token
+    return result.ptz_url, result.profile_token
+
+
+def onvif_post(cfg: dict[str, Any], body: str, timeout: float = 2.5) -> None:
+    url, _token = onvif_runtime(cfg)
+    username = str(cfg.get("onvif_username") or "")
+    password = str(cfg.get("onvif_password") or "")
+    security = ws_security(username, password) if username else ""
+    envelope = f'''<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+<s:Header>{security}</s:Header><s:Body>{body}</s:Body></s:Envelope>'''
+    req = urllib.request.Request(url, data=envelope.encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/soap+xml; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            response.read(256)
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(1000).decode("utf-8", "ignore").replace("\n", " ").strip()
+        except Exception:
+            pass
+        raise RuntimeError("HTTP {}: {}".format(exc.code, detail or exc.reason)) from exc
+
+
+def local_ptz(cfg: dict[str, Any], direction: str, speed: float) -> str:
+    if not bool(cfg.get("ptz_enabled", True)):
+        raise RuntimeError("PTZ отключён в настройках")
+    url, token_raw = onvif_runtime(cfg)
+    _ = url
+    token = escape(token_raw)
+    speed = max(0.05, min(1.0, float(speed)))
+    if direction == "home":
+        body = f'''<tptz:GotoHomePosition><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Speed><tt:PanTilt x="{speed:.3f}" y="{speed:.3f}"/></tptz:Speed></tptz:GotoHomePosition>'''
+        onvif_post(cfg, body)
+        return "Home"
+
+    vx = 0.0
+    vy = 0.0
+    if direction == "left":
+        vx = -speed
+    elif direction == "right":
+        vx = speed
+    elif direction == "up":
+        vy = speed
+    elif direction == "down":
+        vy = -speed
+    else:
+        raise RuntimeError("Неизвестное направление")
+
+    move = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.3f}" y="{vy:.3f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+    stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+    onvif_post(cfg, move)
+    time.sleep(0.22)
+    onvif_post(cfg, stop)
+    return "{} {:.2f}".format(direction, speed)
+
+
+CAMERA_HTML = r'''<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RobotLiDAR · Локальная камера</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#15202b;background:#eef2f6}*{box-sizing:border-box}body{margin:0}.wrap{max-width:900px;margin:auto;padding:18px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.card{background:#fff;border-radius:14px;padding:16px;box-shadow:0 4px 20px #0000000c}.viewer{background:#0c1117;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:260px}.viewer img{display:block;width:100%;max-width:640px;height:auto}.controls{display:grid;grid-template-columns:70px 70px 70px;grid-template-rows:58px 58px 58px;gap:7px;justify-content:center;margin:18px 0}.controls button{font-size:24px;border:0;border-radius:10px;background:#e8eef6;cursor:pointer}.controls .home{font-size:18px;background:#1769e0;color:#fff}.up{grid-column:2}.left{grid-column:1;grid-row:2}.home{grid-column:2;grid-row:2}.right{grid-column:3;grid-row:2}.down{grid-column:2;grid-row:3}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.status{font-size:13px;color:#687684}.log{background:#111820;color:#d8e2ec;border-radius:10px;padding:10px;height:140px;overflow:auto;white-space:pre-wrap;font:12px/1.4 ui-monospace,Consolas,monospace}.btn{border:0;border-radius:8px;padding:9px 13px;background:#e8eef6;cursor:pointer;text-decoration:none;color:#213044;font-weight:600}@media(max-width:600px){.wrap{padding:10px}.top{align-items:flex-start;flex-direction:column}}
+</style></head><body><div class="wrap">
+<div class="top"><div><h2 style="margin:0">Локальная камера + PTZ</h2><div id="state" class="status">проверка...</div></div><a class="btn" href="/">← Настройки</a></div>
+<div class="card">
+<div id="disabled" style="display:none;padding:35px;text-align:center">Локальный просмотр отключён в настройках.</div>
+<div id="enabled">
+<div class="viewer"><img id="cam" alt="Camera preview"></div>
+<div class="controls">
+<button class="up" onclick="ptz('up')">▲</button>
+<button class="left" onclick="ptz('left')">◀</button>
+<button class="home" onclick="ptz('home')">●</button>
+<button class="right" onclick="ptz('right')">▶</button>
+<button class="down" onclick="ptz('down')">▼</button>
+</div>
+<div class="row"><label>Скорость PTZ <input id="speed" type="range" min="10" max="100" value="35"></label><span id="speedText">35%</span><button class="btn" onclick="reloadPreview()">Обновить видео</button></div>
+<h3>PTZ журнал</h3><div id="ptzlog" class="log"></div>
+</div></div></div>
+<script>
+const $=id=>document.getElementById(id);function addLog(s){const b=$('ptzlog');b.textContent=new Date().toLocaleTimeString()+' '+s+'\n'+b.textContent}
+$('speed').oninput=()=>{$('speedText').textContent=$('speed').value+'%'};
+async function init(){const r=await fetch('/api/status');const d=await r.json();const c=d.config||{};const en=c.local_preview_enabled!==false;$('enabled').style.display=en?'block':'none';$('disabled').style.display=en?'none':'block';$('state').textContent=(c.camera1_name||'Camera 1')+' · local preview '+(en?'ON':'OFF')+(c.ptz_enabled===false?' · PTZ OFF':' · PTZ ON');if(en)reloadPreview()}
+function reloadPreview(){const img=$('cam');img.src='/api/preview.mjpg?t='+Date.now()}
+async function ptz(dir){try{const speed=Number($('speed').value)/100;const r=await fetch('/api/local-ptz',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction:dir,speed})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'PTZ error');addLog('OK '+(d.message||dir))}catch(e){addLog('ERR '+e.message)}}
+init();
+</script></body></html>'''
+
+
+
 HTML = r'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RobotLiDAR · Orange Pi One Camera</title>
@@ -232,7 +366,7 @@ HTML = r'''<!doctype html>
 </div>
 <section class="card" style="margin-top:16px"><h2>Поиск RTSP / ONVIF камер</h2><p class="muted">Сканируется локальный проводной сегмент. Проверяются RTSP-порты 554, 8554, 10554 и типовые ONVIF HTTP-порты. Сканируйте только сеть, которой вы управляете или имеете разрешение проверять.</p><div class="actions"><button id="scanBtn" class="primary" onclick="scanCameras()">Сканировать сеть</button></div><div id="scanMsg" class="msg"></div><div id="scanResults"></div></section>
 <section class="card" style="margin-top:16px"><h2>Журнал трансляции / ONVIF / PTZ</h2><div class="logmeta"><button class="secondary" onclick="setLogKind('all')">Все</button><button class="secondary" onclick="setLogKind('video')">Видео / SRT</button><button class="secondary" onclick="setLogKind('ptz')">ONVIF / PTZ</button><button class="secondary" onclick="loadLog()">Обновить</button><label><input id="logAuto" type="checkbox" style="width:auto" checked> авто 3 сек</label><span id="logInfo" class="muted"></span></div><pre id="streamLog" class="logbox">Загрузка журнала...</pre><p class="muted">Показываются только последние строки systemd-журнала сервиса трансляции. Отдельный лог-файл не создаётся, поэтому лишней записи на SD-карту нет.</p></section>
-<section class="card" style="margin-top:16px"><h2>Применение</h2><div class="actions"><button class="primary" onclick="saveConfig(true)">Сохранить и перезапустить</button><button class="secondary" onclick="saveConfig(false)">Только сохранить</button><button class="secondary" onclick="restartService()">Перезапустить трансляцию</button></div><div id="saveMsg" class="msg"></div></section>
+<section class="card" style="margin-top:16px"><h2>Применение</h2><div class="actions"><button class="secondary" onclick="location.href='/camera'">Локальная камера / PTZ</button><button class="primary" onclick="saveConfig(true)">Сохранить и перезапустить</button><button class="secondary" onclick="saveConfig(false)">Только сохранить</button><button class="secondary" onclick="restartService()">Перезапустить трансляцию</button></div><div id="saveMsg" class="msg"></div></section>
 </div><script>
 const $=id=>document.getElementById(id);let cfg={};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);return d}
@@ -252,7 +386,7 @@ load();loadLog();setInterval(()=>{if($('logAuto')?.checked&&!document.hidden)loa
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RobotLiDAROrangePiWeb/1.6"
+    server_version = "RobotLiDAROrangePiWeb/1.7"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("WEB:", fmt % args, flush=True)
@@ -272,6 +406,62 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(raw.decode("utf-8")) if raw else {}
 
     def do_GET(self) -> None:
+        if self.path == "/camera":
+            body = CAMERA_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/api/preview.mjpg"):
+            cfg = load_config()
+            if not bool(cfg.get("local_preview_enabled", True)):
+                self.send_json(403, {"detail": "Локальный просмотр отключён"})
+                return
+            url = active_rtsp_url(cfg)
+            if not url:
+                self.send_json(400, {"detail": "RTSP URL не задан"})
+                return
+            proc = None
+            try:
+                proc = subprocess.Popen(preview_ffmpeg_cmd(cfg), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                self.end_headers()
+                buf = bytearray()
+                while proc.poll() is None:
+                    chunk = proc.stdout.read(4096) if proc.stdout else b""
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    while True:
+                        a = buf.find(b"\xff\xd8")
+                        b = buf.find(b"\xff\xd9", a + 2) if a >= 0 else -1
+                        if a < 0 or b < 0:
+                            if len(buf) > 2 * 1024 * 1024:
+                                del buf[:-65536]
+                            break
+                        frame = bytes(buf[a:b+2])
+                        del buf[:b+2]
+                        self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n")
+                        self.wfile.write(frame)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:
+                pass
+            finally:
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        proc.kill()
+            return
         if self.path == "/":
             body = HTML.encode("utf-8")
             self.send_response(200)
@@ -298,6 +488,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if self.path == "/api/local-ptz":
+                req = self.read_json()
+                cfg = load_config()
+                direction = str(req.get("direction") or "").lower()
+                speed = float(req.get("speed") or 0.35)
+                try:
+                    message = local_ptz(cfg, direction, speed)
+                    self.send_json(200, {"ok": True, "message": message})
+                except Exception as exc:
+                    self.send_json(500, {"detail": str(exc)})
+                return
             if self.path == "/api/camera-scan":
                 result = scan_network()
                 result["ok"] = True
