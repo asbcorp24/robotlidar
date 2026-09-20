@@ -283,7 +283,14 @@ def onvif_post(cfg: dict[str, Any], body: str, timeout: float = 2.5) -> None:
             detail = exc.read(1000).decode("utf-8", "ignore").replace("\n", " ").strip()
         except Exception:
             pass
-        raise RuntimeError("HTTP {}: {}".format(exc.code, detail or exc.reason)) from exc
+        reason = detail or str(exc.reason)
+        if "ServiceNotSupported" in reason or "Service Not Supported" in reason:
+            reason = "ServiceNotSupported"
+        elif "ActionNotSupported" in reason or "Action Not Supported" in reason:
+            reason = "ActionNotSupported"
+        elif len(reason) > 220:
+            reason = reason[:220] + "..."
+        raise RuntimeError("HTTP {}: {}".format(exc.code, reason)) from exc
 
 
 def local_ptz(cfg: dict[str, Any], direction: str, speed: float) -> str:
@@ -294,9 +301,20 @@ def local_ptz(cfg: dict[str, Any], direction: str, speed: float) -> str:
     token = escape(token_raw)
     speed = max(0.05, min(1.0, float(speed)))
     if direction == "home":
+        if PTZ_CACHE.get("home_supported") == "no":
+            raise RuntimeError("Home не поддерживается этой камерой")
         body = f'''<tptz:GotoHomePosition><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Speed><tt:PanTilt x="{speed:.3f}" y="{speed:.3f}"/></tptz:Speed></tptz:GotoHomePosition>'''
-        onvif_post(cfg, body)
-        return "Home"
+        try:
+            onvif_post(cfg, body)
+            with PTZ_LOCK:
+                PTZ_CACHE["home_supported"] = "yes"
+            return "Home"
+        except Exception as exc:
+            if "ServiceNotSupported" in str(exc) or "ActionNotSupported" in str(exc):
+                with PTZ_LOCK:
+                    PTZ_CACHE["home_supported"] = "no"
+                raise RuntimeError("Home не поддерживается этой камерой") from exc
+            raise
 
     vx = 0.0
     vy = 0.0
@@ -333,7 +351,7 @@ CAMERA_HTML = r'''<!doctype html>
 <div class="controls">
 <button class="up" onclick="ptz('up')">▲</button>
 <button class="left" onclick="ptz('left')">◀</button>
-<button class="home" onclick="ptz('home')">●</button>
+<button id="homeBtn" class="home" onclick="ptz('home')">●</button>
 <button class="right" onclick="ptz('right')">▶</button>
 <button class="down" onclick="ptz('down')">▼</button>
 </div>
@@ -345,7 +363,7 @@ const $=id=>document.getElementById(id);function addLog(s){const b=$('ptzlog');b
 $('speed').oninput=()=>{$('speedText').textContent=$('speed').value+'%'};
 async function init(){const r=await fetch('/api/status');const d=await r.json();const c=d.config||{};const en=c.local_preview_enabled!==false;$('enabled').style.display=en?'block':'none';$('disabled').style.display=en?'none':'block';$('state').textContent=(c.camera1_name||'Camera 1')+' · local preview '+(en?'ON':'OFF')+(c.ptz_enabled===false?' · PTZ OFF':' · PTZ ON');if(en)reloadPreview()}
 function reloadPreview(){const img=$('cam');img.src='/api/preview.mjpg?t='+Date.now()}
-async function ptz(dir){try{const speed=Number($('speed').value)/100;const r=await fetch('/api/local-ptz',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction:dir,speed})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'PTZ error');addLog('OK '+(d.message||dir))}catch(e){addLog('ERR '+e.message)}}
+async function ptz(dir){try{const speed=Number($('speed').value)/100;const r=await fetch('/api/local-ptz',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction:dir,speed})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'PTZ error');addLog('OK '+(d.message||dir))}catch(e){addLog('ERR '+e.message);if(dir==='home'&&String(e.message).includes('не поддерживается')){const b=$('homeBtn');if(b){b.disabled=true;b.title='Home не поддерживается камерой';b.style.opacity='.45'}}}}
 init();
 </script></body></html>'''
 
@@ -386,7 +404,7 @@ load();loadLog();setInterval(()=>{if($('logAuto')?.checked&&!document.hidden)loa
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RobotLiDAROrangePiWeb/1.7"
+    server_version = "RobotLiDAROrangePiWeb/1.8"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("WEB:", fmt % args, flush=True)
