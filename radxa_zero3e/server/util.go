@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -67,6 +70,24 @@ func (w *statusRecorder) Write(p []byte) (int, error) {
 		w.status = http.StatusOK
 	}
 	return w.ResponseWriter.Write(p)
+}
+
+// Gorilla WebSocket requires http.Hijacker from the ResponseWriter.
+// Keep it available through the access-log wrapper, otherwise Upgrade()
+// fails with HTTP 500 ("response does not implement http.Hijacker").
+func (w *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	w.status = http.StatusSwitchingProtocols
+	return h.Hijack()
+}
+
+func (w *statusRecorder) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func logging(next http.Handler) http.Handler {
