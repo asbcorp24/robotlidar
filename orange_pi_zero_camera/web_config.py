@@ -344,8 +344,14 @@ def save_software_home(cfg: dict[str, Any]) -> dict:
         password=str(cfg.get("onvif_password") or ""),
         explicit_device_url=str(cfg.get("onvif_device_url") or ""),
     )
-    cfg["ptz_software_home_pan"] = float(status["pan"])
-    cfg["ptz_software_home_tilt"] = float(status["tilt"])
+    pan = float(status["pan"])
+    tilt = float(status["tilt"])
+    if pan <= -0.999 and tilt <= -0.999:
+        cfg["ptz_software_home_enabled"] = False
+        save_config(cfg)
+        raise RuntimeError("Камера возвращает фиктивные координаты PTZ (-1/-1); сохранение базовой позиции по GetStatus невозможно")
+    cfg["ptz_software_home_pan"] = pan
+    cfg["ptz_software_home_tilt"] = tilt
     cfg["ptz_software_home_enabled"] = True
     save_config(cfg)
     return {"pan": cfg["ptz_software_home_pan"], "tilt": cfg["ptz_software_home_tilt"]}
@@ -465,7 +471,7 @@ load();loadLog();setInterval(()=>{if($('logAuto')?.checked&&!document.hidden)loa
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "RobotLiDAROrangePiWeb/2.0"
+    server_version = "RobotLiDAROrangePiWeb/2.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("WEB:", fmt % args, flush=True)
