@@ -251,3 +251,40 @@ def diagnose_ptz(input_url: str, username: str = "", password: str = "", explici
         ),
     }
     return results
+
+
+def get_ptz_status(input_url: str, username: str = "", password: str = "", explicit_device_url: str = "") -> dict:
+    discovery = discover(input_url, username=username, password=password, explicit_device_url=explicit_device_url)
+    body = '<tptz:GetStatus xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"><tptz:ProfileToken>{}</tptz:ProfileToken></tptz:GetStatus>'.format(escape(discovery.profile_token))
+    raw = soap_request(discovery.ptz_url, body, username, password, timeout=3.0)
+    root = ET.fromstring(raw)
+    out = {
+        "ptz_url": discovery.ptz_url,
+        "profile_token": discovery.profile_token,
+        "pan": None,
+        "tilt": None,
+        "zoom": None,
+        "move_status": {},
+    }
+    for el in root.iter():
+        lname = _local(el)
+        if lname == "PanTilt":
+            if "x" in el.attrib:
+                try: out["pan"] = float(el.attrib.get("x"))
+                except Exception: pass
+            if "y" in el.attrib:
+                try: out["tilt"] = float(el.attrib.get("y"))
+                except Exception: pass
+        elif lname == "Zoom" and "x" in el.attrib:
+            try: out["zoom"] = float(el.attrib.get("x"))
+            except Exception: pass
+        elif lname == "MoveStatus":
+            for child in el.iter():
+                if child is el:
+                    continue
+                txt = (child.text or "").strip()
+                if txt:
+                    out["move_status"][_local(child)] = txt
+    if out["pan"] is None or out["tilt"] is None:
+        raise RuntimeError("GetStatus did not return PanTilt coordinates")
+    return out
