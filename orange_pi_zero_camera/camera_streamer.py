@@ -351,7 +351,28 @@ class CameraStreamer:
                 detail = exc.read(1200).decode("utf-8", "ignore").replace("\n", " ").strip()
             except Exception:
                 pass
-            raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
+            reason = detail or str(exc.reason)
+            if "ServiceNotSupported" in reason or "Service Not Supported" in reason:
+                reason = "ServiceNotSupported"
+            elif "ActionNotSupported" in reason or "Action Not Supported" in reason:
+                reason = "ActionNotSupported"
+            elif len(reason) > 220:
+                reason = reason[:220] + "..."
+            raise RuntimeError(f"HTTP {exc.code}: {reason}") from exc
+
+    def reload_software_home(self) -> None:
+        try:
+            cfg_path = Path(os.environ.get("ORANGE_PI_CAMERA_CONFIG", str(DEFAULT_CONFIG)))
+            if not cfg_path.exists():
+                return
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            self.cfg.ptz_software_home_enabled = bool(data.get("ptz_software_home_enabled", False))
+            if "ptz_software_home_pan" in data:
+                self.cfg.ptz_software_home_pan = float(data.get("ptz_software_home_pan") or 0.0)
+            if "ptz_software_home_tilt" in data:
+                self.cfg.ptz_software_home_tilt = float(data.get("ptz_software_home_tilt") or 0.0)
+        except Exception as exc:
+            self.log(f"CONTROL/PTZ software HOME config reload error: {exc}")
 
     def return_to_software_home(self, speed: float = 0.30) -> bool:
         if not self.cfg.ptz_software_home_enabled:
@@ -410,6 +431,7 @@ class CameraStreamer:
         speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
 
         if center:
+            self.reload_software_home()
             if self.cfg.ptz_software_home_enabled:
                 try:
                     if self.return_to_software_home(speed):
