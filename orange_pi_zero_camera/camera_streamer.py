@@ -301,10 +301,12 @@ class CameraStreamer:
             if flags & FLAG_CENTER:
                 pan = 0
                 tilt = 0
+            prev_pan = self.pan_cdeg
+            prev_tilt = self.tilt_cdeg
             self.pan_cdeg = pan
             self.tilt_cdeg = tilt
             self.log(f"CONTROL/PTZ received seq={seq} pan={pan/100:.1f} tilt={tilt/100:.1f} speed={int(speed)/100:.1f}")
-            threading.Thread(target=self.onvif_move, args=(pan, tilt, int(speed)), daemon=True).start()
+            threading.Thread(target=self.onvif_move, args=(pan, tilt, int(speed), pan-prev_pan, tilt-prev_tilt, bool(flags & FLAG_CENTER)), daemon=True).start()
         elif packet_type == TYPE_CAMERA:
             target = 2 if int(value1) == 2 else 1
             self.switch_camera(target)
@@ -326,25 +328,74 @@ class CameraStreamer:
             self.write_active_camera_state()
             self.restart_requested.set()
 
-    def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int) -> None:
-        if not self.onvif_url or not self.onvif_profile_token:
-            self.log(f"PTZ received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; ONVIF PTZ/profile unavailable")
-            return
-        pan = max(-1.0, min(1.0, pan_cdeg / 18000.0))
-        tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
-        speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
-        token = escape(self.onvif_profile_token)
+    def onvif_post(self, body: str, timeout: float = 2.5) -> None:
         security = self.ws_security(self.cfg.onvif_username, self.cfg.onvif_password) if self.cfg.onvif_username else ""
         envelope = f'''<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
-<s:Header>{security}</s:Header><s:Body><tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace"/></tptz:Speed></tptz:AbsoluteMove></s:Body></s:Envelope>'''
+<s:Header>{security}</s:Header><s:Body>{body}</s:Body></s:Envelope>'''
         req = urllib.request.Request(self.onvif_url, data=envelope.encode("utf-8"), method="POST", headers={"Content-Type": "application/soap+xml; charset=utf-8"})
         try:
-            with urllib.request.urlopen(req, timeout=2.5) as response:
-                response.read(64)
-            self.log(f"CONTROL/PTZ seq={self.last_seq} pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}")
-        except Exception as exc:
-            self.log(f"CONTROL/PTZ ONVIF error: {exc}")
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                response.read(256)
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read(1200).decode("utf-8", "ignore").replace("\n", " ").strip()
+            except Exception:
+                pass
+            raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
+
+    def onvif_move(self, pan_cdeg: int, tilt_cdeg: int, speed_cdeg_s: int,
+                   delta_pan_cdeg: int = 0, delta_tilt_cdeg: int = 0, center: bool = False) -> None:
+        if not self.onvif_url or not self.onvif_profile_token:
+            self.log(f"PTZ received pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}; ONVIF PTZ/profile unavailable")
+            return
+
+        token = escape(self.onvif_profile_token)
+        pan = max(-1.0, min(1.0, pan_cdeg / 18000.0))
+        tilt = max(-1.0, min(1.0, tilt_cdeg / 9000.0))
+        speed = max(0.05, min(1.0, abs(speed_cdeg_s) / 9000.0 if speed_cdeg_s else 0.5))
+
+        absolute = f'''<tptz:AbsoluteMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position><tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}"/></tptz:Position><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:AbsoluteMove>'''
+        try:
+            self.onvif_post(absolute)
+            self.log(f"CONTROL/PTZ AbsoluteMove OK seq={self.last_seq} pan={pan_cdeg/100:.1f} tilt={tilt_cdeg/100:.1f}")
+            return
+        except Exception as abs_exc:
+            self.log(f"CONTROL/PTZ AbsoluteMove rejected: {abs_exc}")
+
+        if not center and (delta_pan_cdeg or delta_tilt_cdeg):
+            rel_pan = max(-1.0, min(1.0, delta_pan_cdeg / 18000.0))
+            rel_tilt = max(-1.0, min(1.0, delta_tilt_cdeg / 9000.0))
+            relative = f'''<tptz:RelativeMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Translation><tt:PanTilt x="{rel_pan:.6f}" y="{rel_tilt:.6f}"/></tptz:Translation><tptz:Speed><tt:PanTilt x="{speed:.4f}" y="{speed:.4f}"/></tptz:Speed></tptz:RelativeMove>'''
+            try:
+                self.onvif_post(relative)
+                self.log(f"CONTROL/PTZ RelativeMove OK seq={self.last_seq} dpan={delta_pan_cdeg/100:.1f} dtilt={delta_tilt_cdeg/100:.1f}")
+                return
+            except Exception as rel_exc:
+                self.log(f"CONTROL/PTZ RelativeMove rejected: {rel_exc}")
+
+            vx = speed if delta_pan_cdeg > 0 else (-speed if delta_pan_cdeg < 0 else 0.0)
+            vy = speed if delta_tilt_cdeg > 0 else (-speed if delta_tilt_cdeg < 0 else 0.0)
+            continuous = f'''<tptz:ContinuousMove><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity><tt:PanTilt x="{vx:.4f}" y="{vy:.4f}"/></tptz:Velocity></tptz:ContinuousMove>'''
+            stop = f'''<tptz:Stop><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'''
+            try:
+                self.onvif_post(continuous)
+                time.sleep(0.22)
+                self.onvif_post(stop)
+                self.log(f"CONTROL/PTZ ContinuousMove OK seq={self.last_seq} vx={vx:.2f} vy={vy:.2f}")
+                return
+            except Exception as cont_exc:
+                self.log(f"CONTROL/PTZ ContinuousMove rejected: {cont_exc}")
+                try:
+                    self.onvif_post(stop)
+                except Exception:
+                    pass
+
+        if center:
+            self.log("CONTROL/PTZ center unavailable: camera rejected AbsoluteMove")
+        else:
+            self.log("CONTROL/PTZ failed: camera rejected AbsoluteMove, RelativeMove and ContinuousMove")
 
     @staticmethod
     def ws_security(username: str, password: str) -> str:
