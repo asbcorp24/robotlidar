@@ -236,7 +236,8 @@ class IpCameraRelayManager:
         common = [
             cfg['ffmpeg'],
             '-hide_banner', '-loglevel', 'warning',
-            '-fflags', 'nobuffer',
+            '-fflags', '+genpts+discardcorrupt',
+            '-use_wallclock_as_timestamps', '1',
             '-rtsp_transport', 'tcp',
             '-i', self._active_rtsp_url(cfg),
             '-map', '0:v:0', '-an',
@@ -254,6 +255,7 @@ class IpCameraRelayManager:
             )
             command = common + [
                 '-mpegts_flags', '+resend_headers',
+                '-avoid_negative_ts', 'make_non_negative',
                 '-muxdelay', '0',
                 '-f', 'mpegts', target,
             ]
