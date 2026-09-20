@@ -3,6 +3,7 @@
   "device_name": "Orange Pi Zero Camera",
   "server_url": "https://tele.xn----7sbbd7e6b.xn--p1ai",
   "stream_enabled": true,
+  "local_preview_enabled": true,
   "input_mode": "rtsp",
   "input_url": "rtsp://192.168.1.149:8554/camera",
   "video_device": "/dev/video0",
