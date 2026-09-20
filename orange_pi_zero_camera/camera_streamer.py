@@ -366,11 +366,15 @@ class CameraStreamer:
             if not cfg_path.exists():
                 return
             data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            self.cfg.ptz_software_home_enabled = bool(data.get("ptz_software_home_enabled", False))
-            if "ptz_software_home_pan" in data:
-                self.cfg.ptz_software_home_pan = float(data.get("ptz_software_home_pan") or 0.0)
-            if "ptz_software_home_tilt" in data:
-                self.cfg.ptz_software_home_tilt = float(data.get("ptz_software_home_tilt") or 0.0)
+            enabled = bool(data.get("ptz_software_home_enabled", False))
+            pan = float(data.get("ptz_software_home_pan") or 0.0)
+            tilt = float(data.get("ptz_software_home_tilt") or 0.0)
+            if enabled and pan <= -0.999 and tilt <= -0.999:
+                enabled = False
+                self.log("CONTROL/PTZ software HOME disabled: camera reports dummy position -1/-1")
+            self.cfg.ptz_software_home_enabled = enabled
+            self.cfg.ptz_software_home_pan = pan
+            self.cfg.ptz_software_home_tilt = tilt
         except Exception as exc:
             self.log(f"CONTROL/PTZ software HOME config reload error: {exc}")
 
