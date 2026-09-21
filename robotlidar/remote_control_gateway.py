@@ -297,6 +297,8 @@ class RemoteControlGateway:
         magic, version, packet_type, seq, value1, value2, speed, flags = struct.unpack('>HBBIhhHH', data)
         if magic != CONTROL_MAGIC or version != CONTROL_VERSION:
             raise ValueError('bad control header')
+        if packet_type != TYPE_STREAM and not self._snapshot().get('enabled'):
+            return
         now = time.monotonic()
         with self._lock:
             self._last_packet_at = now
