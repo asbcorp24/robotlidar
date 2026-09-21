@@ -97,8 +97,10 @@ class RemoteControlGateway:
             self._watchdog.start()
 
     def configure(self, settings: dict[str, Any]) -> None:
+        user_control_enabled = bool(settings.get('camera_remote_control_enabled', False))
         cfg = {
-            'enabled': bool(settings.get('camera_remote_control_enabled', False)),
+            'enabled': user_control_enabled,
+            'transport_enabled': bool(user_control_enabled or settings.get('camera_enabled', False)),
             'port': int(settings.get('camera_control_port') or 6000),
             'server_url': str(settings.get('camera_server_url') or '').strip().rstrip('/'),
             'device_id': str(settings.get('camera_device_id') or '').strip(),
@@ -115,8 +117,8 @@ class RemoteControlGateway:
             cfg['port'] = 6000
         with self._lock:
             old_port = self._config.get('port')
-            old_ws_key = (self._config.get('server_url'), self._config.get('device_id'), self._config.get('enabled'))
-            new_ws_key = (cfg.get('server_url'), cfg.get('device_id'), cfg.get('enabled'))
+            old_ws_key = (self._config.get('server_url'), self._config.get('device_id'), self._config.get('transport_enabled'))
+            new_ws_key = (cfg.get('server_url'), cfg.get('device_id'), cfg.get('transport_enabled'))
             old_onvif = (self._config.get('onvif_url'), self._config.get('onvif_username'), self._config.get('onvif_profile_token'))
             new_onvif = (cfg.get('onvif_url'), cfg.get('onvif_username'), cfg.get('onvif_profile_token'))
             self._config = cfg
@@ -169,7 +171,7 @@ class RemoteControlGateway:
     def _ws_loop(self) -> None:
         while not self._stop.is_set():
             cfg = self._snapshot()
-            if not cfg.get('enabled') or not cfg.get('server_url') or not cfg.get('device_id'):
+            if not cfg.get('transport_enabled') or not cfg.get('server_url') or not cfg.get('device_id'):
                 self._set_ws_state(False, '')
                 self._wake.wait(0.5)
                 self._wake.clear()
@@ -245,7 +247,7 @@ class RemoteControlGateway:
     def _listen_loop(self) -> None:
         while not self._stop.is_set():
             cfg = self._snapshot()
-            if not cfg.get('enabled'):
+            if not cfg.get('transport_enabled'):
                 self._close_socket()
                 self._wake.wait(0.5)
                 self._wake.clear()
