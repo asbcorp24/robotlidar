@@ -86,6 +86,8 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 		s.controlWebSocket(w, r, id)
 	case "video-status":
 		s.videoStatus(w, r, id)
+	case "video-demand":
+		s.videoDemand(w, r, id)
 	case "webrtc":
 		s.webrtc(w, r, id)
 	case "ptz":
@@ -251,6 +253,91 @@ func (s *server) videoStatus(w http.ResponseWriter, r *http.Request, id string) 
 	status["control_transport"] = controlTransportLabel(d)
 	if d.SRTPort > 0 { status["srt_ingest_port"] = d.SRTPort }
 	writeJSON(w, http.StatusOK, status)
+}
+
+type videoDemandRequest struct {
+	SessionID string `json:"session_id"`
+	Active    bool   `json:"active"`
+}
+
+func (s *server) videoDemand(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	u, ok := s.requireUser(w, r)
+	if !ok { return }
+	d, ok := s.ownedDevice(w, u.ID, id)
+	if !ok { return }
+
+	var req videoDemandRequest
+	if !decodeJSON(w, r, &req) { return }
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID == "" || len(req.SessionID) > 128 {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+
+	now := time.Now()
+	s.videoDemandM.Lock()
+	sessions := s.videoDemand[id]
+	if sessions == nil {
+		sessions = make(map[string]time.Time)
+		s.videoDemand[id] = sessions
+	}
+	wasActive := len(sessions) > 0
+	if req.Active {
+		sessions[req.SessionID] = now
+	} else {
+		delete(sessions, req.SessionID)
+	}
+	isActive := len(sessions) > 0
+	viewers := len(sessions)
+	if !isActive {
+		delete(s.videoDemand, id)
+	}
+	s.videoDemandM.Unlock()
+
+	if wasActive != isActive {
+		value := int16(0)
+		if isActive { value = 1 }
+		if err := s.sendControl(d, controlTypeStream, value, 0); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "active": isActive, "viewers": viewers})
+}
+
+func (s *server) videoDemandJanitor() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-15 * time.Second)
+		stopIDs := []string{}
+		s.videoDemandM.Lock()
+		for id, sessions := range s.videoDemand {
+			for sid, seen := range sessions {
+				if seen.Before(cutoff) {
+					delete(sessions, sid)
+				}
+			}
+			if len(sessions) == 0 {
+				delete(s.videoDemand, id)
+				stopIDs = append(stopIDs, id)
+			}
+		}
+		s.videoDemandM.Unlock()
+
+		for _, id := range stopIDs {
+			s.devicesM.RLock()
+			d := s.devices[id]
+			s.devicesM.RUnlock()
+			if d != nil {
+				_ = s.sendControl(d, controlTypeStream, 0, 0)
+			}
+		}
+	}
 }
 
 func (s *server) ownedDevice(w http.ResponseWriter, userID int64, id string) (*device, bool) {
