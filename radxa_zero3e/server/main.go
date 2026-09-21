@@ -39,6 +39,8 @@ type server struct {
 	sessionM      sync.RWMutex
 	adminSessions map[string]time.Time
 	adminSessionM sync.RWMutex
+	videoDemand   map[string]map[string]time.Time
+	videoDemandM  sync.Mutex
 	seq           atomic.Uint32
 	ptzConn       *net.UDPConn
 }
@@ -99,6 +101,7 @@ func main() {
 		devices:       make(map[string]*device),
 		sessions:      make(map[string]int64),
 		adminSessions: make(map[string]time.Time),
+		videoDemand:   make(map[string]map[string]time.Time),
 		ptzConn:       ptzConn,
 	}
 
@@ -154,6 +157,8 @@ func main() {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(data)
 	})
+
+	go s.videoDemandJanitor()
 
 	srv := &http.Server{
 		Addr:              addr,
