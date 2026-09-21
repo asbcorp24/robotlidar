@@ -11,6 +11,7 @@ const (
 	controlTypeDrive  = 2
 	controlTypeBrush  = 3
 	controlTypeCamera = 4
+	controlTypeStream = 5
 )
 
 type driveRequest struct {
