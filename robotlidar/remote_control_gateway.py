@@ -36,6 +36,7 @@ TYPE_PTZ = 1
 TYPE_DRIVE = 2
 TYPE_BRUSH = 3
 TYPE_CAMERA = 4
+TYPE_STREAM = 5
 FLAG_CENTER = 1 << 0
 
 
@@ -45,11 +46,13 @@ class RemoteControlGateway:
         node,
         arm_callback: Optional[Callable[[bool, float], tuple[bool, str]]] = None,
         camera_callback: Optional[Callable[[int], tuple[bool, str]]] = None,
+        stream_callback: Optional[Callable[[bool], tuple[bool, str]]] = None,
         log_callback=None,
     ) -> None:
         self._node = node
         self._arm_callback = arm_callback
         self._camera_callback = camera_callback
+        self._stream_callback = stream_callback
         self._log_callback = log_callback
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -343,6 +346,14 @@ class RemoteControlGateway:
             if not ok:
                 raise ValueError(message)
             self._log(f'CONTROL/CAMERA: {message}')
+        elif packet_type == TYPE_STREAM:
+            callback = self._stream_callback
+            if callback is None:
+                raise ValueError('stream demand callback is not configured')
+            ok, message = callback(int(value1) != 0)
+            if not ok:
+                raise ValueError(message)
+            self._log(f'CONTROL/STREAM: {message}')
         else:
             raise ValueError(f'unknown packet type {packet_type}')
 
