@@ -37,6 +37,7 @@ class IpCameraRelayManager:
         self._last_telemetry_at = 0.0
         self._restart_count = 0
         self._started_at = time.monotonic()
+        self._video_requested = False
         self._log_callback = log_callback
 
     def start(self, settings: dict[str, Any]) -> None:
@@ -146,7 +147,7 @@ class IpCameraRelayManager:
             try:
                 if not self._registered or self._video_port is None:
                     self._register(cfg)
-                if cfg.get('enabled'):
+                if cfg.get('enabled') and self._video_requested:
                     self._ensure_ffmpeg(cfg)
                 else:
                     self._stop_ffmpeg()
@@ -286,6 +287,18 @@ class IpCameraRelayManager:
             name='robotlidar-camera-ffmpeg-log',
             daemon=True,
         ).start()
+
+    def set_video_requested(self, enabled: bool) -> tuple[bool, str]:
+        enabled = bool(enabled)
+        with self._lock:
+            changed = self._video_requested != enabled
+            self._video_requested = enabled
+        if changed:
+            self._log('CAMERA: viewer demand -> ' + ('ON' if enabled else 'OFF'))
+            if not enabled:
+                self._stop_ffmpeg()
+            self._wake.set()
+        return True, 'video demand enabled' if enabled else 'video demand disabled'
 
     def select_camera(self, camera: int) -> tuple[bool, str]:
         camera = 2 if int(camera) == 2 else 1
