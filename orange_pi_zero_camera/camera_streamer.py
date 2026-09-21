@@ -33,6 +33,7 @@ TYPE_PTZ = 1
 TYPE_DRIVE = 2
 TYPE_BRUSH = 3
 TYPE_CAMERA = 4
+TYPE_STREAM = 5
 FLAG_CENTER = 1 << 0
 
 
@@ -104,6 +105,7 @@ class CameraStreamer:
         self.switch_lock = threading.RLock()
         self.runtime_camera_file = Path("/run/robotlidar-active-camera")
         self.ptz_move_mode = "auto"
+        self.stream_demanded = False
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -318,6 +320,12 @@ class CameraStreamer:
         elif packet_type == TYPE_CAMERA:
             target = 2 if int(value1) == 2 else 1
             self.switch_camera(target)
+        elif packet_type == TYPE_STREAM:
+            wanted = int(value1) != 0
+            if wanted != self.stream_demanded:
+                self.stream_demanded = wanted
+                self.log("STREAM DEMAND -> " + ("ON" if wanted else "OFF"))
+                self.restart_requested.set()
         elif packet_type in (TYPE_DRIVE, TYPE_BRUSH):
             self.log(f"CONTROL ignored type={packet_type}: camera-only device")
         else:
@@ -544,7 +552,7 @@ class CameraStreamer:
             return 0
         self.discover_onvif_if_needed()
         if self.cfg.stream_enabled:
-            self.start_ffmpeg()
+            self.log("STREAM on-demand enabled; waiting for viewer")
         else:
             self.log("STREAM disabled; device stays registered for WSS/ONVIF/PTZ")
         self.start_control()
@@ -559,14 +567,14 @@ class CameraStreamer:
                     self.restart_requested.clear()
                     self.stop_ffmpeg()
                     self.stop_event.wait(0.15)
-                    if not self.stop_event.is_set() and self.cfg.stream_enabled:
+                    if not self.stop_event.is_set() and self.cfg.stream_enabled and self.stream_demanded:
                         self.start_ffmpeg()
                 if self.proc and self.proc.poll() is not None:
                     code = self.proc.returncode
                     self.log(f"FFMPEG EXIT {code}; restart after {self.cfg.reconnect_delay_sec}s")
                     self.stop_ffmpeg()
                     self.stop_event.wait(self.cfg.reconnect_delay_sec)
-                    if not self.stop_event.is_set() and self.cfg.stream_enabled:
+                    if not self.stop_event.is_set() and self.cfg.stream_enabled and self.stream_demanded:
                         if time.monotonic() - self.last_register > 30:
                             self.register()
                         self.start_ffmpeg()
