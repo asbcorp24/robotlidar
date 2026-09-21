@@ -330,6 +330,12 @@ func (s *server) videoDemandJanitor() {
 		s.videoDemandM.Unlock()
 
 		for _, id := range stopIDs {
+			s.videoDemandM.Lock()
+			_, activeAgain := s.videoDemand[id]
+			s.videoDemandM.Unlock()
+			if activeAgain {
+				continue
+			}
 			s.devicesM.RLock()
 			d := s.devices[id]
 			s.devicesM.RUnlock()
