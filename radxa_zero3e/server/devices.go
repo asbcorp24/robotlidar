@@ -298,10 +298,14 @@ func (s *server) videoDemand(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	s.videoDemandM.Unlock()
 
-	if wasActive != isActive {
-		value := int16(0)
-		if isActive { value = 1 }
-		if err := s.sendControl(d, controlTypeStream, value, 0); err != nil {
+	sendValue := int16(-1)
+	if req.Active {
+		sendValue = 1
+	} else if wasActive && !isActive {
+		sendValue = 0
+	}
+	if sendValue >= 0 {
+		if err := s.sendControl(d, controlTypeStream, sendValue, 0); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
