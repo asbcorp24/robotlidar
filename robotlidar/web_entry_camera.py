@@ -60,6 +60,7 @@ remote_control = RemoteControlGateway(
     web_app.bridge,
     arm_callback=base._set_esp32_arm,
     camera_callback=camera_relay.select_camera,
+    stream_callback=camera_relay.set_video_requested,
     log_callback=web_app.process_manager._append_log,
 )
 _initial_settings = web_app.settings.snapshot()
