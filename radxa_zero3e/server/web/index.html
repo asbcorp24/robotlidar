@@ -41,8 +41,8 @@
           <div class="top-actions"><button id="cardboardBtn" class="btn vr-btn">◉ Cardboard</button><button id="refreshBtn" class="btn secondary">Обновить</button><button id="idrBtn" class="btn secondary">IDR</button></div>
         </header>
         <section class="content-grid">
-          <div class="video-card panel">
-            <div class="video-toolbar"><div class="status-row"><span id="onlineDot" class="dot offline"></span><span id="onlineText">Offline</span></div><div id="streamType">H.264 / WebRTC</div></div>
+          <div id="videoCard" class="video-card panel">
+            <div class="video-toolbar"><div class="status-row"><span id="onlineDot" class="dot offline"></span><span id="onlineText">Offline</span></div><div class="video-toolbar-actions"><div id="streamType">H.264 / WebRTC</div><button id="fullscreenBtn" class="btn secondary video-fullscreen-btn" type="button">⛶ На весь экран</button></div></div>
             <div class="video-stage"><video id="video" autoplay playsinline muted></video><div id="videoPlaceholder" class="video-placeholder"><div class="camera-glyph">◉</div><div>Видеопоток не подключён</div><small>Выберите трактор слева</small></div><div class="crosshair"><span></span><span></span></div></div>
           </div>
           <aside class="control-column">
