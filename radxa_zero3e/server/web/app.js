@@ -38,6 +38,28 @@ function syncVrStreams(stream){for(const id of ['vrVideoLeft','vrVideoRight']){c
 
 async function connectStream(d){const video=$('video');closePeer();$('videoPlaceholder').style.display='flex';$('videoPlaceholder').querySelector('div:nth-child(2)').textContent=d.online?'Запрос видеопотока...':'Трактор offline';if(!d.online)return;try{await startVideoDemand(d.id);$('videoPlaceholder').querySelector('div:nth-child(2)').textContent='Запуск SRT...';const live=await waitVideoOnline(d.id,d.video_packets||0);if(!selected||selected.id!==d.id){stopVideoDemand();return;}const pc=new RTCPeerConnection();currentPeer=pc;const transceiver=pc.addTransceiver('video',{direction:'recvonly'});if(!preferH264(transceiver)){closePeer();$('videoPlaceholder').querySelector('div:nth-child(2)').textContent='Браузер не поддерживает H.264 WebRTC';return;}pc.ontrack=e=>{const stream=e.streams[0]||new MediaStream([e.track]);video.srcObject=stream;syncVrStreams(stream);video.play().catch(()=>{});$('videoPlaceholder').style.display='none';};pc.onconnectionstatechange=()=>{if(pc!==currentPeer)return;if(['failed','disconnected','closed'].includes(pc.connectionState)){$('videoPlaceholder').style.display='flex';$('videoPlaceholder').querySelector('div:nth-child(2)').textContent=`WebRTC: ${pc.connectionState}`;if(pc.connectionState!=='disconnected')stopVideoDemand();}};const offer=await pc.createOffer();await pc.setLocalDescription(offer);await waitIce(pc);const answer=await api(`/api/devices/${encodeURIComponent(live.id)}/webrtc`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:pc.localDescription.sdp,type:pc.localDescription.type})});if(pc!==currentPeer)return;await pc.setRemoteDescription(answer);}catch(e){console.error('WebRTC',e);if(selected?.id===d.id){closePeer();$('videoPlaceholder').style.display='flex';$('videoPlaceholder').querySelector('div:nth-child(2)').textContent=`Ошибка видео: ${e.message}`;}}}
 
+function fullscreenElement(){return document.fullscreenElement||document.webkitFullscreenElement||null;}
+async function toggleVideoFullscreen(){
+  const card=$('videoCard');
+  if(!card)return;
+  try{
+    if(fullscreenElement()){
+      if(document.exitFullscreen)await document.exitFullscreen();
+      else if(document.webkitExitFullscreen)document.webkitExitFullscreen();
+    }else{
+      if(card.requestFullscreen)await card.requestFullscreen();
+      else if(card.webkitRequestFullscreen)card.webkitRequestFullscreen();
+      else if($('video')?.webkitEnterFullscreen)$('video').webkitEnterFullscreen();
+    }
+  }catch(e){console.warn('fullscreen',e);}
+}
+function updateFullscreenButton(){
+  const b=$('fullscreenBtn');
+  if(!b)return;
+  const active=fullscreenElement()===$('videoCard');
+  b.textContent=active?'⛶ Свернуть':'⛶ На весь экран';
+}
+
 function updatePtzLabels(){$('panValue').textContent=`${Number($('panRange').value).toFixed(1)}°`;$('tiltValue').textContent=`${Number($('tiltRange').value).toFixed(1)}°`;$('speedValue').textContent=`${$('speedRange').value}°/с`;}
 async function sendAbsolutePtz(){if(!selected?.online)return;const body={pan_cdeg:Math.round(Number($('panRange').value)*100),tilt_cdeg:Math.round(Number($('tiltRange').value)*100),speed_cdeg_s:Math.round(Number($('speedRange').value)*100)};try{await api(`/api/devices/${encodeURIComponent(selected.id)}/ptz`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}catch(e){console.warn(e);}updatePtzLabels();}
 async function move(dir){if(!selected?.online)return;let p=Number($('panRange').value),t=Number($('tiltRange').value);if(dir==='left')p-=5;if(dir==='right')p+=5;if(dir==='up')t+=5;if(dir==='down')t-=5;$('panRange').value=Math.max(-90,Math.min(90,p));$('tiltRange').value=Math.max(-45,Math.min(45,t));await sendAbsolutePtz();}
@@ -88,10 +110,10 @@ document.querySelectorAll('.brush-lift-btn').forEach(b=>bindHold(b,()=>startBrus
 document.querySelectorAll('.brush-spin-btn').forEach(b=>b.onclick=()=>setBrushSpin(b.dataset.brushSpin));
 document.querySelectorAll('.nav-tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 $('driveStopBtn').onclick=stopDrive;$('brushSpinStopBtn').onclick=()=>setBrushSpin('stop');
-$('loginBtn').onclick=()=>login(false);$('registerBtn').onclick=()=>login(true);$('logoutBtn').onclick=logout;$('attachBtn').onclick=attach;$('centerBtn').onclick=center;$('idrBtn').onclick=requestIdr;$('camera1Btn').onclick=()=>switchCamera(1);$('camera2Btn').onclick=()=>switchCamera(2);$('refreshBtn').onclick=loadDevices;$('cardboardBtn').onclick=enterCardboard;$('vrExitBtn').onclick=exitCardboard;$('vrRecenterBtn').onclick=recenterGyro;
+$('loginBtn').onclick=()=>login(false);$('registerBtn').onclick=()=>login(true);$('logoutBtn').onclick=logout;$('fullscreenBtn').onclick=toggleVideoFullscreen;$('attachBtn').onclick=attach;$('centerBtn').onclick=center;$('idrBtn').onclick=requestIdr;$('camera1Btn').onclick=()=>switchCamera(1);$('camera2Btn').onclick=()=>switchCamera(2);$('refreshBtn').onclick=loadDevices;$('cardboardBtn').onclick=enterCardboard;$('vrExitBtn').onclick=exitCardboard;$('vrRecenterBtn').onclick=recenterGyro;
 $('panRange').oninput=updatePtzLabels;$('tiltRange').oninput=updatePtzLabels;$('speedRange').oninput=updatePtzLabels;$('panRange').onchange=sendAbsolutePtz;$('tiltRange').onchange=sendAbsolutePtz;
 $('driveSpeedRange').oninput=updateDriveUi;$('brushSpeedRange').oninput=updateBrushUi;$('brushSpeedRange').onchange=refreshBrushSpin;
-document.addEventListener('fullscreenchange',()=>{if(cardboardActive&&!document.fullscreenElement)exitCardboard();});
+document.addEventListener('fullscreenchange',()=>{updateFullscreenButton();if(cardboardActive&&!document.fullscreenElement)exitCardboard();});document.addEventListener('webkitfullscreenchange',updateFullscreenButton);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&cardboardActive){exitCardboard();return;}if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;const k=String(e.key||'').toLowerCase();const driveMap={w:'forward',s:'backward',a:'left',d:'right'};const cameraMap={arrowup:'up',arrowdown:'down',arrowleft:'left',arrowright:'right'};if(k===' '){e.preventDefault();stopDrive();return;}if(driveMap[k]&&!e.repeat){e.preventDefault();startDrive(driveMap[k]);return;}if(cameraMap[k]){e.preventDefault();move(cameraMap[k]);}});
 document.addEventListener('keyup',e=>{const k=String(e.key||'').toLowerCase();if(['w','a','s','d'].includes(k)){e.preventDefault();stopDrive();}});
 window.addEventListener('blur',()=>{stopDrive();stopBrushLift();});
