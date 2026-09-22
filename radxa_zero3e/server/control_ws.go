@@ -38,6 +38,15 @@ func (c *controlChannel) send(packet []byte) error {
 	return nil
 }
 
+func (c *controlChannel) ping(appData string) error {
+	if c == nil || c.conn == nil || c.closed.Load() {
+		return nil
+	}
+	c.writeM.Lock()
+	defer c.writeM.Unlock()
+	return c.conn.WriteControl(websocket.PingMessage, []byte(appData), time.Now().Add(2*time.Second))
+}
+
 func (c *controlChannel) pong(appData string) error {
 	if c == nil || c.conn == nil || c.closed.Load() {
 		return nil
@@ -108,6 +117,24 @@ func (s *server) controlWebSocket(w http.ResponseWriter, r *http.Request, id str
 		ch.lastMS.Store(time.Now().UnixMilli())
 		return conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	})
+
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingStop:
+				return
+			case <-ticker.C:
+				if err := ch.ping("robotlidar"); err != nil {
+					ch.close()
+					return
+				}
+			}
+		}
+	}()
 
 	for {
 		messageType, _, err := conn.ReadMessage()
