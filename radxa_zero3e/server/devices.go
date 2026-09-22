@@ -87,7 +87,7 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 	case "video-status":
 		s.videoStatus(w, r, id)
 	case "video-demand":
-		s.videoDemandSessions(w, r, id)
+		s.videoDemand(w, r, id)
 	case "webrtc":
 		s.webrtc(w, r, id)
 	case "ptz":
