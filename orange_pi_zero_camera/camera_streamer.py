@@ -331,14 +331,60 @@ class CameraStreamer:
         else:
             self.log(f"CONTROL ignored unknown type={packet_type}")
 
+    def camera_rtsp_url(self, target: int) -> str:
+        if target == 2:
+            return self.cfg.camera2_url.strip()
+        if self.cfg.camera1_url.strip():
+            return self.cfg.camera1_url.strip()
+        return self.cfg.input_url.strip()
+
+    def rtsp_available(self, url: str, timeout_sec: float = 4.0) -> bool:
+        if not url:
+            return False
+        cmd = [
+            self.cfg.ffmpeg,
+            "-hide_banner", "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-rw_timeout", str(int(timeout_sec * 1_000_000)),
+            "-i", url,
+            "-map", "0:v:0",
+            "-t", "0.15",
+            "-c:v", "copy",
+            "-f", "null", "-"
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=timeout_sec + 1.5,
+                text=True,
+            )
+            if result.returncode == 0:
+                return True
+            detail = (result.stderr or "").strip().replace("\n", " ")
+            if len(detail) > 240:
+                detail = detail[-240:]
+            self.log(f"CAMERA PROBE failed: {detail or 'ffmpeg returned an error'}")
+        except subprocess.TimeoutExpired:
+            self.log(f"CAMERA PROBE timeout after {timeout_sec:.1f}s")
+        except Exception as exc:
+            self.log(f"CAMERA PROBE error: {exc}")
+        return False
+
     def switch_camera(self, target: int) -> None:
         target = 2 if target == 2 else 1
-        if target == 2 and not self.cfg.camera2_url.strip():
+        url = self.camera_rtsp_url(target)
+        if target == 2 and not url:
             self.log("CAMERA SWITCH ignored: Camera 2 URL is empty")
             return
         if target == self.active_camera:
             return
         with self.switch_lock:
+            self.log(f"CAMERA SWITCH probe -> {target} {url}")
+            if self.cfg.input_mode.lower().strip() == "rtsp" and not self.rtsp_available(url):
+                self.log(f"CAMERA SWITCH rejected: Camera {target} is unavailable; keeping Camera {self.active_camera}")
+                return
             self.active_camera = target
             self.log(f"CAMERA SWITCH -> {target} {self.active_camera_name()} {self.active_rtsp_url()}")
             self.write_active_camera_state()
