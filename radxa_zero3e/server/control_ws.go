@@ -96,18 +96,42 @@ func (s *server) controlWebSocket(w http.ResponseWriter, r *http.Request, id str
 	}()
 
 	conn.SetReadLimit(4096)
-	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	conn.SetPingHandler(func(appData string) error {
 		ch.lastMS.Store(time.Now().UnixMilli())
-		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(90 * time.Second)); err != nil {
 			return err
 		}
 		return ch.pong(appData)
 	})
 	conn.SetPongHandler(func(string) error {
 		ch.lastMS.Store(time.Now().UnixMilli())
-		return conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	})
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if ch.closed.Load() {
+					return
+				}
+				ch.writeM.Lock()
+				err := conn.WriteControl(websocket.PingMessage, []byte("robotlidar"), time.Now().Add(2*time.Second))
+				ch.writeM.Unlock()
+				if err != nil {
+					ch.close()
+					return
+				}
+			}
+		}
+	}()
 
 	for {
 		messageType, _, err := conn.ReadMessage()
