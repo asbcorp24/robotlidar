@@ -112,10 +112,17 @@ func (s *server) controlWebSocket(w http.ResponseWriter, r *http.Request, id str
 	for {
 		messageType, _, err := conn.ReadMessage()
 		if err != nil {
+			last := ch.lastMS.Load()
+			idle := time.Duration(0)
+			if last > 0 {
+				idle = time.Since(time.UnixMilli(last))
+			}
+			log.Printf("CONTROL/WSS %s read error from %s after idle=%s: %v", id, r.RemoteAddr, idle.Round(time.Millisecond), err)
 			return
 		}
 		ch.lastMS.Store(time.Now().UnixMilli())
 		if messageType == websocket.CloseMessage {
+			log.Printf("CONTROL/WSS %s close message from %s", id, r.RemoteAddr)
 			return
 		}
 	}
