@@ -87,7 +87,7 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 	case "video-status":
 		s.videoStatus(w, r, id)
 	case "video-demand":
-		s.videoDemand(w, r, id)
+		s.videoDemandSessions(w, r, id)
 	case "webrtc":
 		s.webrtc(w, r, id)
 	case "ptz":
@@ -280,10 +280,10 @@ func (s *server) videoDemand(w http.ResponseWriter, r *http.Request, id string) 
 
 	now := time.Now()
 	s.videoDemandM.Lock()
-	sessions := s.videoDemand[id]
+	sessions := s.videoDemandSessions[id]
 	if sessions == nil {
 		sessions = make(map[string]time.Time)
-		s.videoDemand[id] = sessions
+		s.videoDemandSessions[id] = sessions
 	}
 	wasActive := len(sessions) > 0
 	if req.Active {
@@ -294,7 +294,7 @@ func (s *server) videoDemand(w http.ResponseWriter, r *http.Request, id string) 
 	isActive := len(sessions) > 0
 	viewers := len(sessions)
 	if !isActive {
-		delete(s.videoDemand, id)
+		delete(s.videoDemandSessions, id)
 	}
 	s.videoDemandM.Unlock()
 
@@ -320,14 +320,14 @@ func (s *server) videoDemandJanitor() {
 		cutoff := time.Now().Add(-15 * time.Second)
 		stopIDs := []string{}
 		s.videoDemandM.Lock()
-		for id, sessions := range s.videoDemand {
+		for id, sessions := range s.videoDemandSessions {
 			for sid, seen := range sessions {
 				if seen.Before(cutoff) {
 					delete(sessions, sid)
 				}
 			}
 			if len(sessions) == 0 {
-				delete(s.videoDemand, id)
+				delete(s.videoDemandSessions, id)
 				stopIDs = append(stopIDs, id)
 			}
 		}
@@ -335,7 +335,7 @@ func (s *server) videoDemandJanitor() {
 
 		for _, id := range stopIDs {
 			s.videoDemandM.Lock()
-			_, activeAgain := s.videoDemand[id]
+			_, activeAgain := s.videoDemandSessions[id]
 			s.videoDemandM.Unlock()
 			if activeAgain {
 				continue
