@@ -317,7 +317,7 @@ func (s *server) videoDemandJanitor() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		cutoff := time.Now().Add(-15 * time.Second)
+		cutoff := time.Now().Add(-45 * time.Second)
 		stopIDs := []string{}
 		s.videoDemandM.Lock()
 		for id, sessions := range s.videoDemandSessions {
