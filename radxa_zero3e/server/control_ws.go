@@ -96,17 +96,13 @@ func (s *server) controlWebSocket(w http.ResponseWriter, r *http.Request, id str
 	}()
 
 	conn.SetReadLimit(4096)
-	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	conn.SetPingHandler(func(appData string) error {
 		ch.lastMS.Store(time.Now().UnixMilli())
-		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-			return err
-		}
 		return ch.pong(appData)
 	})
 	conn.SetPongHandler(func(string) error {
 		ch.lastMS.Store(time.Now().UnixMilli())
-		return conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		return nil
 	})
 
 	for {
