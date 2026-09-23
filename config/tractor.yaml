@@ -42,8 +42,8 @@ hall_odometry_node:
 
 mpu6050_node:
   ros__parameters:
-    # Поставить false после подключения и проверки I2C.
-    dry_run: true
+    # MPU6050 подключён к Raspberry Pi по I2C.
+    dry_run: false
     i2c_bus: 1
     i2c_address: 104            # 0x68
     frame_id: imu_link
