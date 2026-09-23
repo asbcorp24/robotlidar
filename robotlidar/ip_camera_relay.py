@@ -300,16 +300,64 @@ class IpCameraRelayManager:
             self._wake.set()
         return True, 'video demand enabled' if enabled else 'video demand disabled'
 
+    def _camera_rtsp_url(self, cfg: dict[str, Any], camera: int) -> str:
+        if int(camera) == 2:
+            return str(cfg.get('camera2_url') or '').strip()
+        return str(cfg.get('camera1_url') or cfg.get('rtsp_url') or '').strip()
+
+    def _rtsp_available(self, cfg: dict[str, Any], url: str, timeout_sec: float = 4.0) -> bool:
+        if not url:
+            return False
+        command = [
+            str(cfg.get('ffmpeg') or 'ffmpeg'),
+            '-hide_banner', '-loglevel', 'error',
+            '-rtsp_transport', 'tcp',
+            '-rw_timeout', str(int(timeout_sec * 1_000_000)),
+            '-i', url,
+            '-map', '0:v:0',
+            '-t', '0.15',
+            '-c:v', 'copy',
+            '-f', 'null', '-',
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=timeout_sec + 1.5,
+                text=True,
+            )
+            if result.returncode == 0:
+                return True
+            detail = (result.stderr or '').strip().replace('\n', ' ')
+            if len(detail) > 240:
+                detail = detail[-240:]
+            self._log('CAMERA: probe failed: ' + (detail or 'ffmpeg returned an error'))
+        except subprocess.TimeoutExpired:
+            self._log(f'CAMERA: probe timeout after {timeout_sec:.1f}s')
+        except Exception as exc:
+            self._log(f'CAMERA: probe error: {exc}')
+        return False
+
     def select_camera(self, camera: int) -> tuple[bool, str]:
         camera = 2 if int(camera) == 2 else 1
         with self._lock:
             cfg = dict(self._config)
-            if camera == 2 and not str(cfg.get('camera2_url') or '').strip():
-                return False, 'Camera 2 RTSP URL is empty'
-            if int(cfg.get('active_camera') or 1) == camera:
-                return True, f'Camera {camera} already active'
+            current = int(cfg.get('active_camera') or 1)
+        url = self._camera_rtsp_url(cfg, camera)
+        if camera == 2 and not url:
+            return False, 'Camera 2 RTSP URL is empty'
+        if current == camera:
+            return True, f'Camera {camera} already active'
+
+        self._log(f'CAMERA: probe before switch -> Camera {camera}')
+        if not self._rtsp_available(cfg, url):
+            self._log(f'CAMERA: Camera {camera} unavailable; keeping Camera {current}')
+            return False, f'Camera {camera} is unavailable; Camera {current} remains active'
+
+        with self._lock:
             self._config['active_camera'] = camera
-            self._registered = self._registered
         self._log(f'CAMERA: switch request -> Camera {camera}')
         self._stop_ffmpeg()
         self._wake.set()
