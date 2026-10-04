@@ -36,7 +36,7 @@ ESP32-WROOM-32 30 pin <---- USB Serial 115200 ----> Raspberry Pi 4
       +-- GPIO32 <--- NC аварийная петля
 ```
 
-`GPIO21` и `GPIO22` свободны. ESP32 не управляет `Lock/Ignition` силовых контроллеров.
+`GPIO21` и `GPIO22` используются как стандартная I²C-шина ESP32 (SDA/SCL). GPIO4 и GPIO23 используются для BTS7960 актуатора. ESP32 не управляет `Lock/Ignition` силовых контроллеров.
 
 ### 1.1. Что подключается к 40-pin Raspberry Pi
 
@@ -92,10 +92,10 @@ Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
 | 34 | IN ONLY | Hall/Speed LEFT |
 | 35 | IN ONLY | Hall/Speed RIGHT |
 | 2 | OUT | Светодиод состояния |
-| 21 | FREE | Свободен |
-| 22 | FREE | Свободен |
-| 4 | FREE | Свободен |
-| 23 | FREE | Свободен |
+| 21 | I/O | I²C SDA: OLED / INA228 / MCP4725 |
+| 22 | I/O | I²C SCL: OLED / INA228 / MCP4725 |
+| 4 | OUT/PWM | BTS7960 актуатора RPWM |
+| 23 | OUT/PWM | BTS7960 актуатора LPWM |
 | 36 | IN ONLY | Свободный вход |
 | 39 | IN ONLY | Свободный вход |
 
