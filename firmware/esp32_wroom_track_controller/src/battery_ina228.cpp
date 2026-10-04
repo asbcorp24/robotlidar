@@ -4,7 +4,7 @@
 #include <Adafruit_INA228.h>
 
 // Shared hardware I2C bus is created once in main.cpp:
-//   OledWire.begin(GPIO4, GPIO23)
+//   OledWire.begin(GPIO21, GPIO22)
 // This module must NOT call begin() again.
 //
 // Devices on the same bus:
@@ -58,7 +58,7 @@ void initializeBatteryMonitor() {
     if (batteryInitialized) return;
     batteryInitialized = true;
 
-    // main.cpp has already called OledWire.begin(4,23).
+    // main.cpp has already called OledWire.begin(21,22).
     // Only normalize the clock; do not recreate/rebind the bus.
     OledWire.setClock(I2C_HZ);
     delay(20);
