@@ -53,7 +53,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('start_lidar', default_value='true'),
         DeclareLaunchArgument('start_imu', default_value='true'),
         DeclareLaunchArgument('start_gps', default_value='true'),
-        DeclareLaunchArgument('use_esp32_drive', default_value='false'),
+        DeclareLaunchArgument(
+            'use_esp32_drive',
+            default_value='true',
+            description='true: use ESP32 USB drive backend; false: use legacy Raspberry Pi GPIO backend',
+        ),
         DeclareLaunchArgument(
             'external_esp32_drive',
             default_value='false',
