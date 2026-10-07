@@ -111,6 +111,7 @@ class Esp32TrackBridgeNode(Node):
         self.create_timer(1.0 / send_rate_hz, self._send_tick)
         self.create_timer(1.0, self._publish_status)
         self.create_timer(5.0, self._send_host_ip)
+        self.create_timer(2.0, self._reconnect_tick)
 
         self._open_serial()
         if self.auto_arm:
@@ -220,6 +221,16 @@ class Esp32TrackBridgeNode(Node):
                 connection.close()
             except Exception:
                 pass
+
+    def _reconnect_tick(self) -> None:
+        if self.dry_run:
+            return
+        with self._lock:
+            connected = self._connected
+            connection = self._serial
+        if connected and connection is not None:
+            return
+        self._open_serial()
 
     def _reader_loop(self) -> None:
         while not self._reader_stop.is_set():
