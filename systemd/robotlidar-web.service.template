@@ -1,5 +1,5 @@
 [Unit]
-Description=RobotLidar offline web control panel with ESP32 bridge
+Description=RobotLidar complete stack: Web, ESP32, MPU6050, LiDAR, GPS and EKF
 After=network-online.target
 Wants=network-online.target
 
