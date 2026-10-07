@@ -34,6 +34,8 @@ constexpr uint16_t THROTTLE_DISARMED_MV=0; constexpr bool HOLD_BRAKE_AT_ZERO=tru
 constexpr uint8_t MCP4725_LEFT_ADDRESS=0x60,MCP4725_RIGHT_ADDRESS=0x61;
 constexpr uint32_t I2C_CLOCK_HZ=100000; constexpr uint8_t ACTUATOR_PWM=255; constexpr uint32_t ACTUATOR_PWM_HZ=20000; constexpr uint8_t ACTUATOR_PWM_BITS=8,ACTUATOR_RPWM_CHANNEL=6,ACTUATOR_LPWM_CHANNEL=7;
 constexpr uint8_t OLED_ADDRESS_PRIMARY=0x3C,OLED_ADDRESS_SECONDARY=0x3D,OLED_WIDTH=128,OLED_HEIGHT=64; constexpr uint32_t OLED_I2C_HZ=400000;
+constexpr uint8_t MCP_RELAY_LEFT_PIN=0,MCP_RELAY_RIGHT_PIN=1,MCP_RELAY_BRUSH_PIN=2;
+constexpr bool MCP_RELAY_ACTIVE_HIGH=true;
 }
 
 // Persistent settings API from settings_controller.cpp
@@ -62,6 +64,9 @@ bool mcp23017PinMode(uint8_t pin, bool output, bool pullup=false);
 bool mcp23017DigitalWrite(uint8_t pin, bool high);
 bool mcp23017DigitalRead(uint8_t pin, bool &high);
 bool mcp23017ReadAll(uint16_t &value);
+
+void initializeMcpRelayOutputs();
+void updateMcpRelayOutputs();
 
 // INA228 battery monitor API
 void initializeBatteryMonitor();
@@ -186,6 +191,31 @@ void updateOled(){
 }
 #endif
 
+void initializeMcpRelayOutputs(){
+  if(!isMcp23017Ready())return;
+  mcp23017PinMode(Fixed::MCP_RELAY_LEFT_PIN,true,false);
+  mcp23017PinMode(Fixed::MCP_RELAY_RIGHT_PIN,true,false);
+  mcp23017PinMode(Fixed::MCP_RELAY_BRUSH_PIN,true,false);
+  const bool off=Fixed::MCP_RELAY_ACTIVE_HIGH?false:true;
+  mcp23017DigitalWrite(Fixed::MCP_RELAY_LEFT_PIN,off);
+  mcp23017DigitalWrite(Fixed::MCP_RELAY_RIGHT_PIN,off);
+  mcp23017DigitalWrite(Fixed::MCP_RELAY_BRUSH_PIN,off);
+  Serial.println("EVT,MCP23017,RELAYS_READY,GPA0=LEFT,GPA1=RIGHT,GPA2=BRUSH");
+}
+
+void updateMcpRelayOutputs(){
+  if(!isMcp23017Ready())return;
+  const bool leftActive=leftTrack.actual!=0;
+  const bool rightActive=rightTrack.actual!=0;
+  const bool brushActive=getBrushThrottleMv()>0 && !getBrushBrakeActive();
+  const bool leftLevel=Fixed::MCP_RELAY_ACTIVE_HIGH?leftActive:!leftActive;
+  const bool rightLevel=Fixed::MCP_RELAY_ACTIVE_HIGH?rightActive:!rightActive;
+  const bool brushLevel=Fixed::MCP_RELAY_ACTIVE_HIGH?brushActive:!brushActive;
+  mcp23017DigitalWrite(Fixed::MCP_RELAY_LEFT_PIN,leftLevel);
+  mcp23017DigitalWrite(Fixed::MCP_RELAY_RIGHT_PIN,rightLevel);
+  mcp23017DigitalWrite(Fixed::MCP_RELAY_BRUSH_PIN,brushLevel);
+}
+
 #if ROBOTLIDAR_ENABLE_OLED
 void showFirmwareSplash(){
   if(!oledReady)return;
@@ -212,11 +242,12 @@ initializeOled();
 #endif
 initializeBatteryMonitor();
 initializeMcp23017();
+initializeMcpRelayOutputs();
 #if ROBOTLIDAR_ENABLE_OLED
 showFirmwareSplash();
 #endif
 initializeUltrasonicController();initializeBrushController();attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1),onRc1,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2),onRc2,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR),onRc3,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE),onRc5,CHANGE);lastControlMs=lastTelemetryMs=lastTelemetryPulseMs=lastOledMs=millis();String boot=String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,")+Fixed::FIRMWARE_VERSION+","+hardwareProfileName()+",40PIN,RUNTIME_CONFIG_V2,RC_SAFE_ROS,ROS_AUX_ACTUATOR_BRUSH,OLED_USONIC_BATTERY";boot+=espSettingHallEnabled()?",HALL_ON":",HALL_OFF";boot+=isMcp23017Ready()?",MCP23017_ON":",MCP23017_OFF";sendFrame(boot);}
-void loop(){readSerialFrames();uint32_t now=millis();updateUltrasonicController();updateBatteryMonitor();if(!estopOkay()&&armed)disarmSystem("ESTOP");if(!throttleBackendReady&&armed)disarmSystem("THROTTLE_DAC");if(now-lastControlMs>=Fixed::CONTROL_PERIOD_MS){lastControlMs=now;updateCommandSource();updateActuator(lastRcSnapshot,now);updateBrushController();if(controlMode==ControlMode::RosAutonomous&&armed&&now-lastDriveFrameMs>Fixed::COMMAND_WATCHDOG_MS){watchdogTripped=true;disarmSystem("WATCHDOG");}if(controlMode==ControlMode::RosAutonomous&&(lastAuxFrameMs==0||now-lastAuxFrameMs>espSettingRosAuxTimeoutMs())){rosActuatorCommand=0;setBrushRosCommand(0);}updateTrack(leftTrack,now);updateTrack(rightTrack,now);}if(now-lastTelemetryMs>=Fixed::TELEMETRY_PERIOD_MS){lastTelemetryMs=now;sendTelemetry(now);}
+void loop(){readSerialFrames();uint32_t now=millis();updateUltrasonicController();updateBatteryMonitor();if(!estopOkay()&&armed)disarmSystem("ESTOP");if(!throttleBackendReady&&armed)disarmSystem("THROTTLE_DAC");if(now-lastControlMs>=Fixed::CONTROL_PERIOD_MS){lastControlMs=now;updateCommandSource();updateActuator(lastRcSnapshot,now);updateBrushController();updateMcpRelayOutputs();if(controlMode==ControlMode::RosAutonomous&&armed&&now-lastDriveFrameMs>Fixed::COMMAND_WATCHDOG_MS){watchdogTripped=true;disarmSystem("WATCHDOG");}if(controlMode==ControlMode::RosAutonomous&&(lastAuxFrameMs==0||now-lastAuxFrameMs>espSettingRosAuxTimeoutMs())){rosActuatorCommand=0;setBrushRosCommand(0);}updateTrack(leftTrack,now);updateTrack(rightTrack,now);}if(now-lastTelemetryMs>=Fixed::TELEMETRY_PERIOD_MS){lastTelemetryMs=now;sendTelemetry(now);}
 #if ROBOTLIDAR_ENABLE_OLED
 if(now-lastOledMs>=Fixed::OLED_PERIOD_MS){lastOledMs=now;updateOled();}
 #endif
