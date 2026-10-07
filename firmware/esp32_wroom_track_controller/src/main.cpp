@@ -162,9 +162,18 @@ void updateOled(){
   oled.setCursor(0,48);oled.print(F("H:"));if(espSettingHallEnabled()){oled.print((long long)leftTicks);oled.print('/');oled.print((long long)rightTicks);}else oled.print(F("OFF"));oled.setCursor(88,48);oled.print(F("A:"));oled.print(actuatorName());
   oled.setCursor(0,56);
   const bool piIpFresh=lastRaspberryIpMs && (millis()-lastRaspberryIpMs<=15000UL) && strcmp(raspberryIp,"0.0.0.0")!=0;
-  const bool showPiIp=piIpFresh && ((millis()/2000UL)%2UL);
-  if(showPiIp){oled.print(F("IP:"));oled.print(raspberryIp);}
-  else{oled.print(F("B:"));oled.print(getBrushRosCommand());oled.print(F(" U:"));if(ultrasonicIsValid()){uint16_t mm=ultrasonicDistanceMillimeters();if(mm<1000){oled.print(mm);oled.print(F("mm"));}else{oled.print(mm/10);oled.print(F("cm"));}}else oled.print(F("---"));oled.print(' ');if(batteryMonitorOnline()){oled.print(batteryVoltageVolts(),1);oled.print('V');}else oled.print(F("--.-V"));}
+  const bool showPiStatus=((millis()/2000UL)%2UL);
+  if(showPiStatus){
+    if(piIpFresh){oled.print(F("IP:"));oled.print(raspberryIp);}
+    else{oled.print(F("PI: OFFLINE"));}
+  }else{
+    oled.print(F("B:"));oled.print(getBrushRosCommand());oled.print(F(" U:"));
+    if(ultrasonicIsValid()){uint16_t mm=ultrasonicDistanceMillimeters();if(mm<1000){oled.print(mm);oled.print(F("mm"));}else{oled.print(mm/10);oled.print(F("cm"));}}
+    else oled.print(F("---"));
+    oled.print(' ');
+    if(batteryMonitorOnline()){oled.print(batteryVoltageVolts(),1);oled.print('V');}
+    else oled.print(F("--.-V"));
+  }
   oled.display();
 }
 #endif
