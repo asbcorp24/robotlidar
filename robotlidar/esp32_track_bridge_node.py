@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import socket
+import subprocess
 import threading
 import time
 from typing import Optional
@@ -448,22 +449,51 @@ class Esp32TrackBridgeNode(Node):
 
     @staticmethod
     def _local_ipv4() -> str:
-        """Return the preferred non-loopback IPv4 address, or 0.0.0.0."""
-        sock = None
+        """Return a useful non-loopback IPv4 address, even on an offline LAN."""
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.connect(('8.8.8.8', 80))
-            address = sock.getsockname()[0]
-            if address and not address.startswith('127.'):
-                return address
-        except OSError:
-            pass
-        finally:
-            if sock is not None:
+            output = subprocess.check_output(
+                ['hostname', '-I'],
+                text=True,
+                timeout=1.0,
+            )
+            addresses = []
+            for token in output.split():
                 try:
-                    sock.close()
+                    socket.inet_aton(token)
                 except OSError:
-                    pass
+                    continue
+                if token.startswith('127.'):
+                    continue
+                addresses.append(token)
+
+            # Prefer ordinary private LAN addresses over VPN/container ranges.
+            for prefix in ('192.168.', '10.', '172.'):
+                for address in addresses:
+                    if address.startswith(prefix):
+                        return address
+            if addresses:
+                return addresses[0]
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        # UDP connect does not send application data; it only asks the kernel
+        # which local interface would be used for this destination.
+        for target in ('192.168.1.1', '10.0.0.1', '8.8.8.8'):
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.connect((target, 9))
+                address = sock.getsockname()[0]
+                if address and not address.startswith('127.'):
+                    return address
+            except OSError:
+                pass
+            finally:
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
 
         try:
             for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
@@ -476,7 +506,13 @@ class Esp32TrackBridgeNode(Node):
 
     def _send_host_ip(self) -> None:
         address = self._local_ipv4()
-        self._write_body(f'IP,{self._next_sequence()},{address}')
+        sent = self._write_body(f'IP,{self._next_sequence()},{address}')
+        with self._lock:
+            previous = self._last_telemetry.get('raspberry_ip')
+            self._last_telemetry['raspberry_ip'] = address
+            self._last_telemetry['raspberry_ip_sent'] = bool(sent)
+        if previous != address:
+            self.get_logger().info(f'Raspberry Pi IP for ESP32 display: {address}')
 
     def _send_arm(self, value: bool) -> bool:
         return self._write_body(f'ARM,{self._next_sequence()},{1 if value else 0}')
