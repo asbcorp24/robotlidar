@@ -366,7 +366,10 @@ class Esp32TrackBridgeNode(Node):
         with self._lock:
             preserved = {
                 key: value for key, value in self._last_telemetry.items()
-                if key.startswith('aux_motor_') or key.startswith('ultrasonic_')
+                if key.startswith('aux_motor_')
+                or key.startswith('ultrasonic_')
+                or key.startswith('raspberry_ip')
+                or key in ('last_ack', 'last_ack_time')
             }
             self._last_telemetry = telemetry
             self._last_telemetry.update(preserved)
