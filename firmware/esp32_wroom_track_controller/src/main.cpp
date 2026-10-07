@@ -27,6 +27,7 @@ constexpr uint8_t ESTOP_OK=32,RC_CHANNEL_1=27,RC_CHANNEL_2=33,RC_ACTUATOR=14,RC_
 constexpr uint8_t OLED_SDA=21,OLED_SCL=22;
 }
 namespace Fixed {
+constexpr const char* FIRMWARE_VERSION="1.8.0";
 constexpr uint32_t SERIAL_BAUD=115200,CONTROL_PERIOD_MS=20,TELEMETRY_PERIOD_MS=100,OLED_PERIOD_MS=150,COMMAND_WATCHDOG_MS=450;
 constexpr uint16_t RC_ISR_MIN_US=750,RC_ISR_MAX_US=2250,INTERNAL_DAC_FULL_SCALE_MV=3300,MCP4725_FULL_SCALE_MV=5000;
 constexpr uint16_t THROTTLE_DISARMED_MV=0; constexpr bool HOLD_BRAKE_AT_ZERO=true,REVERSE_SUPPORTED=true,BRAKE_ACTIVE_HIGH=true;
@@ -168,11 +169,35 @@ void updateOled(){
 }
 #endif
 
+#if ROBOTLIDAR_ENABLE_OLED
+void showFirmwareSplash(){
+  if(!oledReady)return;
+  oled.clearDisplay();
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(18,10);
+  oled.print(F("RobotLidar"));
+  oled.setTextSize(2);
+  oled.setCursor(18,28);
+  oled.print(F("v"));
+  oled.print(Fixed::FIRMWARE_VERSION);
+  oled.setTextSize(1);
+  oled.setCursor(13,52);
+  oled.print(F("ESP32 controller"));
+  oled.display();
+  delay(3000);
+}
+#endif
+
 void setup(){Serial.begin(Fixed::SERIAL_BAUD);delay(200);initializeEsp32SettingsController();pinMode(Pins::LEFT_REVERSE,OUTPUT);pinMode(Pins::RIGHT_REVERSE,OUTPUT);pinMode(Pins::LEFT_BRAKE,OUTPUT);pinMode(Pins::RIGHT_BRAKE,OUTPUT);pinMode(Pins::ESTOP_OK,INPUT_PULLUP);pinMode(Pins::RC_CHANNEL_1,INPUT_PULLDOWN);pinMode(Pins::RC_CHANNEL_2,INPUT_PULLDOWN);pinMode(Pins::RC_ACTUATOR,INPUT_PULLDOWN);pinMode(Pins::RC_MODE,INPUT_PULLDOWN);digitalWrite(Pins::LEFT_BRAKE,HIGH);digitalWrite(Pins::RIGHT_BRAKE,HIGH);setReverse(leftTrack,false);setReverse(rightTrack,false);initializeActuator();stopActuatorOutput();initializeThrottleBackend();applyTrackSafe(leftTrack);applyTrackSafe(rightTrack);OledWire.begin(Pins::OLED_SDA,Pins::OLED_SCL);OledWire.setClock(Fixed::OLED_I2C_HZ);
 #if ROBOTLIDAR_ENABLE_OLED
 initializeOled();
 #endif
-initializeBatteryMonitor();initializeUltrasonicController();initializeBrushController();attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1),onRc1,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2),onRc2,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR),onRc3,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE),onRc5,CHANGE);lastControlMs=lastTelemetryMs=lastTelemetryPulseMs=lastOledMs=millis();String boot=String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,17,")+hardwareProfileName()+",40PIN,RUNTIME_CONFIG_V2,RC_SAFE_ROS,ROS_AUX_ACTUATOR_BRUSH,OLED_USONIC_BATTERY";boot+=espSettingHallEnabled()?",HALL_ON":",HALL_OFF";sendFrame(boot);}
+initializeBatteryMonitor();
+#if ROBOTLIDAR_ENABLE_OLED
+showFirmwareSplash();
+#endif
+initializeUltrasonicController();initializeBrushController();attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_1),onRc1,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_CHANNEL_2),onRc2,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_ACTUATOR),onRc3,CHANGE);attachInterrupt(digitalPinToInterrupt(Pins::RC_MODE),onRc5,CHANGE);lastControlMs=lastTelemetryMs=lastTelemetryPulseMs=lastOledMs=millis();String boot=String("BOOT,ESP32_WROOM_TRACK_CONTROLLER,")+Fixed::FIRMWARE_VERSION+","+hardwareProfileName()+",40PIN,RUNTIME_CONFIG_V2,RC_SAFE_ROS,ROS_AUX_ACTUATOR_BRUSH,OLED_USONIC_BATTERY";boot+=espSettingHallEnabled()?",HALL_ON":",HALL_OFF";sendFrame(boot);}
 void loop(){readSerialFrames();uint32_t now=millis();updateUltrasonicController();updateBatteryMonitor();if(!estopOkay()&&armed)disarmSystem("ESTOP");if(!throttleBackendReady&&armed)disarmSystem("THROTTLE_DAC");if(now-lastControlMs>=Fixed::CONTROL_PERIOD_MS){lastControlMs=now;updateCommandSource();updateActuator(lastRcSnapshot,now);updateBrushController();if(controlMode==ControlMode::RosAutonomous&&armed&&now-lastDriveFrameMs>Fixed::COMMAND_WATCHDOG_MS){watchdogTripped=true;disarmSystem("WATCHDOG");}if(controlMode==ControlMode::RosAutonomous&&(lastAuxFrameMs==0||now-lastAuxFrameMs>espSettingRosAuxTimeoutMs())){rosActuatorCommand=0;setBrushRosCommand(0);}updateTrack(leftTrack,now);updateTrack(rightTrack,now);}if(now-lastTelemetryMs>=Fixed::TELEMETRY_PERIOD_MS){lastTelemetryMs=now;sendTelemetry(now);}
 #if ROBOTLIDAR_ENABLE_OLED
 if(now-lastOledMs>=Fixed::OLED_PERIOD_MS){lastOledMs=now;updateOled();}
