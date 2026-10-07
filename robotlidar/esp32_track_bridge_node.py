@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import socket
 import threading
 import time
 from typing import Optional
@@ -107,6 +108,7 @@ class Esp32TrackBridgeNode(Node):
         self.create_service(Trigger, '/drive/reconnect', self._reconnect_service)
         self.create_timer(1.0 / send_rate_hz, self._send_tick)
         self.create_timer(1.0, self._publish_status)
+        self.create_timer(5.0, self._send_host_ip)
 
         self._open_serial()
         if self.auto_arm:
@@ -443,6 +445,38 @@ class Esp32TrackBridgeNode(Node):
             left = right = actuator = brush = aux_motor = 0
         self._write_body(f'DRV,{self._next_sequence()},{left},{right}')
         self._write_body(f'AUX,{self._aux_motor_sequence(aux_motor)},{actuator},{brush}')
+
+    @staticmethod
+    def _local_ipv4() -> str:
+        """Return the preferred non-loopback IPv4 address, or 0.0.0.0."""
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect(('8.8.8.8', 80))
+            address = sock.getsockname()[0]
+            if address and not address.startswith('127.'):
+                return address
+        except OSError:
+            pass
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                address = info[4][0]
+                if address and not address.startswith('127.'):
+                    return address
+        except OSError:
+            pass
+        return '0.0.0.0'
+
+    def _send_host_ip(self) -> None:
+        address = self._local_ipv4()
+        self._write_body(f'IP,{self._next_sequence()},{address}')
 
     def _send_arm(self, value: bool) -> bool:
         return self._write_body(f'ARM,{self._next_sequence()},{1 if value else 0}')
