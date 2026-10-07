@@ -88,6 +88,7 @@ class Esp32TrackBridgeNode(Node):
         self._armed_requested = False
         self._last_telemetry: dict = {}
         self._connected = False
+        self._last_ip_sequence: Optional[int] = None
 
         self.status_publisher = self.create_publisher(String, '/drive/esp32_status', 10)
         self.tick_publisher = self.create_publisher(Int64MultiArray, '/drive/hall_ticks', 20)
@@ -264,6 +265,13 @@ class Esp32TrackBridgeNode(Node):
             with self._lock:
                 self._last_telemetry['last_ack'] = fields[1:]
                 self._last_telemetry['last_ack_time'] = time.time()
+                try:
+                    ack_sequence = int(fields[1])
+                except (ValueError, IndexError):
+                    ack_sequence = -1
+                if self._last_ip_sequence is not None and ack_sequence == self._last_ip_sequence:
+                    self._last_telemetry['ip_ack'] = fields[1:]
+                    self._last_telemetry['ip_ack_time'] = time.time()
         elif fields[0] == 'BOOT':
             self.get_logger().info(f'ESP32 boot: {body}')
 
@@ -369,7 +377,7 @@ class Esp32TrackBridgeNode(Node):
                 if key.startswith('aux_motor_')
                 or key.startswith('ultrasonic_')
                 or key.startswith('raspberry_ip')
-                or key in ('last_ack', 'last_ack_time')
+                or key in ('last_ack', 'last_ack_time', 'ip_ack', 'ip_ack_time')
             }
             self._last_telemetry = telemetry
             self._last_telemetry.update(preserved)
@@ -509,11 +517,15 @@ class Esp32TrackBridgeNode(Node):
 
     def _send_host_ip(self) -> None:
         address = self._local_ipv4()
-        sent = self._write_body(f'IP,{self._next_sequence()},{address}')
+        sequence = self._next_sequence()
+        with self._lock:
+            self._last_ip_sequence = sequence
+        sent = self._write_body(f'IP,{sequence},{address}')
         with self._lock:
             previous = self._last_telemetry.get('raspberry_ip')
             self._last_telemetry['raspberry_ip'] = address
             self._last_telemetry['raspberry_ip_sent'] = bool(sent)
+            self._last_telemetry['raspberry_ip_sequence'] = sequence
         if previous != address:
             self.get_logger().info(f'Raspberry Pi IP for ESP32 display: {address}')
 
