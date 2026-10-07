@@ -16,6 +16,9 @@ Environment=ROBOTLIDAR_DATA_DIR=@HOME@/robotlidar_data
 Environment=ROBOTLIDAR_SERIAL_PORT=@SERIAL_PORT@
 Environment=ROBOTLIDAR_ESP32_PORT=/dev/esp32drive
 Environment=ROBOTLIDAR_GPS_PORT=@GPS_PORT@
+ExecStartPre=/bin/bash -lc 'for i in $(seq 1 60); do [ -e /dev/esp32drive ] && break; sleep 1; done; [ -e /dev/esp32drive ]'
+ExecStartPre=/bin/bash -lc 'for i in $(seq 1 60); do [ -e @SERIAL_PORT@ ] && break; sleep 1; done; [ -e @SERIAL_PORT@ ]'
+ExecStartPre=/bin/sleep 2
 ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source @WORKSPACE@/install/setup.bash && exec ros2 launch robotlidar web_stack.launch.py'
 Restart=on-failure
 RestartSec=3
