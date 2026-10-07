@@ -428,3 +428,55 @@ BOOT,ESP32_WROOM_TRACK_CONTROLLER,4,TLP240A_GPIO21_22_FREE*HH
 | ESP32 GPIO32 | digital IN | NC аварийная петля |
 | ESP32 GPIO34 | Hall IN | скорость LEFT |
 | ESP32 GPIO35 | Hall IN | скорость RIGHT |
+
+
+## MCP23017 — расширитель GPIO
+
+В прошивке v1.9.0 добавлена поддержка I2C-расширителя **MCP23017**.
+
+Подключение к общей I2C-шине ESP32:
+
+| MCP23017 | ESP32 |
+|---|---|
+| VCC | 3.3V |
+| GND | GND |
+| SDA | GPIO21 |
+| SCL | GPIO22 |
+| A0 | GND |
+| A1 | GND |
+| A2 | GND |
+
+При A0=A1=A2=GND используется адрес:
+
+```text
+0x20
+```
+
+Новые линии:
+
+```text
+GPA0..GPA7 -> GPIO expander pins 0..7
+GPB0..GPB7 -> GPIO expander pins 8..15
+```
+
+Безопасное состояние после загрузки:
+
+```text
+все 16 линий = INPUT
+внутренние pull-up = OFF
+output latch = LOW
+```
+
+Если MCP23017 найден:
+
+```text
+EVT,MCP23017,OK,0x20,GPIOA0-A7,GPIOB0-B7
+```
+
+Если модуль не найден:
+
+```text
+ERR,MCP23017_NOT_FOUND,0x20
+```
+
+MCP23017 работает на той же I2C-шине, что OLED / INA228 / MCP4725, поэтому отдельные GPIO ESP32 для него не требуются.
