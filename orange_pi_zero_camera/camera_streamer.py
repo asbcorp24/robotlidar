@@ -88,6 +88,7 @@ class CameraStreamer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.proc: Optional[subprocess.Popen] = None
+        self.proc_started_monotonic = 0.0
         self.stop_event = threading.Event()
         self.start_monotonic = time.monotonic()
         self.srt_port = 0
@@ -217,6 +218,7 @@ class CameraStreamer:
         cmd = self.ffmpeg_command()
         self.log("FFMPEG START: " + " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
+        self.proc_started_monotonic = time.monotonic()
         self.restart_count += 1
 
     def stop_ffmpeg(self) -> None:
@@ -229,6 +231,7 @@ class CameraStreamer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self.proc = None
+        self.proc_started_monotonic = 0.0
 
     def discover_onvif_if_needed(self) -> None:
         if not self.cfg.ptz_enabled:
@@ -442,6 +445,8 @@ class CameraStreamer:
         backup = self.other_camera(self.active_camera)
         if self.switch_camera_runtime(backup, "FAILOVER", probe=True):
             self.failover_active = self.active_camera != self.primary_camera
+            # The caller restarts FFmpeg immediately after the failed process exits.
+            self.restart_requested.clear()
             return True
 
         # Keep retrying the current camera, but do not hammer the backup on every
@@ -717,8 +722,11 @@ class CameraStreamer:
                         self.start_ffmpeg()
                 if self.proc and self.proc.poll() is not None:
                     code = self.proc.returncode
-                    self.log(f"FFMPEG EXIT {code}; restart after {self.cfg.reconnect_delay_sec}s")
+                    runtime_sec = time.monotonic() - self.proc_started_monotonic if self.proc_started_monotonic else 0.0
+                    self.log(f"FFMPEG EXIT {code} after {runtime_sec:.1f}s; restart after {self.cfg.reconnect_delay_sec}s")
                     self.stop_ffmpeg()
+                    if runtime_sec >= 15.0:
+                        self.failover_failures = 0
                     switched = self.handle_stream_failure_failover()
                     self.stop_event.wait(0.15 if switched else self.cfg.reconnect_delay_sec)
                     if not self.stop_event.is_set() and self.cfg.stream_enabled and self.stream_demanded:
