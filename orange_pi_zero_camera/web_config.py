@@ -23,6 +23,8 @@ CONFIG_PATH = Path(os.environ.get("ORANGE_PI_CAMERA_CONFIG", "/etc/robotlidar/or
 LISTEN_HOST = os.environ.get("ORANGE_PI_WEB_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("ORANGE_PI_WEB_PORT", "8088"))
 STREAM_SERVICE = "orange-pi-zero-camera.service"
+SETUP_AP_CONNECTION = "RobotLiDAR-Setup"
+WIFI_CONFIG_MARKER = Path("/run/robotlidar-wifi-configuring")
 
 RTSP_PORTS = (554, 8554, 10554)
 ONVIF_PORTS = (80, 8000, 8080, 8899)
@@ -300,6 +302,7 @@ def wifi_state() -> dict[str, Any]:
         "address": "",
         "signal": 0,
         "connection": "",
+        "setup_ap": False,
         "ethernet_metric": 100,
         "wifi_metric": 600,
     }
@@ -312,6 +315,7 @@ def wifi_state() -> dict[str, Any]:
         if conn and conn not in ("--", "(null)"):
             result["connection"] = conn
             result["connected"] = True
+            result["setup_ap"] = conn == SETUP_AP_CONNECTION
 
     code, out = run_cmd(["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL", "device", "wifi", "list", "ifname", iface], 8)
     if code == 0:
@@ -410,7 +414,7 @@ def apply_route_metrics(ethernet_metric: int = 100, wifi_metric: int = 600) -> N
             run_cmd(["nmcli", "connection", "modify", conn, "ipv4.route-metric", str(wifi_metric)], 8)
 
 
-def wifi_connect(req: dict[str, Any]) -> tuple[bool, str]:
+def _wifi_connect_now(req: dict[str, Any]) -> tuple[bool, str]:
     if not _nmcli_available():
         return False, "NetworkManager/nmcli не установлен"
 
@@ -432,6 +436,9 @@ def wifi_connect(req: dict[str, Any]) -> tuple[bool, str]:
     except (TypeError, ValueError):
         return False, "Некорректная метрика маршрута"
 
+    # If the user opened this page through the temporary setup AP, wlan0 must
+    # leave AP mode before it can associate with the selected Wi-Fi network.
+    run_cmd(["nmcli", "connection", "down", SETUP_AP_CONNECTION], 10)
     run_cmd(["nmcli", "radio", "wifi", "on"], 5)
     run_cmd(["nmcli", "device", "set", iface, "managed", "yes"], 5)
     run_cmd(["ip", "link", "set", iface, "up"], 5)
@@ -467,6 +474,40 @@ def wifi_connect(req: dict[str, Any]) -> tuple[bool, str]:
     apply_route_metrics(ethernet_metric, wifi_metric)
     return True, "Wi-Fi подключён. Ethernet будет основным при меньшей метрике."
 
+
+def schedule_wifi_connect(req: dict[str, Any]) -> tuple[bool, str]:
+    interfaces = wifi_interfaces()
+    iface = str(req.get("interface") or "").strip()
+    if iface not in interfaces:
+        iface = interfaces[0] if interfaces else ""
+    ssid = str(req.get("ssid") or "").strip()
+    if not iface:
+        return False, "Wi-Fi интерфейс не найден"
+    if not ssid:
+        return False, "SSID не задан"
+
+    def worker() -> None:
+        try:
+            WIFI_CONFIG_MARKER.write_text(str(time.time()), encoding="ascii")
+        except Exception:
+            pass
+        try:
+            # Give the HTTP response time to reach a browser connected to the
+            # temporary AP before wlan0 is switched into client mode.
+            time.sleep(2.0)
+            ok, message = _wifi_connect_now(req)
+            print("WIFI CONFIG:", "OK" if ok else "ERROR", message, flush=True)
+        finally:
+            try:
+                WIFI_CONFIG_MARKER.unlink()
+            except Exception:
+                pass
+
+    threading.Thread(target=worker, name="wifi-config", daemon=True).start()
+    return True, (
+        "Настройки приняты. Через 2 секунды Orange Pi переключит wlan0 на сеть '{}'. "
+        "Если подключение не получится, открытая точка RobotLiDAR-Setup появится снова автоматически."
+    ).format(ssid)
 
 def wifi_disconnect(req: dict[str, Any]) -> tuple[bool, str]:
     interfaces = wifi_interfaces()
@@ -857,7 +898,7 @@ HTML = r'''<!doctype html>
 <div class="top"><div class="brand"><h1>Orange Pi Zero · Camera + PTZ</h1><div class="muted">Локальная настройка RobotLiDAR через Ethernet / Wi-Fi</div></div><div id="svc" class="status"><span class="dot"></span><span>проверка...</span></div></div>
 <div class="grid">
 <section class="card"><h2>Ethernet / IP</h2><div class="net"><strong>Текущее подключение</strong><div id="ethernet" class="muted" style="margin-top:6px">Определение адреса...</div></div><div class="row"><div><label>Интерфейс</label><select id="network_interface"></select></div><div><label>Режим IPv4</label><select id="network_mode" onchange="toggleNetworkFields()"><option value="dhcp">DHCP (автоматически)</option><option value="static">Статический IP</option></select></div></div><div id="staticNetwork"><div class="row"><div><label>IP адрес</label><input id="network_ip" placeholder="192.168.1.75"></div><div><label>Префикс</label><input id="network_prefix" type="number" min="1" max="32" value="24"></div></div><div class="row"><div><label>Шлюз</label><input id="network_gateway" placeholder="192.168.1.1"></div><div><label>DNS</label><input id="network_dns" placeholder="8.8.8.8 1.1.1.1"></div></div></div><div class="actions"><button class="primary" onclick="applyNetwork()">Применить сеть</button></div><div id="networkMsg" class="msg"></div><p class="muted">DHCP повторно запрашивает адрес при появлении роутера. При смене на статический IP текущая страница отключится — откройте панель уже по новому адресу.</p></section>
-<section class="card"><h2>Wi-Fi / резервная сеть</h2><div class="net"><strong>Состояние Wi-Fi</strong><div id="wifiState" class="muted" style="margin-top:6px">Определение...</div></div><div class="row"><div><label>Интерфейс</label><select id="wifi_interface"></select></div><div><label>Сеть Wi-Fi</label><select id="wifi_ssid"><option value="">Нажмите «Сканировать сети»</option></select></div></div><label>Пароль Wi-Fi</label><input id="wifi_password" type="password" autocomplete="new-password" placeholder="Пароль не показывается и не сохраняется в JSON"><div class="row"><div><label>Приоритет Ethernet (метрика)</label><input id="ethernet_metric" type="number" min="1" max="9999" value="100"></div><div><label>Приоритет Wi-Fi (метрика)</label><input id="wifi_metric" type="number" min="1" max="9999" value="600"></div></div><div class="actions"><button class="secondary" onclick="scanWifi()">Сканировать сети</button><button class="primary" onclick="connectWifi()">Подключить Wi-Fi</button><button class="secondary" onclick="disconnectWifi()">Отключить Wi-Fi</button></div><div id="wifiMsg" class="msg"></div><p class="muted">Чем меньше метрика, тем выше приоритет. Рекомендуется Ethernet 100, Wi-Fi 600: кабель основной, Wi-Fi резервный.</p></section>
+<section class="card"><h2>Wi-Fi / резервная сеть</h2><div class="net"><strong>Состояние Wi-Fi</strong><div id="wifiState" class="muted" style="margin-top:6px">Определение...</div></div><div class="row"><div><label>Интерфейс</label><select id="wifi_interface"></select></div><div><label>Сеть Wi-Fi</label><select id="wifi_ssid"><option value="">Нажмите «Сканировать сети»</option></select></div></div><label>SSID вручную</label><input id="wifi_ssid_manual" placeholder="Введите имя Wi-Fi сети, если список недоступен"><label>Пароль Wi-Fi</label><input id="wifi_password" type="password" autocomplete="new-password" placeholder="Пароль не показывается и не сохраняется в JSON"><div class="row"><div><label>Приоритет Ethernet (метрика)</label><input id="ethernet_metric" type="number" min="1" max="9999" value="100"></div><div><label>Приоритет Wi-Fi (метрика)</label><input id="wifi_metric" type="number" min="1" max="9999" value="600"></div></div><div class="actions"><button class="secondary" onclick="scanWifi()">Сканировать сети</button><button class="primary" onclick="connectWifi()">Подключить Wi-Fi</button><button class="secondary" onclick="disconnectWifi()">Отключить Wi-Fi</button></div><div id="wifiMsg" class="msg"></div><p class="muted">Чем меньше метрика, тем выше приоритет. Рекомендуется Ethernet 100, Wi-Fi 600: кабель основной, Wi-Fi резервный.</p></section>
 <section class="card"><h2>Сервер и устройство</h2><label>Device ID</label><input id="device_id"><label>Название</label><input id="device_name"><label>Адрес центрального сервера</label><input id="server_url"><label><input id="stream_enabled" type="checkbox" style="width:auto"> Транслировать видео на центральный сервер</label><label><input id="local_preview_enabled" type="checkbox" style="width:auto"> Разрешить локальный просмотр камеры</label><p class="muted">Обе функции независимы: можно отдельно включать SRT на сервер и локальный просмотр. ONVIF/PTZ работают независимо от них.</p><div class="row"><div><label>SRT latency, мс</label><input id="srt_latency_ms" type="number"></div><div><label>Telemetry, сек</label><input id="telemetry_period_sec" type="number" step="0.5"></div></div></section>
 <section class="card"><h2>Камеры H.264</h2><label>Источник</label><select id="input_mode"><option value="rtsp">RTSP H.264 (copy)</option><option value="v4l2_h264">USB H.264</option><option value="v4l2_encode">USB + encode</option><option value="test">Тестовая картинка</option></select><div class="row"><div><label>Имя Camera 1</label><input id="camera1_name" placeholder="Передняя"></div><div><label>Имя Camera 2</label><input id="camera2_name" placeholder="Задняя"></div></div><label>RTSP Camera 1</label><input id="camera1_url" placeholder="rtsp://192.168.1.149:554/stream1"><label>RTSP Camera 2</label><input id="camera2_url" placeholder="rtsp://192.168.1.150:554/stream1"><div class="row"><div><label>Активная камера при запуске</label><select id="active_camera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select></div><div><label>Основная камера для автовозврата</label><select id="primary_camera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select></div></div><label><input id="auto_failover_enabled" type="checkbox" style="width:auto"> Автоматически переключаться на вторую камеру при отказе</label><div class="row"><div><label>Ошибок до переключения</label><input id="failover_after_failures" type="number" min="1" max="20"></div><div><label>Проверка основной, сек</label><input id="failover_probe_interval_sec" type="number" min="3" max="300" step="1"></div></div><label><input id="return_to_primary" type="checkbox" style="width:auto"> Автоматически вернуться на основную камеру после восстановления</label><hr style="border:0;border-top:1px solid #e4e9ef;margin:16px 0"><label><input id="video_watchdog_enabled" type="checkbox" style="width:auto"> Watchdog зависшего RTSP-видео</label><div class="row"><div><label>Нет видеопрогресса, сек</label><input id="video_watchdog_timeout_sec" type="number" min="3" max="120" step="1"></div><div><label>Задержка после запуска, сек</label><input id="video_watchdog_startup_grace_sec" type="number" min="3" max="120" step="1"></div></div><p class="muted">Если RTSP-соединение формально осталось открытым, но FFmpeg перестал получать/передавать видеоданные, watchdog завершит зависший FFmpeg. После этого сработает обычный failover/backoff.</p><div id="cameraRuntime" class="net" style="margin-top:10px"><strong>Текущая камера:</strong> определение...</div><input id="input_url" type="hidden"><label>V4L2 устройство</label><input id="video_device"><div class="row"><div><label>Ширина</label><input id="width" type="number"></div><div><label>Высота</label><input id="height" type="number"></div><div><label>FPS</label><input id="fps" type="number"></div><div><label>Битрейт, kbps</label><input id="bitrate_kbps" type="number"></div></div><label>Encoder</label><input id="encoder"><p class="muted">В режиме failover после заданного числа подряд быстрых ошибок FFmpeg проверяется резервная камера. Если она доступна — поток переключается на неё. При включённом возврате основная камера периодически проверяется и после восстановления снова становится активной.</p></section>
 <section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"><div class="actions"><button class="secondary" onclick="probeOnvif()">Проверить возможности ONVIF</button></div><pre id="onvifDiag" class="logbox" style="height:220px">Диагностика ещё не запускалась.</pre></section>
@@ -903,13 +944,13 @@ async function load(){try{
  $('ethernet_metric').value=savedWifi.ethernet_metric||w.ethernet_metric||100;
  $('wifi_metric').value=savedWifi.wifi_metric||w.wifi_metric||600;
  if(savedWifi.ssid){const ss=$('wifi_ssid');if(!Array.from(ss.options).some(o=>o.value===savedWifi.ssid)){const o=document.createElement('option');o.value=savedWifi.ssid;o.textContent=savedWifi.ssid;ss.appendChild(o)}ss.value=savedWifi.ssid}
- $('wifiState').textContent=w.available?(w.connected?'Подключено: '+(w.ssid||'Wi-Fi')+(w.address?' · '+w.address:'')+(w.signal?' · '+w.signal+'%':''):'Wi-Fi доступен, но не подключён'):'Wi-Fi/nmcli недоступен';
+ $('wifiState').textContent=w.available?(w.setup_ap?'Режим настройки: открытая точка RobotLiDAR-Setup · '+(w.address||'10.42.0.1/24'):(w.connected?'Подключено: '+(w.ssid||'Wi-Fi')+(w.address?' · '+w.address:'')+(w.signal?' · '+w.signal+'%':''):'Wi-Fi доступен, но не подключён')):'Wi-Fi/nmcli недоступен';
  if(!w.available){$('wifiMsg').className='msg errtxt';$('wifiMsg').textContent='Wi-Fi интерфейс или NetworkManager не найден.'}
  const st=d.streamer||{};$('svc').innerHTML=`<span class="dot ${st.active?'ok':''}"></span><span>${cfg.stream_enabled===false?'SRT выключен · PTZ доступен':'трансляция: '+(st.state||'unknown')}</span>`
 }catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
 async function applyNetwork(){const m=$('networkMsg');m.className='msg';m.textContent='Сохранение сети...';const network={mode:$('network_mode').value,interface:$('network_interface').value,ip:$('network_ip').value.trim(),prefix:Number($('network_prefix').value||24),gateway:$('network_gateway').value.trim(),dns:$('network_dns').value.trim()};try{const d=await api('/api/network',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(network)});cfg.network=network;m.className='msg oktxt';m.textContent=(d.message||'Сеть сохранена')+(d.new_url?' Новый адрес панели: '+d.new_url:'')}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function scanWifi(){const m=$('wifiMsg'),sel=$('wifi_ssid');m.className='msg';m.textContent='Сканирование Wi-Fi...';try{const d=await api('/api/wifi-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface:$('wifi_interface').value})});sel.innerHTML='';for(const x of (d.networks||[])){const o=document.createElement('option');o.value=x.ssid;o.textContent=x.ssid+' · '+x.signal+'%'+(x.security?' · '+x.security:'')+(x.active?' · подключено':'');sel.appendChild(o)}if(!(d.networks||[]).length){const o=document.createElement('option');o.value='';o.textContent='Сети не найдены';sel.appendChild(o)}m.className='msg oktxt';m.textContent='Найдено сетей: '+(d.networks||[]).length}catch(e){m.className='msg errtxt';m.textContent=e.message}}
-async function connectWifi(){const m=$('wifiMsg');const body={interface:$('wifi_interface').value,ssid:$('wifi_ssid').value,password:$('wifi_password').value,ethernet_metric:Number($('ethernet_metric').value||100),wifi_metric:Number($('wifi_metric').value||600)};if(!body.ssid){m.className='msg errtxt';m.textContent='Выберите Wi-Fi сеть';return}m.className='msg';m.textContent='Подключение...';try{const d=await api('/api/wifi-connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('wifi_password').value='';m.className='msg oktxt';m.textContent=d.message||'Wi-Fi подключён';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
+async function connectWifi(){const m=$('wifiMsg');const manual=$('wifi_ssid_manual').value.trim();const body={interface:$('wifi_interface').value,ssid:manual||$('wifi_ssid').value,password:$('wifi_password').value,ethernet_metric:Number($('ethernet_metric').value||100),wifi_metric:Number($('wifi_metric').value||600)};if(!body.ssid){m.className='msg errtxt';m.textContent='Выберите Wi-Fi сеть';return}m.className='msg';m.textContent='Подключение...';try{const d=await api('/api/wifi-connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('wifi_password').value='';m.className='msg oktxt';m.textContent=(d.message||'Подключение запланировано')+' После переключения подключите телефон/ноутбук к выбранной сети и откройте Orange Pi по её новому IP.'}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function disconnectWifi(){const m=$('wifiMsg');try{const d=await api('/api/wifi-disconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface:$('wifi_interface').value})});m.className='msg oktxt';m.textContent=d.message||'Wi-Fi отключён';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 function collect(){const keys=['device_id','device_name','server_url','input_mode','input_url','camera1_name','camera1_url','camera2_name','camera2_url','video_device','encoder','onvif_device_url','onvif_url','onvif_username','onvif_profile_token'];const nums=['width','height','fps','bitrate_kbps','srt_latency_ms','telemetry_period_sec','active_camera','primary_camera','failover_after_failures','failover_probe_interval_sec','video_watchdog_timeout_sec','video_watchdog_startup_grace_sec'];const out={...cfg};keys.forEach(k=>out[k]=$(k).value);nums.forEach(k=>out[k]=Number($(k).value));if(!out.camera1_url)out.camera1_url=out.input_url;out.input_url=out.camera1_url;out.stream_enabled=$('stream_enabled').checked;out.local_preview_enabled=$('local_preview_enabled').checked;out.auto_failover_enabled=$('auto_failover_enabled').checked;out.return_to_primary=$('return_to_primary').checked;out.video_watchdog_enabled=$('video_watchdog_enabled').checked;out.ptz_enabled=$('ptz_enabled').checked;out.onvif_auto_discovery=$('onvif_auto_discovery').checked;const p=$('onvif_password').value;if(p)out.onvif_password=p;return out}
 async function saveConfig(restart){const m=$('saveMsg');m.className='msg';m.textContent='Сохранение...';try{const d=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),restart})});m.className='msg oktxt';m.textContent=d.message||'Сохранено';$('onvif_password').value='';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
@@ -1085,7 +1126,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/wifi-connect":
                 req = self.read_json()
-                ok, message = wifi_connect(req)
+                ok, message = schedule_wifi_connect(req)
                 if not ok:
                     self.send_json(500, {"detail": message})
                     return
