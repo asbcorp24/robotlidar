@@ -116,6 +116,8 @@ class CameraStreamer:
         self.failover_failures = 0
         self.last_failover_probe = 0.0
         self.failover_active = False
+        self.no_camera_backoff_index = 0
+        self.no_camera_backoff_delays = (2.0, 5.0, 10.0, 30.0)
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -383,6 +385,99 @@ class CameraStreamer:
         except Exception as exc:
             self.log(f"CAMERA PROBE error: {exc}")
         return False
+
+    def configured_rtsp_cameras(self) -> list[int]:
+        cameras = []
+        if self.camera_rtsp_url(1):
+            cameras.append(1)
+        if self.camera_rtsp_url(2):
+            cameras.append(2)
+        return cameras
+
+    def rtsp_host_reachable(self, url: str, timeout_sec: float = 0.7) -> bool:
+        if not url:
+            return False
+        try:
+            parsed = urllib.parse.urlparse(url)
+            host = parsed.hostname
+            if not host:
+                return False
+            port = int(parsed.port or 554)
+            with socket.create_connection((host, port), timeout=timeout_sec):
+                return True
+        except Exception:
+            return False
+
+    def reset_no_camera_backoff(self) -> None:
+        if self.no_camera_backoff_index:
+            self.log("CAMERA RECOVERY: retry backoff reset")
+        self.no_camera_backoff_index = 0
+
+    def probe_camera_quick(self, target: int) -> bool:
+        url = self.camera_rtsp_url(target)
+        if not url or not self.rtsp_host_reachable(url):
+            return False
+        return self.rtsp_available(url, timeout_sec=1.8)
+
+    def wait_for_camera_recovery(self) -> bool:
+        if self.cfg.input_mode.lower().strip() != "rtsp":
+            return False
+
+        cameras = self.configured_rtsp_cameras()
+        if not cameras:
+            return False
+
+        # Confirm that every configured RTSP source is currently unavailable.
+        available = []
+        for target in cameras:
+            if self.probe_camera_quick(target):
+                available.append(target)
+
+        if available:
+            self.reset_no_camera_backoff()
+            if self.active_camera not in available:
+                preferred = self.primary_camera if self.primary_camera in available else available[0]
+                self.switch_camera_runtime(preferred, "RECOVERY", probe=False)
+                self.restart_requested.clear()
+            return False
+
+        index = min(self.no_camera_backoff_index, len(self.no_camera_backoff_delays) - 1)
+        delay = self.no_camera_backoff_delays[index]
+        self.no_camera_backoff_index = min(index + 1, len(self.no_camera_backoff_delays) - 1)
+        self.log(
+            "NO CAMERA: all configured RTSP cameras are offline; "
+            f"backoff {int(delay)}s (fast probe every 2s)"
+        )
+
+        deadline = time.monotonic() + delay
+        while not self.stop_event.is_set() and self.stream_demanded:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self.stop_event.wait(min(2.0, remaining))
+            if self.stop_event.is_set() or not self.stream_demanded:
+                break
+
+            # Prefer the configured primary camera when several return together.
+            ordered = list(cameras)
+            if self.primary_camera in ordered:
+                ordered.remove(self.primary_camera)
+                ordered.insert(0, self.primary_camera)
+
+            for target in ordered:
+                url = self.camera_rtsp_url(target)
+                if not self.rtsp_host_reachable(url):
+                    continue
+                self.log(f"CAMERA RECOVERY probe -> {target} {url}")
+                if self.rtsp_available(url, timeout_sec=1.8):
+                    if target != self.active_camera:
+                        self.switch_camera_runtime(target, "RECOVERY", probe=False)
+                        self.restart_requested.clear()
+                    self.reset_no_camera_backoff()
+                    self.log(f"CAMERA RECOVERY: Camera {target} is online; restarting stream now")
+                    return True
+
+        return True
 
     def other_camera(self, target: int) -> int:
         return 1 if int(target) == 2 else 2
@@ -727,8 +822,13 @@ class CameraStreamer:
                     self.stop_ffmpeg()
                     if runtime_sec >= 15.0:
                         self.failover_failures = 0
+                        self.reset_no_camera_backoff()
                     switched = self.handle_stream_failure_failover()
-                    self.stop_event.wait(0.15 if switched else self.cfg.reconnect_delay_sec)
+                    offline_waited = False
+                    if not switched and self.cfg.input_mode.lower().strip() == "rtsp":
+                        offline_waited = self.wait_for_camera_recovery()
+                    if not offline_waited:
+                        self.stop_event.wait(0.15 if switched else self.cfg.reconnect_delay_sec)
                     if not self.stop_event.is_set() and self.cfg.stream_enabled and self.stream_demanded:
                         if time.monotonic() - self.last_register > 30:
                             self.register()
