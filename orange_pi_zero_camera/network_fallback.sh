@@ -25,6 +25,10 @@ ethernet_has_ipv4() {
   for ifc in /sys/class/net/eth* /sys/class/net/en*; do
     [ -e "$ifc" ] || continue
     ifc="$(basename "$ifc")"
+    # A configured/static IPv4 address can remain present even with the cable
+    # unplugged. Require physical carrier as well, otherwise setup AP would
+    # never start on an offline Ethernet interface.
+    [ "$(cat "/sys/class/net/$ifc/carrier" 2>/dev/null || echo 0)" = "1" ] || continue
     if ip -4 -o addr show dev "$ifc" scope global 2>/dev/null | grep -q ' inet '; then
       return 0
     fi
