@@ -15,7 +15,23 @@ WEB_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-web.service"
 DISPLAY_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-display.service"
 
 apt-get update
-apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates i2c-tools
+apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates i2c-tools network-manager
+
+# Let NetworkManager manage interfaces that are also present in /etc/network/interfaces.
+# This is required for changing DHCP/static IPv4 from the local web panel.
+if [ -f /etc/NetworkManager/NetworkManager.conf ]; then
+  if grep -q '^\[ifupdown\]' /etc/NetworkManager/NetworkManager.conf; then
+    if grep -q '^managed=' /etc/NetworkManager/NetworkManager.conf; then
+      sed -i '/^\[ifupdown\]/,/^\[/{s/^managed=.*/managed=true/}' /etc/NetworkManager/NetworkManager.conf
+    else
+      sed -i '/^\[ifupdown\]/a managed=true' /etc/NetworkManager/NetworkManager.conf
+    fi
+  else
+    printf '\n[ifupdown]\nmanaged=true\n' >> /etc/NetworkManager/NetworkManager.conf
+  fi
+fi
+systemctl enable NetworkManager.service || true
+systemctl restart NetworkManager.service || true
 
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
