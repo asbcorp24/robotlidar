@@ -50,22 +50,45 @@ ap_is_active() {
   [ "$(active_wifi_connection)" = "$AP_CONN" ]
 }
 
+disable_client_autoconnect() {
+  # While setup AP is active, prevent NetworkManager from stealing wlan0
+  # for a previously saved client profile. Client mode is entered only
+  # explicitly from the web UI.
+  local line name typ
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    typ="${line##*:}"
+    name="${line%:*}"
+    [ "$name" = "$AP_CONN" ] && continue
+    case "$typ" in
+      802-11-wireless|wifi)
+        nm connection modify "$name" connection.autoconnect no >/dev/null 2>&1 || true
+        ;;
+    esac
+  done < <(nm -t -f NAME,TYPE connection show 2>/dev/null)
+}
+
 ensure_ap_profile() {
   if ! nm -t -f NAME connection show 2>/dev/null | grep -Fxq "$AP_CONN"; then
     log "Creating open setup access point profile: $AP_SSID"
     nm connection add type wifi ifname "$WIFI_IF" con-name "$AP_CONN" ssid "$AP_SSID" >/dev/null || return 1
   fi
 
-  nm connection modify "$AP_CONN"     connection.autoconnect no     connection.interface-name "$WIFI_IF"     802-11-wireless.mode ap     802-11-wireless.band bg     ipv4.method shared     ipv4.addresses "$AP_ADDR"     ipv6.method ignore >/dev/null || return 1
+  nm connection modify "$AP_CONN"     connection.autoconnect no     connection.autoconnect-priority 999     connection.interface-name "$WIFI_IF"     802-11-wireless.mode ap     802-11-wireless.band bg     ipv4.method shared     ipv4.addresses "$AP_ADDR"     ipv6.method ignore >/dev/null || return 1
 }
 
 start_ap() {
-  ap_is_active && return 0
+  # Keep setup AP stable: once fallback mode starts, saved client profiles
+  # are not allowed to auto-activate and take wlan0 away from the phone.
+  disable_client_autoconnect
+  if ap_is_active; then
+    return 0
+  fi
   ensure_ap_profile || return 1
   nm radio wifi on >/dev/null 2>&1 || true
   nm device set "$WIFI_IF" managed yes >/dev/null 2>&1 || true
   ip link set "$WIFI_IF" up >/dev/null 2>&1 || true
-  log "No Ethernet/Wi-Fi client. Starting OPEN AP '$AP_SSID' at http://10.42.0.1:8088/"
+  log "No Ethernet/Wi-Fi client. Starting LOCKED OPEN AP '$AP_SSID' at http://10.42.0.1:8088/"
   nm connection up "$AP_CONN" ifname "$WIFI_IF" >/dev/null
 }
 
