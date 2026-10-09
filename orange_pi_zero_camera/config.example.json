@@ -32,5 +32,13 @@
   "camera1_url": "rtsp://192.168.1.149:8554/camera",
   "camera2_name": "Задняя",
   "camera2_url": "",
-  "active_camera": 1
+  "active_camera": 1,
+  "network": {
+    "mode": "dhcp",
+    "interface": "eth0",
+    "ip": "192.168.1.75",
+    "prefix": 24,
+    "gateway": "192.168.1.1",
+    "dns": "8.8.8.8 1.1.1.1"
+  }
 }
