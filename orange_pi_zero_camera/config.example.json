@@ -40,5 +40,10 @@
     "prefix": 24,
     "gateway": "192.168.1.1",
     "dns": "8.8.8.8 1.1.1.1"
-  }
+  },
+  "auto_failover_enabled": true,
+  "primary_camera": 1,
+  "failover_after_failures": 3,
+  "failover_probe_interval_sec": 10,
+  "return_to_primary": true
 }
