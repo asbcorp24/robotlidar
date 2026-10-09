@@ -23,8 +23,26 @@ async function logout(){try{await emergencyStop();await api('/api/auth/logout',{
 
 async function loadDevices(){try{const data=await api('/api/devices',{cache:'no-store'});devices=data.devices||[];}catch(e){return;}renderDevices();if(!selected&&devices.length)selectDevice(devices.find(d=>d.online)||devices[0]);else if(selected){const d=devices.find(x=>x.id===selected.id);if(d)selectDevice(d,false);else{selected=null;emergencyStop();exitCardboard();closePeer();}}}
 function renderDevices(){$('deviceCount').textContent=devices.length;$('deviceList').innerHTML='';if(!devices.length){$('deviceList').innerHTML='<div class="empty-note">Нет привязанных тракторов.<br>Добавьте ID в настройках.</div>';return;}devices.forEach(d=>{const el=document.createElement('div');el.className='device'+(selected?.id===d.id?' active':'');el.innerHTML=`<div class="device-top"><div><div class="device-name">${escapeHtml(d.name)}</div><div class="device-location">${escapeHtml(d.id)}</div></div><span class="device-state ${d.online?'online':'offline'}">${d.online?'online':'offline'}</span></div>`;el.onclick=()=>selectDevice(d);$('deviceList').appendChild(el);});}
-function selectDevice(d,reconnect=true){if(selected&&selected.id!==d.id)emergencyStop();if(cardboardActive)exitCardboard();selected={...d};brushSpin=0;brushLift=0;driveActive=false;renderDevices();$('cameraTitle').textContent=d.name;$('cameraSubtitle').textContent=d.id;setOnline(d.online);$('panRange').value=d.pan||0;$('tiltRange').value=d.tilt||0;updatePtzLabels();updateTelemetry(d);updateCameraUi(d);updateDriveUi();updateBrushUi();if(reconnect)connectStream(d);}
+function selectDevice(d,reconnect=true){if(selected&&selected.id!==d.id)emergencyStop();if(cardboardActive)exitCardboard();selected={...d};brushSpin=0;brushLift=0;driveActive=false;renderDevices();$('cameraTitle').textContent=d.name;$('cameraSubtitle').textContent=d.id;setOnline(d.online);$('panRange').value=d.pan||0;$('tiltRange').value=d.tilt||0;updatePtzLabels();updateTelemetry(d);updateCameraUi(d);updateDeviceCapabilities(d);updateDriveUi();updateBrushUi();if(reconnect)connectStream(d);}
 function setOnline(v){$('onlineDot').className='dot '+(v?'online':'offline');$('onlineText').textContent=v?'Online':'Offline';}
+function isCameraOnlyDevice(d=selected){
+  const t=String(d?.device_type||'').toLowerCase();
+  return t.startsWith('orange_pi_zero_camera')
+    || t==='orange_pi_ipcam'
+    || t==='raspberry_robotlidar'
+    || t.startsWith('raspberry_pi_zero')
+    || t==='rpz'
+    || t.startsWith('rpz_');
+}
+function updateDeviceCapabilities(d=selected){
+  const cameraOnly=isCameraOnlyDevice(d);
+  document.querySelectorAll('.tractor-panel,.brush-panel').forEach(el=>el.classList.toggle('hidden',cameraOnly));
+  if(cameraOnly){
+    driveActive=false;
+    brushSpin=0;
+    brushLift=0;
+  }
+}
 function updateTelemetry(d){$('fpsMetric').textContent=d.fps||'—';$('bitrateMetric').textContent=d.bitrateKbps?`${d.bitrateKbps} kbps`:'—';$('ethernetMetric').textContent=d.ethernet||'—';$('uptimeMetric').textContent=formatUptime(d.uptimeSec||0);}
 
 function stopVideoDemand(){const d=videoDemand;if(!d)return;videoDemand=null;if(d.timer)clearInterval(d.timer);api(`/api/devices/${encodeURIComponent(d.deviceId)}/video-demand`,{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:d.sessionId,active:false})}).catch(()=>{});}
