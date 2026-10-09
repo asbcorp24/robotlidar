@@ -45,5 +45,8 @@
   "primary_camera": 1,
   "failover_after_failures": 3,
   "failover_probe_interval_sec": 10,
-  "return_to_primary": true
+  "return_to_primary": true,
+  "video_watchdog_enabled": true,
+  "video_watchdog_timeout_sec": 8,
+  "video_watchdog_startup_grace_sec": 12
 }
