@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -26,6 +27,27 @@ type brushRequest struct {
 
 type cameraRequest struct {
 	Camera int `json:"camera"`
+}
+
+func cameraOnlyDevice(d *device) bool {
+	if d == nil {
+		return false
+	}
+	t := strings.ToLower(strings.TrimSpace(d.DeviceType))
+	return strings.HasPrefix(t, "orange_pi_zero_camera") ||
+		t == "orange_pi_ipcam" ||
+		t == "raspberry_robotlidar" ||
+		strings.HasPrefix(t, "raspberry_pi_zero") ||
+		t == "rpz" ||
+		strings.HasPrefix(t, "rpz_")
+}
+
+func rejectTractorControlForCameraOnly(w http.ResponseWriter, d *device) bool {
+	if !cameraOnlyDevice(d) {
+		return false
+	}
+	writeError(w, http.StatusForbidden, "Tractor control is unavailable for this camera-only device")
+	return true
 }
 
 func (s *server) cameraSelect(w http.ResponseWriter, r *http.Request, id string) {
@@ -70,6 +92,9 @@ func (s *server) drive(w http.ResponseWriter, r *http.Request, id string) {
 	if !ok {
 		return
 	}
+	if rejectTractorControlForCameraOnly(w, d) {
+		return
+	}
 
 	var req driveRequest
 	if !decodeJSON(w, r, &req) {
@@ -99,6 +124,9 @@ func (s *server) driveStop(w http.ResponseWriter, r *http.Request, id string) {
 	if !ok {
 		return
 	}
+	if rejectTractorControlForCameraOnly(w, d) {
+		return
+	}
 	if err := s.sendControl(d, controlTypeDrive, 0, 0); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -117,6 +145,9 @@ func (s *server) brush(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	d, ok := s.ownedDevice(w, u.ID, id)
 	if !ok {
+		return
+	}
+	if rejectTractorControlForCameraOnly(w, d) {
 		return
 	}
 
