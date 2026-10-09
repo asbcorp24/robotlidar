@@ -32,6 +32,16 @@ if [ -f /etc/NetworkManager/NetworkManager.conf ]; then
   fi
 fi
 systemctl enable NetworkManager.service || true
+
+# XR819 / xradio on classic Orange Pi Zero can fail with
+# "RTNETLINK answers: Invalid argument" when NetworkManager randomizes
+# the Wi-Fi MAC address during scanning. Disable scan MAC randomization.
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/10-xr819.conf <<'EOF'
+[device]
+wifi.scan-rand-mac-address=no
+EOF
+
 systemctl restart NetworkManager.service || true
 
 mkdir -p "$CONFIG_DIR"
