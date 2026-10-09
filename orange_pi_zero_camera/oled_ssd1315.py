@@ -45,17 +45,79 @@ def service(name):
     c, o = sh(["systemctl", "is-active", name])
     return o.upper() if o else "DOWN"
 
-def network():
-    c, o = sh(["ip", "-4", "-o", "addr", "show", "scope", "global"])
-    if c == 0:
+def iface_ipv4(iface):
+    c, o = sh(["ip", "-4", "-o", "addr", "show", "dev", iface, "scope", "global"])
+    if c == 0 and o:
+        p=o.split()
+        if len(p)>=4:
+            return p[3].split("/")[0]
+    return ""
+
+def network_state():
+    eth_ip=""
+    wifi_ip=""
+    wifi_ssid=""
+    wifi_conn=""
+    ap=False
+
+    c,o=sh(["ip","-4","-o","addr","show","scope","global"])
+    if c==0:
         for line in o.splitlines():
-            p = line.split()
-            if len(p) >= 4 and p[1] != "lo":
-                return p[1], p[3].split("/")[0]
+            p=line.split()
+            if len(p)<4:
+                continue
+            iface=p[1]
+            ip=p[3].split("/")[0]
+            if iface.startswith(("eth","en")) and not eth_ip:
+                eth_ip=ip
+            elif iface.startswith(("wl","wlan")) and not wifi_ip:
+                wifi_ip=ip
+
+    c,o=sh(["nmcli","-g","GENERAL.CONNECTION","device","show","wlan0"])
+    if c==0:
+        wifi_conn=o.strip()
+        if wifi_conn in ("--","(null)"):
+            wifi_conn=""
+        if wifi_conn=="RobotLiDAR-Setup":
+            ap=True
+        elif wifi_conn:
+            wifi_ssid=wifi_conn
+
+    if ap:
+        return {
+            "mode":"AP",
+            "eth_ip":eth_ip,
+            "wifi_ip":wifi_ip or "10.42.0.1",
+            "wifi_ssid":"RobotLiDAR-Setup",
+            "web_ip":wifi_ip or "10.42.0.1",
+        }
+    if eth_ip:
+        return {
+            "mode":"ETH",
+            "eth_ip":eth_ip,
+            "wifi_ip":wifi_ip,
+            "wifi_ssid":wifi_ssid,
+            "web_ip":eth_ip,
+        }
+    if wifi_ip:
+        return {
+            "mode":"WIFI",
+            "eth_ip":"",
+            "wifi_ip":wifi_ip,
+            "wifi_ssid":wifi_ssid,
+            "web_ip":wifi_ip,
+        }
     try:
-        return "NET", socket.gethostbyname(socket.gethostname())
+        fallback=socket.gethostbyname(socket.gethostname())
     except Exception:
-        return "NET", "0.0.0.0"
+        fallback="0.0.0.0"
+    return {
+        "mode":"OFFLINE",
+        "eth_ip":"",
+        "wifi_ip":"",
+        "wifi_ssid":"",
+        "web_ip":fallback,
+    }
 
 def host(url):
     try:
@@ -126,6 +188,24 @@ def render(lines):
             if x>=128: break
     return b
 
+def camera_host_port(url):
+    try:
+        p=urlparse(str(url))
+        return p.hostname or "", int(p.port or 554)
+    except Exception:
+        return "",554
+
+def camera_online(url, timeout=0.35):
+    h,p=camera_host_port(url)
+    if not h:
+        return False
+    try:
+        s=socket.create_connection((h,p),timeout=timeout)
+        s.close()
+        return True
+    except Exception:
+        return False
+
 def active_camera(cfg):
     try:
         n=int(open("/run/robotlidar-active-camera").read().strip())
@@ -134,15 +214,75 @@ def active_camera(cfg):
         return 2 if int(cfg.get("active_camera",1) or 1)==2 else 1
 
 def pages(cfg,dev,addr):
-    iface,ip=network(); mode=str(cfg.get("input_mode","rtsp")); ac=active_camera(cfg)
-    cam_url=(cfg.get("camera2_url","") if ac==2 else cfg.get("camera1_url","")) or cfg.get("input_url","")
+    net=network_state()
+    mode=str(cfg.get("input_mode","rtsp"))
+    ac=active_camera(cfg)
+
+    cam1_url=cfg.get("camera1_url","") or cfg.get("input_url","")
+    cam2_url=cfg.get("camera2_url","")
+    cam_url=cam2_url if ac==2 else cam1_url
     cam=host(cam_url) if mode=="rtsp" else cfg.get("video_device","/dev/video0")
-    web_addr="WEB {}:8088".format(ip)
-    p1=["ROBOTLIDAR ORANGE PI","IP "+ip,web_addr,"WEB "+service("orange-pi-zero-web.service"),"STREAM "+service("orange-pi-zero-camera.service"),"SRT {}MS".format(cfg.get("srt_latency_ms",200)),"SERVER "+host(cfg.get("server_url","")),"ID "+str(cfg.get("device_id","?"))]
-    p2=["VIDEO SETTINGS","ACTIVE CAM {}".format(ac),"CAM "+str(cam),"RES {}X{}".format(cfg.get("width","?"),cfg.get("height","?")),"FPS {}".format(cfg.get("fps","?")),"BIT {}K".format(cfg.get("bitrate_kbps","?")),"PTZ "+("ON" if cfg.get("ptz_enabled",False) else "OFF"),"ONVIF "+("AUTO" if cfg.get("onvif_auto_discovery",False) else "MANUAL")]
-    try: load=os.getloadavg()[0]
-    except Exception: load=0.0
-    p3=["SYSTEM","UP "+uptime(),"LOAD {:.2f}".format(load),"RAM "+memory(),"DISK "+disk(),"TEMP "+temp(),"I2C "+os.path.basename(dev),"SSD1315 0X{:02X}".format(addr)]
+
+    web_ip=net.get("web_ip") or "0.0.0.0"
+
+    if net.get("mode")=="AP":
+        p1=[
+            "SETUP MODE",
+            "AP ROBOTLIDAR-SETUP",
+            "OPEN WIFI",
+            "IP "+str(net.get("wifi_ip") or "10.42.0.1"),
+            "WEB "+str(web_ip)+":8088",
+            "NO PASSWORD",
+            "ETH "+("UP" if net.get("eth_ip") else "DOWN"),
+            "WIFI AP",
+        ]
+    else:
+        p1=[
+            "NETWORK",
+            "MODE "+str(net.get("mode","OFFLINE")),
+            "ETH "+(str(net.get("eth_ip")) if net.get("eth_ip") else "DOWN"),
+            "WIFI "+(str(net.get("wifi_ip")) if net.get("wifi_ip") else "OFF"),
+            "SSID "+(str(net.get("wifi_ssid"))[:15] if net.get("wifi_ssid") else "-"),
+            "WEB "+str(web_ip)+":8088",
+            "STREAM "+service("orange-pi-zero-camera.service"),
+            "SERVER "+host(cfg.get("server_url","")),
+        ]
+
+    if mode=="rtsp":
+        c1="ONLINE" if camera_online(cam1_url) else "OFFLINE"
+        c2=("ONLINE" if camera_online(cam2_url) else "OFFLINE") if cam2_url else "N/A"
+    else:
+        c1="LOCAL"
+        c2="N/A"
+
+    failover=bool(cfg.get("auto_failover_enabled",False)) and ac != int(cfg.get("primary_camera",1) or 1)
+
+    p2=[
+        "VIDEO STATUS",
+        "CAM1 "+c1,
+        "CAM2 "+c2,
+        "ACTIVE CAM {}".format(ac),
+        "MODE "+("FAILOVER" if failover else "NORMAL"),
+        "CAM "+str(cam),
+        "PTZ "+("ON" if cfg.get("ptz_enabled",False) else "OFF"),
+        "WATCH "+("ON" if cfg.get("video_watchdog_enabled",True) else "OFF"),
+    ]
+
+    try:
+        load=os.getloadavg()[0]
+    except Exception:
+        load=0.0
+
+    p3=[
+        "SYSTEM",
+        "UP "+uptime(),
+        "LOAD {:.2f}".format(load),
+        "RAM "+memory(),
+        "DISK "+disk(),
+        "TEMP "+temp(),
+        "WEB "+service("orange-pi-zero-web.service"),
+        "SSD1315 0X{:02X}".format(addr),
+    ]
     return [p1,p2,p3]
 
 def find(cfg):
