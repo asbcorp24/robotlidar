@@ -1,7 +1,6 @@
 [Unit]
 Description=RobotLiDAR Orange Pi Zero SSD1315 Status Display
-After=local-fs.target network.target
-Wants=network.target
+After=local-fs.target
 
 [Service]
 Type=simple
