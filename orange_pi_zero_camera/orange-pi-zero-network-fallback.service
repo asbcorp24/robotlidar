@@ -1,0 +1,15 @@
+[Unit]
+Description=RobotLiDAR automatic fallback Wi-Fi setup access point
+After=NetworkManager.service orange-pi-zero-web.service
+Wants=NetworkManager.service
+Requires=orange-pi-zero-web.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/bin/bash /opt/robotlidar/orange_pi_zero_camera/network_fallback.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
