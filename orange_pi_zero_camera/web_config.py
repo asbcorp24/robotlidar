@@ -77,6 +77,207 @@ def ethernet_info() -> list[dict[str, str]]:
     return result
 
 
+def ethernet_interfaces() -> list[str]:
+    base = Path("/sys/class/net")
+    if not base.exists():
+        return []
+    names: list[str] = []
+    for item in base.iterdir():
+        name = item.name
+        if name == "lo" or name.startswith(("wl", "wlan")):
+            continue
+        if name.startswith(("eth", "en")):
+            names.append(name)
+    return sorted(names)
+
+
+def _network_cfg(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = (cfg or load_config()).get("network")
+    return data if isinstance(data, dict) else {}
+
+
+def _nmcli_available() -> bool:
+    code, _out = run_cmd(["nmcli", "--version"], 4)
+    return code == 0
+
+
+def _nm_connection_for_interface(iface: str, create: bool = False) -> tuple[str, str]:
+    code, out = run_cmd(["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", iface], 5)
+    connection = out.strip() if code == 0 else ""
+    if connection and connection not in ("--", "(null)"):
+        return connection, ""
+
+    if not create:
+        return "", out
+
+    # A vendor Debian image can leave Ethernet unmanaged until NetworkManager takes it over.
+    run_cmd(["nmcli", "device", "set", iface, "managed", "yes"], 5)
+    connection = "RobotLiDAR-{}".format(iface)
+    code, out = run_cmd([
+        "nmcli", "connection", "add", "type", "ethernet",
+        "ifname", iface, "con-name", connection,
+    ], 12)
+    if code != 0 and "already exists" not in out.lower():
+        return "", out
+    return connection, ""
+
+
+def network_state(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = cfg or load_config()
+    saved = _network_cfg(cfg)
+    interfaces = ethernet_interfaces()
+    iface = str(saved.get("interface") or "").strip()
+    if iface not in interfaces:
+        links = ethernet_info()
+        iface = links[0]["interface"] if links else (interfaces[0] if interfaces else "")
+
+    current_cidr = ""
+    for item in ethernet_info():
+        if item["interface"] == iface:
+            current_cidr = item["address"]
+            break
+
+    result: dict[str, Any] = {
+        "available": _nmcli_available(),
+        "interfaces": interfaces,
+        "interface": iface,
+        "connection": "",
+        "mode": str(saved.get("mode") or "dhcp"),
+        "ip": str(saved.get("ip") or ""),
+        "prefix": int(saved.get("prefix") or 24),
+        "gateway": str(saved.get("gateway") or ""),
+        "dns": str(saved.get("dns") or ""),
+        "current_address": current_cidr,
+    }
+    if not result["available"] or not iface:
+        return result
+
+    connection, _detail = _nm_connection_for_interface(iface, False)
+    result["connection"] = connection
+    if not connection:
+        return result
+
+    _c, method = run_cmd(["nmcli", "-g", "ipv4.method", "connection", "show", connection], 5)
+    _c, addresses = run_cmd(["nmcli", "-g", "ipv4.addresses", "connection", "show", connection], 5)
+    _c, gateway = run_cmd(["nmcli", "-g", "ipv4.gateway", "connection", "show", connection], 5)
+    _c, dns = run_cmd(["nmcli", "-g", "ipv4.dns", "connection", "show", connection], 5)
+
+    method = method.strip().lower()
+    if method:
+        result["mode"] = "dhcp" if method in ("auto", "dhcp") else "static"
+    if result["mode"] == "static" and addresses.strip():
+        first = addresses.strip().splitlines()[0].split(",")[0]
+        try:
+            ipi = ipaddress.ip_interface(first)
+            result["ip"] = str(ipi.ip)
+            result["prefix"] = int(ipi.network.prefixlen)
+        except ValueError:
+            pass
+    result["gateway"] = gateway.strip() or result["gateway"]
+    result["dns"] = " ".join(x.strip() for x in dns.replace(",", "\n").splitlines() if x.strip()) or result["dns"]
+    return result
+
+
+def validate_network_settings(req: dict[str, Any]) -> dict[str, Any]:
+    interfaces = ethernet_interfaces()
+    iface = str(req.get("interface") or "").strip()
+    if not iface:
+        iface = interfaces[0] if interfaces else ""
+    if iface not in interfaces:
+        raise ValueError("Не найден Ethernet-интерфейс")
+
+    mode = str(req.get("mode") or "dhcp").strip().lower()
+    if mode not in ("dhcp", "static"):
+        raise ValueError("Режим сети должен быть DHCP или static")
+
+    result: dict[str, Any] = {
+        "mode": mode,
+        "interface": iface,
+        "ip": "",
+        "prefix": 24,
+        "gateway": "",
+        "dns": "",
+    }
+    if mode == "dhcp":
+        return result
+
+    ip_text = str(req.get("ip") or "").strip()
+    prefix = int(req.get("prefix") or 24)
+    gateway = str(req.get("gateway") or "").strip()
+    dns_raw = str(req.get("dns") or "").replace(",", " ")
+    dns_items = [x for x in dns_raw.split() if x]
+
+    try:
+        ipaddress.ip_address(ip_text)
+    except ValueError as exc:
+        raise ValueError("Некорректный статический IPv4 адрес") from exc
+    if prefix < 1 or prefix > 32:
+        raise ValueError("Префикс сети должен быть от 1 до 32")
+    if gateway:
+        try:
+            ipaddress.ip_address(gateway)
+        except ValueError as exc:
+            raise ValueError("Некорректный шлюз") from exc
+    for item in dns_items:
+        try:
+            ipaddress.ip_address(item)
+        except ValueError as exc:
+            raise ValueError("Некорректный DNS: {}".format(item)) from exc
+
+    result.update({
+        "ip": ip_text,
+        "prefix": prefix,
+        "gateway": gateway,
+        "dns": " ".join(dns_items),
+    })
+    return result
+
+
+def apply_network_settings(settings: dict[str, Any]) -> tuple[bool, str, str]:
+    if not _nmcli_available():
+        return False, "NetworkManager/nmcli не установлен", ""
+
+    iface = str(settings["interface"])
+    connection, detail = _nm_connection_for_interface(iface, True)
+    if not connection:
+        return False, detail or "Не удалось создать Ethernet-профиль NetworkManager", ""
+
+    if settings["mode"] == "dhcp":
+        args = [
+            "nmcli", "connection", "modify", connection,
+            "connection.interface-name", iface,
+            "ipv4.method", "auto",
+            "ipv4.addresses", "",
+            "ipv4.gateway", "",
+            "ipv4.dns", "",
+            "ipv4.ignore-auto-dns", "no",
+        ]
+        new_url = ""
+    else:
+        args = [
+            "nmcli", "connection", "modify", connection,
+            "connection.interface-name", iface,
+            "ipv4.method", "manual",
+            "ipv4.addresses", "{}/{}".format(settings["ip"], settings["prefix"]),
+            "ipv4.gateway", str(settings["gateway"]),
+            "ipv4.dns", str(settings["dns"]),
+            "ipv4.ignore-auto-dns", "yes" if settings["dns"] else "no",
+        ]
+        new_url = "http://{}:{}/".format(settings["ip"], LISTEN_PORT)
+
+    code, out = run_cmd(args, 12)
+    if code != 0:
+        return False, out or "nmcli connection modify failed", ""
+
+    # Reply to the browser first; bringing the profile up can immediately change the IP.
+    def activate() -> None:
+        time.sleep(1.5)
+        run_cmd(["nmcli", "connection", "up", connection, "ifname", iface], 30)
+
+    threading.Thread(target=activate, daemon=True).start()
+    return True, "Сетевые настройки сохранены. Ethernet будет переподключён через несколько секунд.", new_url
+
+
 def service_state(name: str) -> dict[str, Any]:
     code, active = run_cmd(["systemctl", "is-active", name], 4)
     _code2, enabled = run_cmd(["systemctl", "is-enabled", name], 4)
@@ -435,13 +636,13 @@ init();
 
 HTML = r'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RobotLiDAR · Orange Pi One Camera</title>
+<title>RobotLiDAR · Orange Pi Zero Camera</title>
 <style>
 :root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#15202b;background:#eef2f6}*{box-sizing:border-box}body{margin:0}.wrap{max-width:1100px;margin:auto;padding:20px}.top{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:18px}.brand h1{margin:0;font-size:24px}.muted{color:#687684;font-size:13px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 4px 20px #0000000c}.card h2{margin:0 0 14px;font-size:18px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;font-size:13px;color:#53606d;margin:10px 0 5px}input,select{width:100%;padding:10px 11px;border:1px solid #ccd5df;border-radius:8px;font-size:14px;background:#fff}button{border:0;border-radius:8px;padding:10px 14px;font-weight:600;cursor:pointer}.primary{background:#1769e0;color:#fff}.secondary{background:#e8eef6;color:#213044}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.status{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:20px;background:#eef2f6;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:#9aa6b2}.dot.ok{background:#20a66a}.net{padding:11px;border:1px solid #dde4eb;border-radius:9px;background:#f9fbfd}.msg{margin-top:10px;white-space:pre-wrap;font-size:13px}.oktxt{color:#168252}.errtxt{color:#b62f2f}.scanTable{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}.scanTable th,.scanTable td{text-align:left;padding:9px;border-bottom:1px solid #e4e9ef;vertical-align:top}.scanTable th{color:#53606d}.pill{display:inline-block;background:#eef2f6;border-radius:12px;padding:3px 7px;margin:2px}.url{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}.logbox{margin:12px 0 0;background:#111820;color:#d8e2ec;border-radius:10px;padding:12px;height:260px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}.logmeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.logmeta label{margin:0}.logmeta input{width:auto}@media(max-width:760px){.grid,.row{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.scanTable{display:block;overflow:auto}}</style></head>
 <body><div class="wrap">
-<div class="top"><div class="brand"><h1>Orange Pi One · Camera + PTZ</h1><div class="muted">Локальная настройка RobotLiDAR через Ethernet</div></div><div id="svc" class="status"><span class="dot"></span><span>проверка...</span></div></div>
+<div class="top"><div class="brand"><h1>Orange Pi Zero · Camera + PTZ</h1><div class="muted">Локальная настройка RobotLiDAR через Ethernet</div></div><div id="svc" class="status"><span class="dot"></span><span>проверка...</span></div></div>
 <div class="grid">
-<section class="card"><h2>Ethernet</h2><div class="net"><strong>Проводное подключение</strong><div id="ethernet" class="muted" style="margin-top:6px">Определение адреса...</div></div><p class="muted">IP выдаётся вашей проводной сетью/DHCP либо задаётся средствами ОС Orange Pi.</p></section>
+<section class="card"><h2>Ethernet / IP</h2><div class="net"><strong>Текущее подключение</strong><div id="ethernet" class="muted" style="margin-top:6px">Определение адреса...</div></div><div class="row"><div><label>Интерфейс</label><select id="network_interface"></select></div><div><label>Режим IPv4</label><select id="network_mode" onchange="toggleNetworkFields()"><option value="dhcp">DHCP (автоматически)</option><option value="static">Статический IP</option></select></div></div><div id="staticNetwork"><div class="row"><div><label>IP адрес</label><input id="network_ip" placeholder="192.168.1.75"></div><div><label>Префикс</label><input id="network_prefix" type="number" min="1" max="32" value="24"></div></div><div class="row"><div><label>Шлюз</label><input id="network_gateway" placeholder="192.168.1.1"></div><div><label>DNS</label><input id="network_dns" placeholder="8.8.8.8 1.1.1.1"></div></div></div><div class="actions"><button class="primary" onclick="applyNetwork()">Применить сеть</button></div><div id="networkMsg" class="msg"></div><p class="muted">DHCP повторно запрашивает адрес при появлении роутера. При смене на статический IP текущая страница отключится — откройте панель уже по новому адресу.</p></section>
 <section class="card"><h2>Сервер и устройство</h2><label>Device ID</label><input id="device_id"><label>Название</label><input id="device_name"><label>Адрес центрального сервера</label><input id="server_url"><label><input id="stream_enabled" type="checkbox" style="width:auto"> Транслировать видео на центральный сервер</label><label><input id="local_preview_enabled" type="checkbox" style="width:auto"> Разрешить локальный просмотр камеры</label><p class="muted">Обе функции независимы: можно отдельно включать SRT на сервер и локальный просмотр. ONVIF/PTZ работают независимо от них.</p><div class="row"><div><label>SRT latency, мс</label><input id="srt_latency_ms" type="number"></div><div><label>Telemetry, сек</label><input id="telemetry_period_sec" type="number" step="0.5"></div></div></section>
 <section class="card"><h2>Камеры H.264</h2><label>Источник</label><select id="input_mode"><option value="rtsp">RTSP H.264 (copy)</option><option value="v4l2_h264">USB H.264</option><option value="v4l2_encode">USB + encode</option><option value="test">Тестовая картинка</option></select><div class="row"><div><label>Имя Camera 1</label><input id="camera1_name" placeholder="Передняя"></div><div><label>Имя Camera 2</label><input id="camera2_name" placeholder="Задняя"></div></div><label>RTSP Camera 1</label><input id="camera1_url" placeholder="rtsp://192.168.1.149:554/stream1"><label>RTSP Camera 2</label><input id="camera2_url" placeholder="rtsp://192.168.1.150:554/stream1"><label>Активная камера при запуске</label><select id="active_camera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select><input id="input_url" type="hidden"><label>V4L2 устройство</label><input id="video_device"><div class="row"><div><label>Ширина</label><input id="width" type="number"></div><div><label>Высота</label><input id="height" type="number"></div><div><label>FPS</label><input id="fps" type="number"></div><div><label>Битрейт, kbps</label><input id="bitrate_kbps" type="number"></div></div><label>Encoder</label><input id="encoder"><p class="muted">Через SRT передаётся только одна выбранная камера. Переключение Camera 1 / Camera 2 приходит с центрального сервера без второго SRT-потока.</p></section>
 <section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"><div class="actions"><button class="secondary" onclick="probeOnvif()">Проверить возможности ONVIF</button></div><pre id="onvifDiag" class="logbox" style="height:220px">Диагностика ещё не запускалась.</pre></section>
@@ -453,7 +654,27 @@ HTML = r'''<!doctype html>
 const $=id=>document.getElementById(id);let cfg={};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);return d}
 function setValue(k,v){const e=$(k);if(!e)return;if(e.type==='checkbox')e.checked=!!v;else e.value=v??''}
-async function load(){try{const d=await api('/api/status');cfg=d.config||{};if(!Object.prototype.hasOwnProperty.call(cfg,'stream_enabled'))cfg.stream_enabled=true;if(!Object.prototype.hasOwnProperty.call(cfg,'local_preview_enabled'))cfg.local_preview_enabled=true;Object.entries(cfg).forEach(([k,v])=>setValue(k,v));$('ethernet').textContent=(d.ethernet||[]).map(x=>`${x.interface}: ${x.address}`).join(' · ')||'Проводной IPv4 адрес не определён';const s=d.streamer||{};$('svc').innerHTML=`<span class="dot ${s.active?'ok':''}"></span><span>${cfg.stream_enabled===false?'SRT выключен · PTZ доступен':'трансляция: '+(s.state||'unknown')}</span>`}catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
+function toggleNetworkFields(){const box=$('staticNetwork');if(box)box.style.display=$('network_mode').value==='static'?'block':'none'}
+async function load(){try{
+ const d=await api('/api/status');cfg=d.config||{};
+ if(!Object.prototype.hasOwnProperty.call(cfg,'stream_enabled'))cfg.stream_enabled=true;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'local_preview_enabled'))cfg.local_preview_enabled=true;
+ Object.entries(cfg).forEach(([k,v])=>setValue(k,v));
+ $('ethernet').textContent=(d.ethernet||[]).map(x=>`${x.interface}: ${x.address}`).join(' · ')||'Проводной IPv4 адрес не определён';
+ const n=d.network||{}, saved=cfg.network||{};
+ const sel=$('network_interface');sel.innerHTML='';
+ for(const name of (n.interfaces||[])){const o=document.createElement('option');o.value=name;o.textContent=name;sel.appendChild(o)}
+ if(saved.interface||n.interface)sel.value=saved.interface||n.interface;
+ $('network_mode').value=saved.mode||n.mode||'dhcp';
+ $('network_ip').value=saved.ip||n.ip||'';
+ $('network_prefix').value=saved.prefix||n.prefix||24;
+ $('network_gateway').value=saved.gateway||n.gateway||'';
+ $('network_dns').value=saved.dns||n.dns||'';
+ toggleNetworkFields();
+ if(!n.available){$('networkMsg').className='msg errtxt';$('networkMsg').textContent='NetworkManager/nmcli не найден: изменение IP из панели недоступно.'}
+ const st=d.streamer||{};$('svc').innerHTML=`<span class="dot ${st.active?'ok':''}"></span><span>${cfg.stream_enabled===false?'SRT выключен · PTZ доступен':'трансляция: '+(st.state||'unknown')}</span>`
+}catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
+async function applyNetwork(){const m=$('networkMsg');m.className='msg';m.textContent='Сохранение сети...';const network={mode:$('network_mode').value,interface:$('network_interface').value,ip:$('network_ip').value.trim(),prefix:Number($('network_prefix').value||24),gateway:$('network_gateway').value.trim(),dns:$('network_dns').value.trim()};try{const d=await api('/api/network',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(network)});cfg.network=network;m.className='msg oktxt';m.textContent=(d.message||'Сеть сохранена')+(d.new_url?' Новый адрес панели: '+d.new_url:'')}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 function collect(){const keys=['device_id','device_name','server_url','input_mode','input_url','camera1_name','camera1_url','camera2_name','camera2_url','video_device','encoder','onvif_device_url','onvif_url','onvif_username','onvif_profile_token'];const nums=['width','height','fps','bitrate_kbps','srt_latency_ms','telemetry_period_sec','active_camera'];const out={...cfg};keys.forEach(k=>out[k]=$(k).value);nums.forEach(k=>out[k]=Number($(k).value));if(!out.camera1_url)out.camera1_url=out.input_url;out.input_url=out.camera1_url;out.stream_enabled=$('stream_enabled').checked;out.local_preview_enabled=$('local_preview_enabled').checked;out.ptz_enabled=$('ptz_enabled').checked;out.onvif_auto_discovery=$('onvif_auto_discovery').checked;const p=$('onvif_password').value;if(p)out.onvif_password=p;return out}
 async function saveConfig(restart){const m=$('saveMsg');m.className='msg';m.textContent='Сохранение...';try{const d=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),restart})});m.className='msg oktxt';m.textContent=d.message||'Сохранено';$('onvif_password').value='';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function restartService(){try{const d=await api('/api/restart',{method:'POST'});$('saveMsg').className='msg oktxt';$('saveMsg').textContent=d.message||'Перезапущено';setTimeout(load,800)}catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
@@ -567,7 +788,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             cfg = load_config()
             cfg["onvif_password"] = ""
-            self.send_json(200, {"ok": True, "config": cfg, "ethernet": ethernet_info(), "streamer": service_state(STREAM_SERVICE)})
+            self.send_json(200, {"ok": True, "config": cfg, "ethernet": ethernet_info(), "network": network_state(cfg), "streamer": service_state(STREAM_SERVICE)})
             return
         self.send_json(404, {"detail": "Not found"})
 
@@ -618,6 +839,22 @@ class Handler(BaseHTTPRequestHandler):
                 result = scan_network()
                 result["ok"] = True
                 self.send_json(200, result)
+                return
+            if self.path == "/api/network":
+                req = self.read_json()
+                try:
+                    settings = validate_network_settings(req)
+                except (ValueError, TypeError) as exc:
+                    self.send_json(400, {"detail": str(exc)})
+                    return
+                cfg = load_config()
+                cfg["network"] = settings
+                save_config(cfg)
+                ok, message, new_url = apply_network_settings(settings)
+                if not ok:
+                    self.send_json(500, {"detail": message})
+                    return
+                self.send_json(200, {"ok": True, "message": message, "new_url": new_url})
                 return
             if self.path == "/api/config":
                 req = self.read_json()
