@@ -1,8 +1,7 @@
 [Unit]
 Description=RobotLiDAR automatic fallback Wi-Fi setup access point
-After=NetworkManager.service orange-pi-zero-web.service
+After=NetworkManager.service
 Wants=NetworkManager.service
-Requires=orange-pi-zero-web.service
 
 [Service]
 Type=simple
