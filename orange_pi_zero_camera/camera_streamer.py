@@ -50,6 +50,11 @@ class Config:
     camera2_name: str = "Camera 2"
     camera2_url: str = ""
     active_camera: int = 1
+    auto_failover_enabled: bool = False
+    primary_camera: int = 1
+    failover_after_failures: int = 3
+    failover_probe_interval_sec: float = 10.0
+    return_to_primary: bool = True
     video_device: str = "/dev/video0"
     width: int = 1280
     height: int = 720
@@ -106,6 +111,10 @@ class CameraStreamer:
         self.runtime_camera_file = Path("/run/robotlidar-active-camera")
         self.ptz_move_mode = "auto"
         self.stream_demanded = False
+        self.primary_camera = 2 if int(cfg.primary_camera or 1) == 2 else 1
+        self.failover_failures = 0
+        self.last_failover_probe = 0.0
+        self.failover_active = False
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -372,23 +381,100 @@ class CameraStreamer:
             self.log(f"CAMERA PROBE error: {exc}")
         return False
 
+    def other_camera(self, target: int) -> int:
+        return 1 if int(target) == 2 else 2
+
+    def failover_enabled(self) -> bool:
+        return (
+            bool(self.cfg.auto_failover_enabled)
+            and self.cfg.input_mode.lower().strip() == "rtsp"
+            and bool(self.camera_rtsp_url(1))
+            and bool(self.camera_rtsp_url(2))
+        )
+
+    def switch_camera_runtime(self, target: int, reason: str, probe: bool = True) -> bool:
+        target = 2 if int(target) == 2 else 1
+        url = self.camera_rtsp_url(target)
+        if not url:
+            self.log(f"CAMERA {reason}: Camera {target} URL is empty")
+            return False
+        if target == self.active_camera:
+            return True
+
+        with self.switch_lock:
+            if probe and not self.rtsp_available(url):
+                self.log(f"CAMERA {reason}: Camera {target} unavailable; keeping Camera {self.active_camera}")
+                return False
+
+            previous = self.active_camera
+            self.active_camera = target
+            self.failover_failures = 0
+            self.write_active_camera_state()
+            self.log(
+                f"CAMERA {reason}: {previous} -> {target} "
+                f"{self.active_camera_name()} {self.active_rtsp_url()}"
+            )
+
+            # Runtime ONVIF data belongs to the previous RTSP camera. Force a fresh
+            # discovery for the newly selected camera when auto-discovery is enabled.
+            if self.cfg.onvif_auto_discovery:
+                self.onvif_url = ""
+                self.onvif_profile_token = ""
+                self.onvif_device_url = ""
+                threading.Thread(target=self.discover_onvif_if_needed, daemon=True).start()
+
+            self.restart_requested.set()
+            return True
+
+    def handle_stream_failure_failover(self) -> bool:
+        if not self.failover_enabled():
+            return False
+
+        self.failover_failures += 1
+        threshold = max(1, int(self.cfg.failover_after_failures or 3))
+        self.log(
+            f"CAMERA FAILOVER: Camera {self.active_camera} failure "
+            f"{self.failover_failures}/{threshold}"
+        )
+        if self.failover_failures < threshold:
+            return False
+
+        backup = self.other_camera(self.active_camera)
+        if self.switch_camera_runtime(backup, "FAILOVER", probe=True):
+            self.failover_active = self.active_camera != self.primary_camera
+            return True
+
+        # Keep retrying the current camera, but do not hammer the backup on every
+        # FFmpeg restart. A new batch of failures will trigger the next probe.
+        self.failover_failures = 0
+        return False
+
+    def maybe_return_to_primary(self, now: float) -> bool:
+        if not self.failover_enabled() or not bool(self.cfg.return_to_primary):
+            return False
+        if self.active_camera == self.primary_camera:
+            self.failover_active = False
+            return False
+
+        interval = max(3.0, float(self.cfg.failover_probe_interval_sec or 10.0))
+        if now - self.last_failover_probe < interval:
+            return False
+        self.last_failover_probe = now
+
+        url = self.camera_rtsp_url(self.primary_camera)
+        self.log(f"CAMERA FAILBACK probe -> {self.primary_camera} {url}")
+        if self.switch_camera_runtime(self.primary_camera, "FAILBACK", probe=True):
+            self.failover_active = False
+            return True
+        return False
+
     def switch_camera(self, target: int) -> None:
         target = 2 if target == 2 else 1
-        url = self.camera_rtsp_url(target)
-        if target == 2 and not url:
-            self.log("CAMERA SWITCH ignored: Camera 2 URL is empty")
-            return
-        if target == self.active_camera:
-            return
-        with self.switch_lock:
-            self.log(f"CAMERA SWITCH probe -> {target} {url}")
-            if self.cfg.input_mode.lower().strip() == "rtsp" and not self.rtsp_available(url):
-                self.log(f"CAMERA SWITCH rejected: Camera {target} is unavailable; keeping Camera {self.active_camera}")
-                return
-            self.active_camera = target
-            self.log(f"CAMERA SWITCH -> {target} {self.active_camera_name()} {self.active_rtsp_url()}")
-            self.write_active_camera_state()
-            self.restart_requested.set()
+        self.log(f"CAMERA SWITCH probe -> {target} {self.camera_rtsp_url(target)}")
+        if self.switch_camera_runtime(target, "SWITCH", probe=self.cfg.input_mode.lower().strip() == "rtsp"):
+            # A manual/server switch becomes the current runtime choice. Auto failback
+            # still follows configured primary_camera when enabled.
+            self.failover_active = self.active_camera != self.primary_camera
 
     def onvif_post(self, body: str, timeout: float = 2.5) -> None:
         security = self.ws_security(self.cfg.onvif_username, self.cfg.onvif_password) if self.cfg.onvif_username else ""
@@ -577,6 +663,8 @@ class CameraStreamer:
             "tilt_cdeg": self.tilt_cdeg,
             "link_mbps": 100,
             "active_camera": self.active_camera,
+            "camera_failover_active": self.failover_active,
+            "camera_primary": self.primary_camera,
         }
         try:
             status, data = self.json_request("POST", url, payload)
@@ -597,6 +685,16 @@ class CameraStreamer:
         if self.stop_event.is_set():
             return 0
         self.discover_onvif_if_needed()
+        if self.failover_enabled():
+            self.log(
+                "CAMERA FAILOVER enabled: primary={} backup={} failures={} return={} probe={}s".format(
+                    self.primary_camera,
+                    self.other_camera(self.primary_camera),
+                    max(1, int(self.cfg.failover_after_failures or 3)),
+                    "yes" if self.cfg.return_to_primary else "no",
+                    max(3.0, float(self.cfg.failover_probe_interval_sec or 10.0)),
+                )
+            )
         if self.cfg.stream_enabled:
             self.log("STREAM on-demand enabled; waiting for viewer")
         else:
@@ -609,6 +707,8 @@ class CameraStreamer:
                 if now >= next_telemetry:
                     self.send_telemetry()
                     next_telemetry = now + self.cfg.telemetry_period_sec
+                if self.stream_demanded:
+                    self.maybe_return_to_primary(now)
                 if self.restart_requested.is_set():
                     self.restart_requested.clear()
                     self.stop_ffmpeg()
@@ -619,7 +719,8 @@ class CameraStreamer:
                     code = self.proc.returncode
                     self.log(f"FFMPEG EXIT {code}; restart after {self.cfg.reconnect_delay_sec}s")
                     self.stop_ffmpeg()
-                    self.stop_event.wait(self.cfg.reconnect_delay_sec)
+                    switched = self.handle_stream_failure_failover()
+                    self.stop_event.wait(0.15 if switched else self.cfg.reconnect_delay_sec)
                     if not self.stop_event.is_set() and self.cfg.stream_enabled and self.stream_demanded:
                         if time.monotonic() - self.last_register > 30:
                             self.register()
