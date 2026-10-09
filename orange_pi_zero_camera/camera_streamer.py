@@ -65,6 +65,9 @@ class Config:
     srt_latency_ms: int = 200
     telemetry_period_sec: float = 2.0
     reconnect_delay_sec: float = 2.0
+    video_watchdog_enabled: bool = True
+    video_watchdog_timeout_sec: float = 8.0
+    video_watchdog_startup_grace_sec: float = 12.0
 
     ptz_enabled: bool = True
     onvif_auto_discovery: bool = True
@@ -89,6 +92,9 @@ class CameraStreamer:
         self.cfg = cfg
         self.proc: Optional[subprocess.Popen] = None
         self.proc_started_monotonic = 0.0
+        self.last_video_progress_monotonic = 0.0
+        self.video_progress_thread: Optional[threading.Thread] = None
+        self.video_watchdog_fired = False
         self.stop_event = threading.Event()
         self.start_monotonic = time.monotonic()
         self.srt_port = 0
@@ -211,7 +217,7 @@ class CameraStreamer:
 
     def ffmpeg_command(self) -> list[str]:
         target = f"srt://{self.server_host}:{self.srt_port}?mode=caller&transtype=live&latency={self.srt_latency_ms * 1000}&pkt_size=1316"
-        return [self.cfg.ffmpeg, "-hide_banner", "-loglevel", "warning"] + self.input_args() + ["-avoid_negative_ts", "make_non_negative", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", target]
+        return [self.cfg.ffmpeg, "-hide_banner", "-loglevel", "warning"] + self.input_args() + ["-progress", "pipe:1", "-nostats", "-avoid_negative_ts", "make_non_negative", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", target]
 
     def start_ffmpeg(self) -> None:
         if not self.cfg.stream_enabled:
@@ -219,9 +225,90 @@ class CameraStreamer:
             return
         cmd = self.ffmpeg_command()
         self.log("FFMPEG START: " + " ".join(cmd))
-        self.proc = subprocess.Popen(cmd)
+        self.proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+            bufsize=1,
+        )
         self.proc_started_monotonic = time.monotonic()
+        self.last_video_progress_monotonic = self.proc_started_monotonic
+        self.video_watchdog_fired = False
+        self.video_progress_thread = threading.Thread(
+            target=self.video_progress_loop,
+            args=(self.proc,),
+            name="ffmpeg-progress",
+            daemon=True,
+        )
+        self.video_progress_thread.start()
         self.restart_count += 1
+
+    def video_progress_loop(self, proc: subprocess.Popen) -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        try:
+            for raw in stream:
+                if proc is not self.proc:
+                    break
+                line = raw.strip()
+                if not line or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key in ("frame", "out_time_ms", "out_time_us", "total_size"):
+                    # FFmpeg progress is emitted only while media is advancing.
+                    # Any of these fields therefore acts as a lightweight frame/packet heartbeat.
+                    self.last_video_progress_monotonic = time.monotonic()
+                elif key == "progress" and value == "continue":
+                    self.last_video_progress_monotonic = time.monotonic()
+        except Exception as exc:
+            if proc is self.proc and proc.poll() is None:
+                self.log(f"VIDEO WATCHDOG progress reader error: {exc}")
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def check_video_watchdog(self, now: float) -> None:
+        if not bool(self.cfg.video_watchdog_enabled):
+            return
+        if self.proc is None or self.proc.poll() is not None:
+            return
+        if not self.stream_demanded or not self.cfg.stream_enabled:
+            return
+        if self.cfg.input_mode.lower().strip() != "rtsp":
+            return
+        if self.video_watchdog_fired:
+            return
+
+        startup_grace = max(3.0, float(self.cfg.video_watchdog_startup_grace_sec or 12.0))
+        timeout = max(3.0, float(self.cfg.video_watchdog_timeout_sec or 8.0))
+        runtime = now - self.proc_started_monotonic if self.proc_started_monotonic else 0.0
+        if runtime < startup_grace:
+            return
+
+        age = now - self.last_video_progress_monotonic if self.last_video_progress_monotonic else runtime
+        if age < timeout:
+            return
+
+        self.video_watchdog_fired = True
+        self.log(
+            f"VIDEO WATCHDOG: no video progress for {age:.1f}s "
+            f"on Camera {self.active_camera}; restarting FFmpeg"
+        )
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            self.log("VIDEO WATCHDOG: FFmpeg did not terminate; killing it")
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        except Exception as exc:
+            self.log(f"VIDEO WATCHDOG terminate error: {exc}")
 
     def stop_ffmpeg(self) -> None:
         if not self.proc:
@@ -234,6 +321,8 @@ class CameraStreamer:
                 self.proc.kill()
         self.proc = None
         self.proc_started_monotonic = 0.0
+        self.last_video_progress_monotonic = 0.0
+        self.video_watchdog_fired = False
 
     def discover_onvif_if_needed(self) -> None:
         if not self.cfg.ptz_enabled:
@@ -765,6 +854,11 @@ class CameraStreamer:
             "active_camera": self.active_camera,
             "camera_failover_active": self.failover_active,
             "camera_primary": self.primary_camera,
+            "video_watchdog_enabled": bool(self.cfg.video_watchdog_enabled),
+            "video_progress_age_ms": (
+                int((time.monotonic() - self.last_video_progress_monotonic) * 1000)
+                if running and self.last_video_progress_monotonic else 0
+            ),
         }
         try:
             status, data = self.json_request("POST", url, payload)
@@ -795,6 +889,13 @@ class CameraStreamer:
                     max(3.0, float(self.cfg.failover_probe_interval_sec or 10.0)),
                 )
             )
+        if self.cfg.video_watchdog_enabled and self.cfg.input_mode.lower().strip() == "rtsp":
+            self.log(
+                "VIDEO WATCHDOG enabled: timeout={}s startup_grace={}s".format(
+                    max(3.0, float(self.cfg.video_watchdog_timeout_sec or 8.0)),
+                    max(3.0, float(self.cfg.video_watchdog_startup_grace_sec or 12.0)),
+                )
+            )
         if self.cfg.stream_enabled:
             self.log("STREAM on-demand enabled; waiting for viewer")
         else:
@@ -809,6 +910,7 @@ class CameraStreamer:
                     next_telemetry = now + self.cfg.telemetry_period_sec
                 if self.stream_demanded:
                     self.maybe_return_to_primary(now)
+                    self.check_video_watchdog(now)
                 if self.restart_requested.is_set():
                     self.restart_requested.clear()
                     self.stop_ffmpeg()
