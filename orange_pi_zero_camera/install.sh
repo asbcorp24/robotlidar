@@ -16,7 +16,7 @@ DISPLAY_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-display.service"
 FALLBACK_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-network-fallback.service"
 
 apt-get update
-apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates i2c-tools network-manager
+apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates i2c-tools network-manager hostapd dnsmasq
 
 # Let NetworkManager manage interfaces that are also present in /etc/network/interfaces.
 # This is required for changing DHCP/static IPv4 from the local web panel.
@@ -32,6 +32,13 @@ if [ -f /etc/NetworkManager/NetworkManager.conf ]; then
   fi
 fi
 systemctl enable NetworkManager.service || true
+
+# hostapd/dnsmasq are launched only by RobotLiDAR fallback script.
+# Keep their distro services disabled to avoid fighting over wlan0/port 53.
+systemctl disable hostapd.service >/dev/null 2>&1 || true
+systemctl stop hostapd.service >/dev/null 2>&1 || true
+systemctl disable dnsmasq.service >/dev/null 2>&1 || true
+systemctl stop dnsmasq.service >/dev/null 2>&1 || true
 
 # XR819 / xradio on classic Orange Pi Zero can fail with
 # "RTNETLINK answers: Invalid argument" when NetworkManager randomizes
