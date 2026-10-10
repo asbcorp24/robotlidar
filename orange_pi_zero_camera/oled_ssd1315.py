@@ -225,28 +225,16 @@ def pages(cfg,dev,addr):
 
     web_ip=net.get("web_ip") or "0.0.0.0"
 
-    if net.get("mode")=="AP":
-        p1=[
-            "SETUP MODE",
-            "AP ROBOTLIDAR-SETUP",
-            "OPEN WIFI",
-            "IP "+str(net.get("wifi_ip") or "10.42.0.1"),
-            "WEB "+str(web_ip)+":8088",
-            "NO PASSWORD",
-            "ETH "+("UP" if net.get("eth_ip") else "DOWN"),
-            "WIFI AP",
-        ]
-    else:
-        p1=[
-            "NETWORK",
-            "MODE "+str(net.get("mode","OFFLINE")),
-            "ETH "+(str(net.get("eth_ip")) if net.get("eth_ip") else "DOWN"),
-            "WIFI "+(str(net.get("wifi_ip")) if net.get("wifi_ip") else "OFF"),
-            "SSID "+(str(net.get("wifi_ssid"))[:15] if net.get("wifi_ssid") else "-"),
-            "WEB "+str(web_ip)+":8088",
-            "STREAM "+service("orange-pi-zero-camera.service"),
-            "SERVER "+host(cfg.get("server_url","")),
-        ]
+    p1=[
+        "NETWORK",
+        "ETHERNET ONLY",
+        "ETH "+(str(net.get("eth_ip")) if net.get("eth_ip") else "DOWN"),
+        "WEB "+str(web_ip)+":8088",
+        "STREAM "+service("orange-pi-zero-camera.service"),
+        "SERVER "+host(cfg.get("server_url","")),
+        "WIFI DISABLED",
+        "",
+    ]
 
     if mode=="rtsp":
         c1="ONLINE" if camera_online(cam1_url) else "OFFLINE"
