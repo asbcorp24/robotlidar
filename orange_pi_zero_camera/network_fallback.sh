@@ -74,7 +74,7 @@ ensure_ap_profile() {
     nm connection add type wifi ifname "$WIFI_IF" con-name "$AP_CONN" ssid "$AP_SSID" >/dev/null || return 1
   fi
 
-  nm connection modify "$AP_CONN"     connection.autoconnect no     connection.autoconnect-priority 999     connection.interface-name "$WIFI_IF"     802-11-wireless.mode ap     802-11-wireless.band bg     ipv4.method shared     ipv4.addresses "$AP_ADDR"     ipv6.method ignore >/dev/null || return 1
+  nm connection modify "$AP_CONN"     connection.autoconnect no     connection.autoconnect-priority 999     connection.interface-name "$WIFI_IF"     802-11-wireless.mode ap     802-11-wireless.band bg     802-11-wireless.powersave 2     ipv4.method shared     ipv4.addresses "$AP_ADDR"     ipv6.method ignore >/dev/null || return 1
 }
 
 start_ap() {
