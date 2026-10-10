@@ -58,6 +58,8 @@ fi
 # Python 3.8 / ARMv7 compatibility: pytapo 3.2.15 supports SD-card recordings and is compatible with the
 # legacy Python 3.8 runtime used by this Orange Pi. Newer pytapo releases
 # require a much newer Python/python-kasa stack.
+# urllib3 2.x requires OpenSSL >= 1.1.1; this legacy image uses OpenSSL 1.1.0k.
+"$PYTHON_BIN" -m pip install --upgrade "urllib3<2" "requests<2.32" || true
 "$PYTHON_BIN" -m pip install --upgrade "pytapo==3.2.15" || \
   echo "WARNING: pytapo installation failed; Tapo SD archive will be unavailable until pytapo is installed."
 
