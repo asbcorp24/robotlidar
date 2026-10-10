@@ -82,6 +82,9 @@ start_ap() {
   # are not allowed to auto-activate and take wlan0 away from the phone.
   disable_client_autoconnect
   if ap_is_active; then
+    # NetworkManager/driver may re-enable power save after activation.
+    # Re-assert it on every watchdog pass while setup AP is active.
+    iw dev "$WIFI_IF" set power_save off >/dev/null 2>&1 || true
     return 0
   fi
   ensure_ap_profile || return 1
