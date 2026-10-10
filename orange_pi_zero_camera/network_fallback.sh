@@ -5,8 +5,14 @@ WIFI_IF="${ROBOTLIDAR_WIFI_IF:-wlan0}"
 AP_CONN="${ROBOTLIDAR_AP_CONNECTION:-RobotLiDAR-Setup}"
 AP_SSID="${ROBOTLIDAR_AP_SSID:-RobotLiDAR-Setup}"
 AP_ADDR="${ROBOTLIDAR_AP_ADDR:-10.42.0.1/24}"
+AP_IP="${AP_ADDR%/*}"
 CONFIG_MARKER="/run/robotlidar-wifi-configuring"
 CHECK_SEC=3
+
+HOSTAPD_CONF="/run/robotlidar-hostapd.conf"
+HOSTAPD_PID="/run/robotlidar-hostapd.pid"
+DNSMASQ_CONF="/run/robotlidar-dnsmasq.conf"
+DNSMASQ_PID="/run/robotlidar-dnsmasq.pid"
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -25,9 +31,6 @@ ethernet_has_ipv4() {
   for ifc in /sys/class/net/eth* /sys/class/net/en*; do
     [ -e "$ifc" ] || continue
     ifc="$(basename "$ifc")"
-    # A configured/static IPv4 address can remain present even with the cable
-    # unplugged. Require physical carrier as well, otherwise setup AP would
-    # never start on an offline Ethernet interface.
     [ "$(cat "/sys/class/net/$ifc/carrier" 2>/dev/null || echo 0)" = "1" ] || continue
     if ip -4 -o addr show dev "$ifc" scope global 2>/dev/null | grep -q ' inet '; then
       return 0
@@ -46,14 +49,17 @@ wifi_client_connected() {
   [ -n "$c" ] && [ "$c" != "--" ] && [ "$c" != "(null)" ] && [ "$c" != "$AP_CONN" ]
 }
 
+pid_alive() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  kill -0 "$(cat "$f" 2>/dev/null)" 2>/dev/null
+}
+
 ap_is_active() {
-  [ "$(active_wifi_connection)" = "$AP_CONN" ]
+  pid_alive "$HOSTAPD_PID"
 }
 
 disable_client_autoconnect() {
-  # While setup AP is active, prevent NetworkManager from stealing wlan0
-  # for a previously saved client profile. Client mode is entered only
-  # explicitly from the web UI.
   local line name typ
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -68,47 +74,101 @@ disable_client_autoconnect() {
   done < <(nm -t -f NAME,TYPE connection show 2>/dev/null)
 }
 
-ensure_ap_profile() {
-  if ! nm -t -f NAME connection show 2>/dev/null | grep -Fxq "$AP_CONN"; then
-    log "Creating open setup access point profile: $AP_SSID"
-    nm connection add type wifi ifname "$WIFI_IF" con-name "$AP_CONN" ssid "$AP_SSID" >/dev/null || return 1
-  fi
+write_ap_configs() {
+  cat > "$HOSTAPD_CONF" <<EOF
+interface=$WIFI_IF
+driver=nl80211
+ssid=$AP_SSID
+hw_mode=g
+channel=6
+auth_algs=1
+ignore_broadcast_ssid=0
+wmm_enabled=0
+ieee80211n=0
+EOF
 
-  nm connection modify "$AP_CONN"     connection.autoconnect no     connection.autoconnect-priority 999     connection.interface-name "$WIFI_IF"     802-11-wireless.mode ap     802-11-wireless.band bg     802-11-wireless.powersave 2     ipv4.method shared     ipv4.addresses "$AP_ADDR"     ipv6.method ignore >/dev/null || return 1
+  cat > "$DNSMASQ_CONF" <<EOF
+interface=$WIFI_IF
+bind-interfaces
+dhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h
+dhcp-option=3,$AP_IP
+dhcp-option=6,$AP_IP
+address=/#/$AP_IP
+no-resolv
+log-dhcp
+EOF
 }
 
 start_ap() {
-  # Keep setup AP stable: once fallback mode starts, saved client profiles
-  # are not allowed to auto-activate and take wlan0 away from the phone.
   disable_client_autoconnect
+
   if ap_is_active; then
-    # NetworkManager/driver may re-enable power save after activation.
-    # Re-assert it on every watchdog pass while setup AP is active.
     iw dev "$WIFI_IF" set power_save off >/dev/null 2>&1 || true
     return 0
   fi
-  ensure_ap_profile || return 1
-  nm radio wifi on >/dev/null 2>&1 || true
-  nm device set "$WIFI_IF" managed yes >/dev/null 2>&1 || true
-  ip link set "$WIFI_IF" up >/dev/null 2>&1 || true
-  log "No Ethernet/Wi-Fi client. Starting LOCKED OPEN AP '$AP_SSID' at http://10.42.0.1:8088/"
-  nm connection up "$AP_CONN" ifname "$WIFI_IF" >/dev/null || return 1
 
-  # XR819 can be unstable as an access point with Wi-Fi power saving enabled.
-  # Disable it every time the setup AP is activated.
+  command -v hostapd >/dev/null 2>&1 || { log "hostapd not installed"; return 1; }
+  command -v dnsmasq >/dev/null 2>&1 || { log "dnsmasq not installed"; return 1; }
+
+  # Do not use NetworkManager/wpa_supplicant for XR819 AP mode. On the
+  # Orange Pi Zero 5.3.5+ image it emits invalid nl80211 attributes and
+  # clients can be disconnected shortly after association.
+  nm connection down "$AP_CONN" >/dev/null 2>&1 || true
+  nm device disconnect "$WIFI_IF" >/dev/null 2>&1 || true
+  nm device set "$WIFI_IF" managed no >/dev/null 2>&1 || true
+
+  ip link set "$WIFI_IF" down >/dev/null 2>&1 || true
+  iw dev "$WIFI_IF" set type __ap >/dev/null 2>&1 || true
+  ip addr flush dev "$WIFI_IF" >/dev/null 2>&1 || true
+  ip addr add "$AP_ADDR" dev "$WIFI_IF" >/dev/null 2>&1 || true
+  ip link set "$WIFI_IF" up >/dev/null 2>&1 || return 1
   iw dev "$WIFI_IF" set power_save off >/dev/null 2>&1 || true
+
+  write_ap_configs
+
+  rm -f "$HOSTAPD_PID" "$DNSMASQ_PID"
+  log "No Ethernet/Wi-Fi client. Starting XR819 hostapd AP '$AP_SSID' on channel 6 at http://$AP_IP:8088/"
+  hostapd -B -P "$HOSTAPD_PID" "$HOSTAPD_CONF" >/dev/null 2>&1 || {
+    log "hostapd failed to start"
+    nm device set "$WIFI_IF" managed yes >/dev/null 2>&1 || true
+    return 1
+  }
+
+  dnsmasq --conf-file="$DNSMASQ_CONF" --pid-file="$DNSMASQ_PID" >/dev/null 2>&1 || {
+    log "dnsmasq failed to start"
+    kill "$(cat "$HOSTAPD_PID" 2>/dev/null)" 2>/dev/null || true
+    rm -f "$HOSTAPD_PID"
+    nm device set "$WIFI_IF" managed yes >/dev/null 2>&1 || true
+    return 1
+  }
 }
 
 stop_ap() {
-  if ap_is_active; then
-    log "Network connectivity available. Stopping setup AP '$AP_SSID'"
-    nm connection down "$AP_CONN" >/dev/null 2>&1 || true
+  local had_ap=0
+  if pid_alive "$HOSTAPD_PID"; then
+    had_ap=1
+    kill "$(cat "$HOSTAPD_PID")" 2>/dev/null || true
+  fi
+  if pid_alive "$DNSMASQ_PID"; then
+    had_ap=1
+    kill "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
+  fi
+  rm -f "$HOSTAPD_PID" "$DNSMASQ_PID" "$HOSTAPD_CONF" "$DNSMASQ_CONF"
+
+  if [ "$had_ap" -eq 1 ]; then
+    log "Stopping setup AP '$AP_SSID' and returning $WIFI_IF to NetworkManager"
+    ip link set "$WIFI_IF" down >/dev/null 2>&1 || true
+    ip addr flush dev "$WIFI_IF" >/dev/null 2>&1 || true
+    iw dev "$WIFI_IF" set type managed >/dev/null 2>&1 || true
+    nm device set "$WIFI_IF" managed yes >/dev/null 2>&1 || true
+    nm radio wifi on >/dev/null 2>&1 || true
+    ip link set "$WIFI_IF" up >/dev/null 2>&1 || true
   fi
 }
 
 trap 'stop_ap; exit 0' TERM INT
 
-log "Fallback network watchdog started (wifi=$WIFI_IF, AP=$AP_SSID)"
+log "Fallback network watchdog started (wifi=$WIFI_IF, AP=$AP_SSID, backend=hostapd)"
 
 while true; do
   if ! command -v nmcli >/dev/null 2>&1; then
@@ -123,8 +183,8 @@ while true; do
     continue
   fi
 
-  # The web UI creates this marker while it is intentionally switching wlan0
-  # from the setup AP to a user-selected client network.
+  # Web UI creates this marker while switching from setup AP to a selected
+  # client Wi-Fi network. Stop hostapd first and return wlan0 to NetworkManager.
   if [ -e "$CONFIG_MARKER" ]; then
     stop_ap
     sleep "$CHECK_SEC"
