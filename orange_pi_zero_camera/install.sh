@@ -55,7 +55,9 @@ fi
 if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
   "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
 fi
-"$PYTHON_BIN" -m pip install --upgrade "pytapo==3.4.26" || \
+# Python 3.8 / ARMv7 compatibility: pytapo 3.3.37 predates the python-kasa
+# dependency that now requires newer Python and pulls Rust/cffi build deps.
+"$PYTHON_BIN" -m pip install --upgrade "pytapo==3.3.37" || \
   echo "WARNING: pytapo installation failed; Tapo SD archive will be unavailable until pytapo is installed."
 
 mkdir -p "$CONFIG_DIR"
