@@ -48,11 +48,5 @@
   "return_to_primary": true,
   "video_watchdog_enabled": true,
   "video_watchdog_timeout_sec": 8,
-  "video_watchdog_startup_grace_sec": 12,
-  "wifi": {
-    "interface": "wlan0",
-    "ssid": "",
-    "ethernet_metric": 100,
-    "wifi_metric": 600
-  }
+  "video_watchdog_startup_grace_sec": 12
 }
