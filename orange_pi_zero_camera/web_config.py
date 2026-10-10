@@ -443,29 +443,41 @@ def _wifi_connect_now(req: dict[str, Any]) -> tuple[bool, str]:
     run_cmd(["nmcli", "device", "set", iface, "managed", "yes"], 5)
     run_cmd(["ip", "link", "set", iface, "up"], 5)
 
-    args = ["nmcli", "device", "wifi", "connect", ssid, "ifname", iface]
-    if password:
-        args += ["password", password]
-    code, out = run_cmd(args, 35)
-    if code != 0:
-        # Existing NetworkManager profile may already contain the PSK.
-        code2, profiles = run_cmd(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], 8)
-        existing = ""
-        if code2 == 0:
-            for line in profiles.splitlines():
-                if ":" not in line:
-                    continue
-                name, typ = line.rsplit(":", 1)
-                if name == ssid and typ in ("802-11-wireless", "wifi"):
-                    existing = name
-                    break
-        if not existing:
-            return False, out or "Не удалось подключиться к Wi-Fi"
+    # Prefer an existing profile that actually belongs to the requested SSID.
+    # NetworkManager often names duplicate profiles "SSID 1", "SSID 2", so
+    # matching only connection NAME is not reliable.
+    existing = ""
+    code2, profiles = run_cmd(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], 8)
+    if code2 == 0:
+        for line in profiles.splitlines():
+            if ":" not in line:
+                continue
+            name, typ = line.rsplit(":", 1)
+            if typ not in ("802-11-wireless", "wifi") or name == SETUP_AP_CONNECTION:
+                continue
+            _c, profile_ssid = run_cmd(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name], 5)
+            if profile_ssid.strip() == ssid:
+                existing = name
+                break
+
+    if existing:
+        # The fallback AP deliberately disables Wi-Fi autoconnect. Re-enable
+        # only the profile explicitly selected by the user.
+        run_cmd(["nmcli", "connection", "modify", existing, "connection.autoconnect", "yes"], 8)
         if password:
             run_cmd(["nmcli", "connection", "modify", existing, "802-11-wireless-security.psk", password], 8)
-        code, out = run_cmd(["nmcli", "connection", "up", existing, "ifname", iface], 30)
-        if code != 0:
-            return False, out or "Не удалось активировать Wi-Fi профиль"
+        code, out = run_cmd(["nmcli", "connection", "up", existing, "ifname", iface], 35)
+    else:
+        args = ["nmcli", "device", "wifi", "connect", ssid, "ifname", iface]
+        if password:
+            args += ["password", password]
+        code, out = run_cmd(args, 35)
+
+    if code != 0:
+        # Leave wlan0 free so the fallback watchdog can restore
+        # RobotLiDAR-Setup immediately after the configuration marker is removed.
+        run_cmd(["nmcli", "device", "disconnect", iface], 8)
+        return False, out or "Не удалось подключиться к Wi-Fi"
 
     conn, _detail = _nm_connection_for_interface(iface, False)
     if conn:
