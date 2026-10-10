@@ -90,11 +90,11 @@ EOF
   cat > "$DNSMASQ_CONF" <<EOF
 interface=$WIFI_IF
 bind-interfaces
+# DHCP only. Disable DNS listener to avoid port 53 conflicts with the
+# system resolver/NetworkManager on old Debian images.
+port=0
 dhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h
 dhcp-option=3,$AP_IP
-dhcp-option=6,$AP_IP
-address=/#/$AP_IP
-no-resolv
 log-dhcp
 EOF
 }
