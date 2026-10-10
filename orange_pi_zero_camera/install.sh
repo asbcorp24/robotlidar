@@ -46,6 +46,18 @@ rm -f /etc/NetworkManager/conf.d/10-xr819.conf
 
 systemctl restart NetworkManager.service || true
 
+# Tapo SD-card archive support. The deployed web service uses the custom
+# Python 3.8 runtime on this Orange Pi image when it is available.
+PYTHON_BIN="/usr/local/bin/python3.8"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
+if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+  "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+"$PYTHON_BIN" -m pip install --upgrade "pytapo==3.4.26" || \
+  echo "WARNING: pytapo installation failed; Tapo SD archive will be unavailable until pytapo is installed."
+
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
