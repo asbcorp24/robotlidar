@@ -60,7 +60,7 @@ fi
 # require a much newer Python/python-kasa stack.
 # urllib3 2.x requires OpenSSL >= 1.1.1; this legacy image uses OpenSSL 1.1.0k.
 "$PYTHON_BIN" -m pip install --upgrade "urllib3<2" "requests<2.32" || true
-"$PYTHON_BIN" -m pip install --upgrade "pytapo==3.2.15" || \
+"$PYTHON_BIN" -m pip install --upgrade "aiofiles<24" "pytapo==3.2.15" || \
   echo "WARNING: pytapo installation failed; Tapo SD archive will be unavailable until pytapo is installed."
 
 mkdir -p "$CONFIG_DIR"
