@@ -20,12 +20,15 @@ def _import_pytapo():
     try:
         from pytapo import Tapo
         from pytapo.media_stream.downloader import Downloader
-        from pytapo.media_stream.snapshot import getRecordingSnapshot
+        try:
+            from pytapo.media_stream.snapshot import getRecordingSnapshot
+        except Exception:
+            getRecordingSnapshot = None
         return Tapo, Downloader, getRecordingSnapshot
     except Exception as exc:
         raise TapoArchiveError(
             "pytapo не установлен или не загружается: {}. "
-            "Запустите /opt/robotlidar/orange_pi_zero_camera/install.sh".format(exc)
+            "Для этой Orange Pi используется pytapo 3.3.37 (Python 3.8 compatible).".format(exc)
         )
 
 
@@ -148,6 +151,8 @@ def list_recordings(cfg: dict[str, Any], date_text: str) -> dict[str, Any]:
 
 def recording_snapshot(cfg: dict[str, Any], start_time: int) -> bytes:
     _Tapo, _Downloader, getRecordingSnapshot = _import_pytapo()
+    if getRecordingSnapshot is None:
+        raise TapoArchiveError("Миниатюры записей не поддерживаются версией pytapo для Python 3.8")
     tapo = _new_client(cfg)
     try:
         jpeg = asyncio.run(getRecordingSnapshot(tapo, int(start_time), timeout=8))
@@ -188,20 +193,37 @@ def download_recording(
         time_correction = await asyncio.get_event_loop().run_in_executor(
             None, tapo.getTimeCorrection
         )
-        downloader = Downloader(
-            tapo,
-            start_time,
-            end_time,
-            time_correction,
-            temp_dir + os.sep,
-            overwriteFiles=True,
-            window_size=int(cfg.get("tapo_download_window") or 50),
-            fileName=file_name,
-            stall_timeout=int(cfg.get("tapo_download_timeout") or 120),
-            progressInterval=5.0,
-            output=output,
-            method="download",
-        )
+        # pytapo 3.3.37 is used on this legacy Python 3.8 / ARMv7 image.
+        # Its Downloader supports MP4 playback-download, but not the newer
+        # fast-download/output/stall_timeout arguments.
+        try:
+            downloader = Downloader(
+                tapo,
+                start_time,
+                end_time,
+                time_correction,
+                temp_dir + os.sep,
+                overwriteFiles=True,
+                window_size=int(cfg.get("tapo_download_window") or 50),
+                fileName=file_name,
+                stall_timeout=int(cfg.get("tapo_download_timeout") or 120),
+                progressInterval=5.0,
+                output=output,
+                method="download",
+            )
+        except TypeError:
+            if output != "mp4":
+                raise TapoArchiveError("На Python 3.8 доступно скачивание архива только в MP4")
+            downloader = Downloader(
+                tapo,
+                start_time,
+                end_time,
+                time_correction,
+                temp_dir + os.sep,
+                overwriteFiles=True,
+                window_size=int(cfg.get("tapo_download_window") or 50),
+                fileName=file_name,
+            )
         last_file = expected
         async for status in downloader.download():
             if isinstance(status, dict) and status.get("fileName"):
