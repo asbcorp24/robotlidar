@@ -55,9 +55,10 @@ fi
 if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
   "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
 fi
-# Python 3.8 / ARMv7 compatibility: pytapo 3.3.37 predates the python-kasa
-# dependency that now requires newer Python and pulls Rust/cffi build deps.
-"$PYTHON_BIN" -m pip install --upgrade "pytapo==3.3.37" || \
+# Python 3.8 / ARMv7 compatibility: pytapo 3.2.15 supports SD-card recordings and is compatible with the
+# legacy Python 3.8 runtime used by this Orange Pi. Newer pytapo releases
+# require a much newer Python/python-kasa stack.
+"$PYTHON_BIN" -m pip install --upgrade "pytapo==3.2.15" || \
   echo "WARNING: pytapo installation failed; Tapo SD archive will be unavailable until pytapo is installed."
 
 mkdir -p "$CONFIG_DIR"
