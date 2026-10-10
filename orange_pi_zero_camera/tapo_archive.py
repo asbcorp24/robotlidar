@@ -28,7 +28,7 @@ def _import_pytapo():
     except Exception as exc:
         raise TapoArchiveError(
             "pytapo не установлен или не загружается: {}. "
-            "Для этой Orange Pi используется pytapo 3.3.37 (Python 3.8 compatible).".format(exc)
+            "Для этой Orange Pi используется pytapo 3.2.15 (Python 3.8 compatible).".format(exc)
         )
 
 
@@ -193,7 +193,7 @@ def download_recording(
         time_correction = await asyncio.get_event_loop().run_in_executor(
             None, tapo.getTimeCorrection
         )
-        # pytapo 3.3.37 is used on this legacy Python 3.8 / ARMv7 image.
+        # pytapo 3.2.15 is used on this legacy Python 3.8 / ARMv7 image.
         # Its Downloader supports MP4 playback-download, but not the newer
         # fast-download/output/stall_timeout arguments.
         try:
