@@ -18,6 +18,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from onvif_discovery import discover as discover_onvif, diagnose_ptz, get_ptz_status, ws_security
+from tapo_archive import TapoArchiveError, cleanup_download, download_recording, list_recordings, recording_snapshot
 
 CONFIG_PATH = Path(os.environ.get("ORANGE_PI_CAMERA_CONFIG", "/etc/robotlidar/orange-pi-zero-camera.json"))
 LISTEN_HOST = os.environ.get("ORANGE_PI_WEB_HOST", "0.0.0.0")
@@ -912,6 +913,15 @@ HTML = r'''<!doctype html>
 <section class="card"><h2>Ethernet / IP</h2><div class="net"><strong>Текущее подключение</strong><div id="ethernet" class="muted" style="margin-top:6px">Определение адреса...</div></div><div class="row"><div><label>Интерфейс</label><select id="network_interface"></select></div><div><label>Режим IPv4</label><select id="network_mode" onchange="toggleNetworkFields()"><option value="dhcp">DHCP (автоматически)</option><option value="static">Статический IP</option></select></div></div><div id="staticNetwork"><div class="row"><div><label>IP адрес</label><input id="network_ip" placeholder="192.168.1.75"></div><div><label>Префикс</label><input id="network_prefix" type="number" min="1" max="32" value="24"></div></div><div class="row"><div><label>Шлюз</label><input id="network_gateway" placeholder="192.168.1.1"></div><div><label>DNS</label><input id="network_dns" placeholder="8.8.8.8 1.1.1.1"></div></div></div><div class="actions"><button class="primary" onclick="applyNetwork()">Применить сеть</button></div><div id="networkMsg" class="msg"></div><p class="muted">DHCP повторно запрашивает адрес при появлении роутера. При смене на статический IP текущая страница отключится — откройте панель уже по новому адресу.</p></section>
 <section class="card"><h2>Сервер и устройство</h2><label>Device ID</label><input id="device_id"><label>Название</label><input id="device_name"><label>Адрес центрального сервера</label><input id="server_url"><label><input id="stream_enabled" type="checkbox" style="width:auto"> Транслировать видео на центральный сервер</label><label><input id="local_preview_enabled" type="checkbox" style="width:auto"> Разрешить локальный просмотр камеры</label><p class="muted">Обе функции независимы: можно отдельно включать SRT на сервер и локальный просмотр. ONVIF/PTZ работают независимо от них.</p><div class="row"><div><label>SRT latency, мс</label><input id="srt_latency_ms" type="number"></div><div><label>Telemetry, сек</label><input id="telemetry_period_sec" type="number" step="0.5"></div></div></section>
 <section class="card"><h2>Камеры H.264</h2><label>Источник</label><select id="input_mode"><option value="rtsp">RTSP H.264 (copy)</option><option value="v4l2_h264">USB H.264</option><option value="v4l2_encode">USB + encode</option><option value="test">Тестовая картинка</option></select><div class="row"><div><label>Имя Camera 1</label><input id="camera1_name" placeholder="Передняя"></div><div><label>Имя Camera 2</label><input id="camera2_name" placeholder="Задняя"></div></div><label>RTSP Camera 1</label><input id="camera1_url" placeholder="rtsp://192.168.1.149:554/stream1"><label>RTSP Camera 2</label><input id="camera2_url" placeholder="rtsp://192.168.1.150:554/stream1"><div class="row"><div><label>Активная камера при запуске</label><select id="active_camera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select></div><div><label>Основная камера для автовозврата</label><select id="primary_camera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select></div></div><label><input id="auto_failover_enabled" type="checkbox" style="width:auto"> Автоматически переключаться на вторую камеру при отказе</label><div class="row"><div><label>Ошибок до переключения</label><input id="failover_after_failures" type="number" min="1" max="20"></div><div><label>Проверка основной, сек</label><input id="failover_probe_interval_sec" type="number" min="3" max="300" step="1"></div></div><label><input id="return_to_primary" type="checkbox" style="width:auto"> Автоматически вернуться на основную камеру после восстановления</label><hr style="border:0;border-top:1px solid #e4e9ef;margin:16px 0"><label><input id="video_watchdog_enabled" type="checkbox" style="width:auto"> Watchdog зависшего RTSP-видео</label><div class="row"><div><label>Нет видеопрогресса, сек</label><input id="video_watchdog_timeout_sec" type="number" min="3" max="120" step="1"></div><div><label>Задержка после запуска, сек</label><input id="video_watchdog_startup_grace_sec" type="number" min="3" max="120" step="1"></div></div><p class="muted">Если RTSP-соединение формально осталось открытым, но FFmpeg перестал получать/передавать видеоданные, watchdog завершит зависший FFmpeg. После этого сработает обычный failover/backoff.</p><div id="cameraRuntime" class="net" style="margin-top:10px"><strong>Текущая камера:</strong> определение...</div><input id="input_url" type="hidden"><label>V4L2 устройство</label><input id="video_device"><div class="row"><div><label>Ширина</label><input id="width" type="number"></div><div><label>Высота</label><input id="height" type="number"></div><div><label>FPS</label><input id="fps" type="number"></div><div><label>Битрейт, kbps</label><input id="bitrate_kbps" type="number"></div></div><label>Encoder</label><input id="encoder"><p class="muted">В режиме failover после заданного числа подряд быстрых ошибок FFmpeg проверяется резервная камера. Если она доступна — поток переключается на неё. При включённом возврате основная камера периодически проверяется и после восстановления снова становится активной.</p></section>
+<section class="card"><h2>Tapo · архив microSD</h2>
+<label><input id="tapo_archive_enabled" type="checkbox" style="width:auto"> Доступ к записям на microSD камеры Tapo</label>
+<div class="row"><div><label>IP / hostname Tapo</label><input id="tapo_host" placeholder="192.168.1.149 · пусто = взять из Camera 1"></div><div><label>Пользователь</label><input id="tapo_user" placeholder="admin"></div></div>
+<label>Пароль TP-Link / Tapo Cloud</label><input id="tapo_cloud_password" type="password" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять">
+<div class="row"><div><label>Окно скачивания</label><input id="tapo_download_window" type="number" min="10" max="500" value="50"></div><div><label>Таймаут потока, сек</label><input id="tapo_download_timeout" type="number" min="15" max="600" value="120"></div></div>
+<div class="row"><div><label>Дата архива</label><input id="tapo_archive_date" type="date"></div><div style="display:flex;align-items:end"><button class="secondary" onclick="loadTapoArchive()">Показать записи</button></div></div>
+<div id="tapoArchiveMsg" class="msg"></div><div id="tapoArchiveList"></div>
+<p class="muted">Записи читаются напрямую с microSD камеры по локальной сети через pytapo. Видео на Orange Pi постоянно не копируется. Кнопка «Скачать MP4» загружает выбранный фрагмент с камеры по запросу.</p>
+</section>
 <section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"><div class="actions"><button class="secondary" onclick="probeOnvif()">Проверить возможности ONVIF</button></div><pre id="onvifDiag" class="logbox" style="height:220px">Диагностика ещё не запускалась.</pre></section>
 </div>
 <section class="card" style="margin-top:16px"><h2>Поиск RTSP / ONVIF камер</h2><p class="muted">Сканируется локальный проводной сегмент. Проверяются RTSP-порты 554, 8554, 10554 и типовые ONVIF HTTP-порты. Сканируйте только сеть, которой вы управляете или имеете разрешение проверять.</p><div class="actions"><button id="scanBtn" class="primary" onclick="scanCameras()">Сканировать сеть</button></div><div id="scanMsg" class="msg"></div><div id="scanResults"></div></section>
@@ -934,6 +944,10 @@ async function load(){try{
  if(!Object.prototype.hasOwnProperty.call(cfg,'video_watchdog_enabled'))cfg.video_watchdog_enabled=true;
  if(!Object.prototype.hasOwnProperty.call(cfg,'video_watchdog_timeout_sec'))cfg.video_watchdog_timeout_sec=8;
  if(!Object.prototype.hasOwnProperty.call(cfg,'video_watchdog_startup_grace_sec'))cfg.video_watchdog_startup_grace_sec=12;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_archive_enabled'))cfg.tapo_archive_enabled=false;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_user'))cfg.tapo_user='admin';
+ if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_download_window'))cfg.tapo_download_window=50;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_download_timeout'))cfg.tapo_download_timeout=120;
  Object.entries(cfg).forEach(([k,v])=>setValue(k,v));
  if(d.active_camera_runtime){const n=Number(d.active_camera_runtime);$('cameraRuntime').innerHTML='<strong>Текущая камера:</strong> Camera '+n+(n===Number(cfg.primary_camera||1)?' · основная':' · резервная / ручная')}
  $('ethernet').textContent=(d.ethernet||[]).map(x=>`${x.interface}: ${x.address}`).join(' · ')||'Проводной IPv4 адрес не определён';
@@ -947,6 +961,7 @@ async function load(){try{
  $('network_gateway').value=saved.gateway||n.gateway||'';
  $('network_dns').value=saved.dns||n.dns||'';
  toggleNetworkFields();
+ if(!$('tapo_archive_date').value)$('tapo_archive_date').value=new Date().toISOString().slice(0,10);
  if(!n.available){$('networkMsg').className='msg errtxt';$('networkMsg').textContent='NetworkManager/nmcli не найден: изменение IP из панели недоступно.'}
  const st=d.streamer||{};$('svc').innerHTML=`<span class="dot ${st.active?'ok':''}"></span><span>${cfg.stream_enabled===false?'SRT выключен · PTZ доступен':'трансляция: '+(st.state||'unknown')}</span>`
 }catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
@@ -954,12 +969,16 @@ async function applyNetwork(){const m=$('networkMsg');m.className='msg';m.textCo
 async function scanWifi(){const m=$('wifiMsg'),sel=$('wifi_ssid');m.className='msg';m.textContent='Сканирование Wi-Fi...';try{const d=await api('/api/wifi-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface:$('wifi_interface').value})});sel.innerHTML='';for(const x of (d.networks||[])){const o=document.createElement('option');o.value=x.ssid;o.textContent=x.ssid+' · '+x.signal+'%'+(x.security?' · '+x.security:'')+(x.active?' · подключено':'');sel.appendChild(o)}if(!(d.networks||[]).length){const o=document.createElement('option');o.value='';o.textContent='Сети не найдены';sel.appendChild(o)}m.className='msg oktxt';m.textContent='Найдено сетей: '+(d.networks||[]).length}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function connectWifi(){const m=$('wifiMsg');const manual=$('wifi_ssid_manual').value.trim();const body={interface:$('wifi_interface').value,ssid:manual||$('wifi_ssid').value,password:$('wifi_password').value,ethernet_metric:Number($('ethernet_metric').value||100),wifi_metric:Number($('wifi_metric').value||600)};if(!body.ssid){m.className='msg errtxt';m.textContent='Выберите Wi-Fi сеть';return}m.className='msg';m.textContent='Подключение...';try{const d=await api('/api/wifi-connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('wifi_password').value='';m.className='msg oktxt';m.textContent=(d.message||'Подключение запланировано')+' После переключения подключите телефон/ноутбук к выбранной сети и откройте Orange Pi по её новому IP.'}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function disconnectWifi(){const m=$('wifiMsg');try{const d=await api('/api/wifi-disconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface:$('wifi_interface').value})});m.className='msg oktxt';m.textContent=d.message||'Wi-Fi отключён';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
-function collect(){const keys=['device_id','device_name','server_url','input_mode','input_url','camera1_name','camera1_url','camera2_name','camera2_url','video_device','encoder','onvif_device_url','onvif_url','onvif_username','onvif_profile_token'];const nums=['width','height','fps','bitrate_kbps','srt_latency_ms','telemetry_period_sec','active_camera','primary_camera','failover_after_failures','failover_probe_interval_sec','video_watchdog_timeout_sec','video_watchdog_startup_grace_sec'];const out={...cfg};keys.forEach(k=>out[k]=$(k).value);nums.forEach(k=>out[k]=Number($(k).value));if(!out.camera1_url)out.camera1_url=out.input_url;out.input_url=out.camera1_url;out.stream_enabled=$('stream_enabled').checked;out.local_preview_enabled=$('local_preview_enabled').checked;out.auto_failover_enabled=$('auto_failover_enabled').checked;out.return_to_primary=$('return_to_primary').checked;out.video_watchdog_enabled=$('video_watchdog_enabled').checked;out.ptz_enabled=$('ptz_enabled').checked;out.onvif_auto_discovery=$('onvif_auto_discovery').checked;const p=$('onvif_password').value;if(p)out.onvif_password=p;return out}
-async function saveConfig(restart){const m=$('saveMsg');m.className='msg';m.textContent='Сохранение...';try{const d=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),restart})});m.className='msg oktxt';m.textContent=d.message||'Сохранено';$('onvif_password').value='';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
+function collect(){const keys=['device_id','device_name','server_url','input_mode','input_url','camera1_name','camera1_url','camera2_name','camera2_url','video_device','encoder','onvif_device_url','onvif_url','onvif_username','onvif_profile_token','tapo_host','tapo_user'];const nums=['width','height','fps','bitrate_kbps','srt_latency_ms','telemetry_period_sec','active_camera','primary_camera','failover_after_failures','failover_probe_interval_sec','video_watchdog_timeout_sec','video_watchdog_startup_grace_sec','tapo_download_window','tapo_download_timeout'];const out={...cfg};keys.forEach(k=>out[k]=$(k).value);nums.forEach(k=>out[k]=Number($(k).value));if(!out.camera1_url)out.camera1_url=out.input_url;out.input_url=out.camera1_url;out.stream_enabled=$('stream_enabled').checked;out.local_preview_enabled=$('local_preview_enabled').checked;out.auto_failover_enabled=$('auto_failover_enabled').checked;out.return_to_primary=$('return_to_primary').checked;out.video_watchdog_enabled=$('video_watchdog_enabled').checked;out.ptz_enabled=$('ptz_enabled').checked;out.onvif_auto_discovery=$('onvif_auto_discovery').checked;out.tapo_archive_enabled=$('tapo_archive_enabled').checked;const p=$('onvif_password').value;if(p)out.onvif_password=p;const tp=$('tapo_cloud_password').value;if(tp)out.tapo_cloud_password=tp;return out}
+async function saveConfig(restart){const m=$('saveMsg');m.className='msg';m.textContent='Сохранение...';try{const d=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),restart})});m.className='msg oktxt';m.textContent=d.message||'Сохранено';$('onvif_password').value='';$('tapo_cloud_password').value='';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function restartService(){try{const d=await api('/api/restart',{method:'POST'});$('saveMsg').className='msg oktxt';$('saveMsg').textContent=d.message||'Перезапущено';setTimeout(load,800)}catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
 function useCamera(slot,url,ip,onvifPort){$('input_mode').value='rtsp';$('camera'+slot+'_url').value=url;if(slot===1)$('input_url').value=url;if(onvifPort&&slot===1){$('onvif_auto_discovery').checked=true;$('onvif_device_url').value=`http://${ip}:${onvifPort}/onvif/device_service`}$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Камера добавлена как Camera ${slot}. Сохраните настройки.`;window.scrollTo({top:$('camera'+slot+'_url').getBoundingClientRect().top+window.scrollY-100,behavior:'smooth'})}
 function renderScan(d){const devs=d.devices||[];if(!devs.length){$('scanResults').innerHTML='';$('scanMsg').className='msg';$('scanMsg').textContent=`Сканирование ${d.network||''} завершено. RTSP/ONVIF устройств не найдено.`;return}let h='<table class="scanTable"><thead><tr><th>IP</th><th>RTSP</th><th>ONVIF</th><th></th></tr></thead><tbody>';for(const x of devs){const r=(x.rtsp||[]);const o=(x.onvif_ports||[]);const rt=r.length?r.map(v=>`<div><span class="pill">:${v.port}</span> <span class="url">${v.url}</span><br><span class="muted">${v.response||''}</span></div>`).join(''):'—';const ov=o.length?o.map(p=>`<span class="pill">:${p}</span>`).join(' '):'—';let btn='';if(r.length){const u=JSON.stringify(r[0].url),ip=JSON.stringify(x.ip),op=o.length?o[0]:0;btn=`<button class="secondary" onclick='useCamera(1,${u},${ip},${op})'>В Camera 1</button> <button class="secondary" onclick='useCamera(2,${u},${ip},0)'>В Camera 2</button>`}h+=`<tr><td><strong>${x.ip}</strong>${x.hostname?`<div class="muted">${x.hostname}</div>`:''}</td><td>${rt}</td><td>${ov}</td><td>${btn}</td></tr>`}h+='</tbody></table>';$('scanResults').innerHTML=h;$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Найдено устройств: ${devs.length}. Сеть: ${d.network||''}`}
 async function scanCameras(){const b=$('scanBtn'),m=$('scanMsg');b.disabled=true;b.textContent='Сканирование...';m.className='msg';m.textContent='Проверяю локальную сеть. Это может занять несколько секунд...';$('scanResults').innerHTML='';try{const d=await api('/api/camera-scan',{method:'POST'});renderScan(d)}catch(e){m.className='msg errtxt';m.textContent=e.message}finally{b.disabled=false;b.textContent='Сканировать сеть'}}
+
+function fmtDuration(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return m+'м '+String(s).padStart(2,'0')+'с'}
+function tapoTime(x){if(!x)return '—';const d=new Date(x);return Number.isNaN(d.getTime())?String(x):d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+async function loadTapoArchive(){const m=$('tapoArchiveMsg'),box=$('tapoArchiveList'),date=$('tapo_archive_date').value;m.className='msg';m.textContent='Читаю список записей с microSD...';box.innerHTML='';try{const d=await api('/api/tapo/archive?date='+encodeURIComponent(date));m.className='msg oktxt';m.textContent='Камера '+d.host+' · записей: '+d.count;if(!d.recordings.length){box.innerHTML='<p class="muted">За эту дату записей нет.</p>';return}let h='<table class="scanTable"><thead><tr><th>Превью</th><th>Время</th><th>Длительность</th><th>Тип</th><th></th></tr></thead><tbody>';for(const r of d.recordings){const st=Number(r.startTime),en=Number(r.endTime);const img='/api/tapo/archive/snapshot?start='+encodeURIComponent(st);const dl='/api/tapo/archive/download?start='+encodeURIComponent(st)+'&end='+encodeURIComponent(en)+'&format=mp4';h+='<tr><td><img src="'+img+'" loading="lazy" style="width:128px;max-height:80px;object-fit:cover;border-radius:6px" onerror="this.style.display=\'none\'"></td><td><strong>'+tapoTime(r.startLocal)+'</strong><div class="muted">'+tapoTime(r.endLocal)+'</div></td><td>'+fmtDuration(r.duration)+'</td><td>'+(r.video_type||'—')+'</td><td><a class="secondary" style="display:inline-block;text-decoration:none" href="'+dl+'">Скачать MP4</a></td></tr>'}h+='</tbody></table>';box.innerHTML=h}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 
 async function probeOnvif(){const box=$('onvifDiag');box.textContent='Опрос камеры...';try{const d=await api('/api/onvif-diagnose',{method:'POST'});const lines=[];lines.push('PTZ URL: '+(d.ptz_url||'—'));lines.push('Profile: '+(d.profile_token||'—'));for(const k of ['GetStatus','GetConfigurations','GetConfigurationOptions','GetPresets']){const x=d[k]||{};lines.push('');lines.push(k+': '+(x.supported?'SUPPORTED':'NOT SUPPORTED'));if(x.error)lines.push('  error: '+x.error);if(x.pan_x!=null||x.tilt_y!=null)lines.push('  pan='+String(x.pan_x??'—')+' tilt='+String(x.tilt_y??'—'));if(x.zoom_x!=null)lines.push('  zoom='+x.zoom_x);if(x.move_status)lines.push('  move_status='+JSON.stringify(x.move_status));if(x.configurations)lines.push('  configs='+JSON.stringify(x.configurations));if(x.spaces)lines.push('  spaces='+JSON.stringify(x.spaces));if(x.presets)lines.push('  presets='+JSON.stringify(x.presets));}box.textContent=lines.join('\n')}catch(e){box.textContent='Ошибка: '+e.message}}
 
@@ -1056,6 +1075,50 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path.startswith("/api/tapo/archive"):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            cfg = load_config()
+            try:
+                if parsed.path == "/api/tapo/archive":
+                    date_text = str(params.get("date", [""])[0])
+                    self.send_json(200, {"ok": True, **list_recordings(cfg, date_text)})
+                    return
+                if parsed.path == "/api/tapo/archive/snapshot":
+                    start_time = int(params.get("start", ["0"])[0])
+                    body = recording_snapshot(cfg, start_time)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Cache-Control", "private, max-age=300")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if parsed.path == "/api/tapo/archive/download":
+                    start_time = int(params.get("start", ["0"])[0])
+                    end_time = int(params.get("end", ["0"])[0])
+                    output = str(params.get("format", ["mp4"])[0]).lower()
+                    path, filename, mime = download_recording(cfg, start_time, end_time, output)
+                    try:
+                        size = os.path.getsize(path)
+                        self.send_response(200)
+                        self.send_header("Content-Type", mime)
+                        self.send_header("Content-Disposition", 'attachment; filename="{}"'.format(filename))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(size))
+                        self.end_headers()
+                        with open(path, "rb") as fh:
+                            while True:
+                                chunk = fh.read(64 * 1024)
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                    finally:
+                        cleanup_download(path)
+                    return
+            except (TapoArchiveError, ValueError) as exc:
+                self.send_json(500, {"detail": str(exc)})
+                return
         if self.path.startswith("/api/log"):
             parsed = urllib.parse.urlparse(self.path)
             params = urllib.parse.parse_qs(parsed.query)
@@ -1067,6 +1130,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             cfg = load_config()
             cfg["onvif_password"] = ""
+            cfg["tapo_cloud_password"] = ""
             self.send_json(200, {"ok": True, "config": cfg, "active_camera_runtime": runtime_active_camera(cfg), "ethernet": ethernet_info(), "network": network_state(cfg), "streamer": service_state(STREAM_SERVICE)})
             return
         self.send_json(404, {"detail": "Not found"})
@@ -1147,6 +1211,8 @@ class Handler(BaseHTTPRequestHandler):
                 old_cfg = load_config()
                 if not new_cfg.get("onvif_password") and old_cfg.get("onvif_password"):
                     new_cfg["onvif_password"] = old_cfg["onvif_password"]
+                if not new_cfg.get("tapo_cloud_password") and old_cfg.get("tapo_cloud_password"):
+                    new_cfg["tapo_cloud_password"] = old_cfg["tapo_cloud_password"]
                 device_id = str(new_cfg.get("device_id") or "").strip()
                 server_url = str(new_cfg.get("server_url") or "").strip()
                 if len(device_id) < 3:
