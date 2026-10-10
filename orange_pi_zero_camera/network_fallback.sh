@@ -89,7 +89,11 @@ start_ap() {
   nm device set "$WIFI_IF" managed yes >/dev/null 2>&1 || true
   ip link set "$WIFI_IF" up >/dev/null 2>&1 || true
   log "No Ethernet/Wi-Fi client. Starting LOCKED OPEN AP '$AP_SSID' at http://10.42.0.1:8088/"
-  nm connection up "$AP_CONN" ifname "$WIFI_IF" >/dev/null
+  nm connection up "$AP_CONN" ifname "$WIFI_IF" >/dev/null || return 1
+
+  # XR819 can be unstable as an access point with Wi-Fi power saving enabled.
+  # Disable it every time the setup AP is activated.
+  iw dev "$WIFI_IF" set power_save off >/dev/null 2>&1 || true
 }
 
 stop_ap() {
