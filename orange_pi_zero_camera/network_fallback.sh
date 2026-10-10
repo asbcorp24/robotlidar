@@ -95,6 +95,10 @@ bind-interfaces
 port=0
 dhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h
 dhcp-option=3,$AP_IP
+# Android 14 requests DHCP option 114 (Captive-Portal). Point it directly
+# at the local RobotLiDAR configuration UI so phones treat this as an
+# intentional setup network instead of abandoning it for "no Internet".
+dhcp-option=114,http://$AP_IP:8088/
 log-dhcp
 EOF
 }
