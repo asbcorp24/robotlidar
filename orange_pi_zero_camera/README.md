@@ -77,6 +77,38 @@ DNS:     8.8.8.8 1.1.1.1
 
 Настройка выполняется через NetworkManager / `nmcli` и сохраняется в сетевом профиле NetworkManager. Выбранные параметры также записываются в секцию `network` файла `/etc/robotlidar/orange-pi-zero-camera.json`.
 
+## Громкая связь Tapo: сайт → динамик камеры
+
+Для Tapo добавлен режим **Push-to-Talk**. Браузер берёт микрофон только пока пользователь удерживает кнопку «Говорить», преобразует звук в mono PCM 8 kHz и передаёт его через центральный RobotLiDAR server по уже существующему исходящему control WebSocket Orange Pi.
+
+На Orange Pi поток передаётся в локальный `go2rtc`, который использует нативный Tapo two-way audio/backchannel. Для камер Tapo обычно используется PCMA/8000.
+
+Путь звука:
+
+```text
+Browser microphone
+ -> HTTPS RobotLiDAR
+ -> authenticated /api/devices/{id}/talk
+ -> control WSS
+ -> Orange Pi
+ -> local go2rtc
+ -> Tapo proprietary talkback
+ -> camera speaker
+```
+
+Настройки:
+
+```json
+"tapo_talkback_enabled": true,
+"tapo_host": "192.168.1.115",
+"tapo_cloud_password": "TP-LINK-CLOUD-PASSWORD",
+"go2rtc_bin": "/usr/local/bin/go2rtc"
+```
+
+После включения или изменения IP/пароля нажмите **«Сохранить и перезапустить»**, потому что streamer читает эти параметры при старте. `install.sh` устанавливает 32-bit ARM сборку go2rtc для Orange Pi Zero H2+.
+
+Микрофон браузера требует HTTPS (или localhost). Центральный сайт RobotLiDAR уже должен открываться по HTTPS.
+
 ## Архив microSD камер Tapo
 
 Для Tapo C100/C200 и совместимых камер локальная панель умеет читать архив microSD через библиотеку `pytapo`.
