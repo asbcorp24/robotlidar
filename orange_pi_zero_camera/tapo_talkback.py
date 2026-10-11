@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
 import http.server
 import json
 import os
@@ -112,11 +111,8 @@ class TapoTalkback:
         if not password:
             raise TapoTalkbackError("Tapo talkback: не задан пароль Tapo Cloud")
 
-        # Tapo firmware variants accept different cloud-password auth forms.
-        # This camera rejects the plain-password and SHA256 forms, so use the
-        # documented admin + UPPERCASE MD5 variant.
-        password_hash = hashlib.md5(password.encode("utf-8")).hexdigest().upper()
-        source = "tapo://admin:{}@{}".format(password_hash, host)
+        # go2rtc Tapo source: cloud password without username.
+        source = "tapo://{}@{}".format(urllib.parse.quote(password, safe=""), host)
         content = (
             'api:\n'
             '  listen: "127.0.0.1:1984"\n'
