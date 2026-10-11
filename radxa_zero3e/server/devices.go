@@ -26,7 +26,11 @@ type telemetryRequest struct {
 	PanCDeg       *int64 `json:"pan_cdeg"`
 	TiltCDeg      *int64 `json:"tilt_cdeg"`
 	LinkMbps      *int64 `json:"link_mbps"`
-	ActiveCamera  *int64 `json:"active_camera"`
+	ActiveCamera  *int64   `json:"active_camera"`
+	GPSValid      *bool    `json:"gps_valid"`
+	GPSLatitude   *float64 `json:"gps_latitude"`
+	GPSLongitude  *float64 `json:"gps_longitude"`
+	GPSUpdatedMS  *int64   `json:"gps_updated_ms"`
 }
 
 func (s *server) listDevices(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +250,23 @@ func (s *server) telemetry(w http.ResponseWriter, r *http.Request, id string) {
 	if req.TiltCDeg != nil { d.TiltCDeg.Store(*req.TiltCDeg) }
 	if req.LinkMbps != nil { d.LinkMbps.Store(*req.LinkMbps) }
 	if req.ActiveCamera != nil && (*req.ActiveCamera == 1 || *req.ActiveCamera == 2) { d.ActiveCamera.Store(*req.ActiveCamera) }
+
+	if req.GPSValid != nil {
+		if !*req.GPSValid {
+			d.GPSValid.Store(0)
+		} else if req.GPSLatitude != nil && req.GPSLongitude != nil &&
+			*req.GPSLatitude >= -90 && *req.GPSLatitude <= 90 &&
+			*req.GPSLongitude >= -180 && *req.GPSLongitude <= 180 {
+			d.GPSLatE7.Store(int64(*req.GPSLatitude * 1e7))
+			d.GPSLonE7.Store(int64(*req.GPSLongitude * 1e7))
+			if req.GPSUpdatedMS != nil && *req.GPSUpdatedMS > 0 {
+				d.GPSUpdatedMS.Store(*req.GPSUpdatedMS)
+			} else {
+				d.GPSUpdatedMS.Store(time.Now().UnixMilli())
+			}
+			d.GPSValid.Store(1)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -396,7 +417,7 @@ func controlTransportLabel(d *device) string {
 }
 
 func (d *device) publicJSON(alias string) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id": d.ID, "device_id": d.ID, "device_type": d.DeviceType, "name": alias,
 		"online": d.online(), "video_online": d.stream.videoOnline(),
 		"streamType": "webrtc", "streamUrl": "/api/devices/" + d.ID + "/webrtc",
@@ -408,6 +429,15 @@ func (d *device) publicJSON(alias string) map[string]any {
 		"talkback": d.Talkback,
 		"video_packets": d.stream.Packets.Load(), "video_bytes": d.stream.Bytes.Load(), "viewers": d.stream.Viewers.Load(),
 	}
+	if d.GPSValid.Load() != 0 {
+		out["gps"] = map[string]any{
+			"valid": true,
+			"latitude": float64(d.GPSLatE7.Load()) / 1e7,
+			"longitude": float64(d.GPSLonE7.Load()) / 1e7,
+			"updated_ms": d.GPSUpdatedMS.Load(),
+		}
+	}
+	return out
 }
 
 func (d *device) runtimeJSON() map[string]any {
