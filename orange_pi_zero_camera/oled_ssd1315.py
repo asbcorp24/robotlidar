@@ -107,16 +107,12 @@ def network_state():
             "wifi_ssid":wifi_ssid,
             "web_ip":wifi_ip,
         }
-    try:
-        fallback=socket.gethostbyname(socket.gethostname())
-    except Exception:
-        fallback="0.0.0.0"
     return {
         "mode":"OFFLINE",
         "eth_ip":"",
         "wifi_ip":"",
         "wifi_ssid":"",
-        "web_ip":fallback,
+        "web_ip":"0.0.0.0",
     }
 
 def host(url):
