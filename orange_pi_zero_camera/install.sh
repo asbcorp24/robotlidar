@@ -16,7 +16,7 @@ DISPLAY_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-display.service"
 ETH_WATCHDOG_SERVICE_FILE="/etc/systemd/system/orange-pi-zero-ethernet-watchdog.service"
 
 apt-get update
-apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates i2c-tools network-manager
+apt-get install -y python3 python3-websocket ffmpeg v4l-utils ca-certificates curl i2c-tools network-manager
 
 # Let NetworkManager manage interfaces that are also present in /etc/network/interfaces.
 # This is required for changing DHCP/static IPv4 from the local web panel.
@@ -63,6 +63,21 @@ fi
 "$PYTHON_BIN" -m pip install --upgrade "urllib3<2" "requests<2.32" || true
 "$PYTHON_BIN" -m pip install --upgrade "aiofiles<24" "pytapo==3.2.15" || \
   echo "WARNING: pytapo installation failed; Tapo SD archive will be unavailable until pytapo is installed."
+
+# Tapo two-way audio uses go2rtc as a local protocol bridge. Orange Pi Zero H2+
+# runs 32-bit ARM, therefore use the linux_arm release.
+GO2RTC_BIN="/usr/local/bin/go2rtc"
+GO2RTC_URL="https://github.com/AlexxIT/go2rtc/releases/download/v1.9.14/go2rtc_linux_arm"
+if [ ! -x "$GO2RTC_BIN" ]; then
+  echo "Installing go2rtc v1.9.14 for Tapo talkback..."
+  if curl -fL --retry 3 --connect-timeout 15 -o "$GO2RTC_BIN.tmp" "$GO2RTC_URL"; then
+    chmod 0755 "$GO2RTC_BIN.tmp"
+    mv "$GO2RTC_BIN.tmp" "$GO2RTC_BIN"
+  else
+    rm -f "$GO2RTC_BIN.tmp"
+    echo "WARNING: go2rtc download failed; Tapo push-to-talk will be unavailable."
+  fi
+fi
 
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
