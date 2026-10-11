@@ -113,6 +113,10 @@ class TapoTalkback:
 
         # go2rtc Tapo source: cloud password without username.
         source = "tapo://{}@{}".format(urllib.parse.quote(password, safe=""), host)
+        ffmpeg_bin = str(
+            getattr(cfg, "go2rtc_ffmpeg_bin", "/opt/ffmpeg-6.0.1-armhf-static/ffmpeg")
+            or "/opt/ffmpeg-6.0.1-armhf-static/ffmpeg"
+        )
         content = (
             'api:\n'
             '  listen: "127.0.0.1:1984"\n'
@@ -120,9 +124,14 @@ class TapoTalkback:
             '  listen: "127.0.0.1:8554"\n'
             'webrtc:\n'
             '  listen: "127.0.0.1:8555"\n'
+            'ffmpeg:\n'
+            '  bin: "{}"\n'
             'streams:\n'
             '  robotlidar_tapo: "{}"\n'
-        ).format(source.replace('"', '\\"'))
+        ).format(
+            ffmpeg_bin.replace('"', '\\"'),
+            source.replace('"', '\\"'),
+        )
         self.go2rtc_config_path.write_text(content, encoding="utf-8")
 
     def _go2rtc_ready(self) -> bool:
