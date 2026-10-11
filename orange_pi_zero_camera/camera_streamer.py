@@ -24,6 +24,7 @@ from xml.sax.saxutils import escape
 import websocket
 from onvif_discovery import discover as discover_onvif, get_ptz_status
 from tapo_talkback import TapoTalkback, TapoTalkbackError
+from gps_reader import OptionalGPS
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = BASE_DIR / "config.json"
@@ -74,6 +75,11 @@ class Config:
     tapo_host: str = ""
     tapo_cloud_password: str = ""
     go2rtc_bin: str = "/usr/local/bin/go2rtc"
+
+    gps_enabled: bool = False
+    gps_port: str = "/dev/ttyS1"
+    gps_baud: int = 9600
+    gps_report_interval_sec: float = 60.0
 
     ptz_enabled: bool = True
     onvif_auto_discovery: bool = True
@@ -134,6 +140,8 @@ class CameraStreamer:
         self.talk_clip_buffer = bytearray()
         self.talk_clip_total = 0
         self.talk_clip_mime = "webm"
+        self.gps = OptionalGPS(self.cfg.gps_port, self.cfg.gps_baud, self.log)
+        self.last_gps_report_monotonic = 0.0
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -938,6 +946,20 @@ class CameraStreamer:
                 if running and self.last_video_progress_monotonic else 0
             ),
         }
+
+        now_mono = time.monotonic()
+        gps_interval = max(10.0, float(self.cfg.gps_report_interval_sec or 60.0))
+        if self.cfg.gps_enabled and now_mono - self.last_gps_report_monotonic >= gps_interval:
+            fix = self.gps.snapshot(max_age_sec=max(120.0, gps_interval * 2.0))
+            if fix:
+                payload.update({
+                    "gps_valid": True,
+                    "gps_latitude": fix["latitude"],
+                    "gps_longitude": fix["longitude"],
+                    "gps_updated_ms": int(float(fix.get("received_at") or time.time()) * 1000),
+                })
+            else:
+                payload["gps_valid"] = False
         try:
             status, data = self.json_request("POST", url, payload)
             if status == 404:
@@ -945,6 +967,8 @@ class CameraStreamer:
                 self.register()
             elif status >= 400:
                 self.log(f"TELEMETRY ERROR HTTP {status}: {data}")
+            elif "gps_valid" in payload:
+                self.last_gps_report_monotonic = now_mono
         except Exception as exc:
             self.log(f"TELEMETRY ERROR: {exc}")
 
@@ -956,6 +980,9 @@ class CameraStreamer:
             self.stop_event.wait(self.cfg.reconnect_delay_sec)
         if self.stop_event.is_set():
             return 0
+        if self.cfg.gps_enabled:
+            self.gps.start()
+            self.log(f"GPS enabled: {self.cfg.gps_port} @ {self.cfg.gps_baud}")
         self.discover_onvif_if_needed()
         if self.failover_enabled():
             self.log(
@@ -1021,6 +1048,10 @@ class CameraStreamer:
                 except Exception:
                     pass
             self.stop_ffmpeg()
+            try:
+                self.gps.stop()
+            except Exception:
+                pass
             try:
                 self.talkback.close()
             except Exception:
