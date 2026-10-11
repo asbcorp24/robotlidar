@@ -10,6 +10,7 @@ import struct
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -206,9 +207,18 @@ class TapoTalkback:
             data=b"",
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            if resp.status >= 300:
-                raise TapoTalkbackError("go2rtc API HTTP {}".format(resp.status))
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status >= 300:
+                    raise TapoTalkbackError("go2rtc API HTTP {}".format(resp.status))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            if detail:
+                raise TapoTalkbackError("go2rtc API HTTP {}: {}".format(exc.code, detail))
+            raise TapoTalkbackError("go2rtc API HTTP {}".format(exc.code))
 
     def start(self) -> None:
         with self.lock:
