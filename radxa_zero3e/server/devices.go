@@ -15,6 +15,7 @@ type registerRequest struct {
 	PTZPort        int    `json:"ptz_port"`
 	DeviceType     string `json:"device_type"`
 	VideoTransport string `json:"video_transport"`
+	Talkback       bool   `json:"talkback"`
 }
 
 type telemetryRequest struct {
@@ -104,6 +105,8 @@ func (s *server) deviceAPI(w http.ResponseWriter, r *http.Request) {
 		s.brush(w, r, id)
 	case "camera":
 		s.cameraSelect(w, r, id)
+	case "talk":
+		s.talkback(w, r, id)
 	default:
 		writeError(w, http.StatusNotFound, "Not found")
 	}
@@ -161,6 +164,7 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 			PTZPort:    req.PTZPort,
 			RTPPort:    port,
 			Transport:  transport,
+			Talkback:   req.Talkback,
 			stream:     stream,
 		}
 		d.ActiveCamera.Store(1)
@@ -174,6 +178,7 @@ func (s *server) registerDevice(w http.ResponseWriter, r *http.Request, id strin
 		d.IP = req.IP
 		d.PTZPort = req.PTZPort
 		d.Transport = transport
+		d.Talkback = req.Talkback
 	}
 
 	if transport == "srt" && d.srt == nil {
@@ -400,6 +405,7 @@ func (d *device) publicJSON(alias string) map[string]any {
 		"fps": d.FPS.Load(), "bitrateKbps": d.Bitrate.Load() / 1000,
 		"ethernet": linkLabel(d.LinkMbps.Load()), "uptimeSec": d.UptimeMS.Load() / 1000,
 		"active_camera": maxInt64(d.ActiveCamera.Load(), 1),
+		"talkback": d.Talkback,
 		"video_packets": d.stream.Packets.Load(), "video_bytes": d.stream.Bytes.Load(), "viewers": d.stream.Viewers.Load(),
 	}
 }
@@ -409,7 +415,7 @@ func (d *device) runtimeJSON() map[string]any {
 		"device_id": d.ID, "device_type": d.DeviceType, "name": d.Name, "ip": d.IP,
 		"video_ingest_port": d.RTPPort, "srt_ingest_port": d.SRTPort,
 		"video_transport": d.Transport, "control_transport": controlTransportLabel(d),
-		"ptz_port": d.PTZPort, "online": d.online(), "active_camera": maxInt64(d.ActiveCamera.Load(), 1),
+		"ptz_port": d.PTZPort, "online": d.online(), "active_camera": maxInt64(d.ActiveCamera.Load(), 1), "talkback": d.Talkback,
 	}
 }
 
@@ -418,7 +424,7 @@ func offlineDeviceJSON(id, name string) map[string]any {
 		"id": id, "device_id": id, "device_type": "unknown", "name": name,
 		"online": false, "video_online": false,
 		"streamType": "webrtc", "streamUrl": "/api/devices/" + id + "/webrtc",
-		"control_transport": "offline",
+		"control_transport": "offline", "talkback": false,
 		"pan": 0, "tilt": 0, "fps": 0, "bitrateKbps": 0, "ethernet": "—", "uptimeSec": 0, "active_camera": 1,
 	}
 }
