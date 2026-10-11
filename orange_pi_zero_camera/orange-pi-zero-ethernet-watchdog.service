@@ -1,0 +1,13 @@
+[Unit]
+Description=RobotLiDAR Ethernet DHCP watchdog
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/opt/robotlidar/orange_pi_zero_camera/ethernet_watchdog.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
