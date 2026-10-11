@@ -36,6 +36,11 @@ const (
 	talkAudioFlagStop  = 2
 	talkAudioRate      = 8000
 	talkAudioMaxBytes  = 32768
+	talkClipMaxBytes   = 4 << 20
+	talkClipChunkBytes = 28 * 1024
+	talkClipVersion    = 1
+	talkClipFlagStart  = 1
+	talkClipFlagEnd    = 2
 )
 
 func buildTalkAudioPacket(flags byte, pcm []byte) []byte {
@@ -46,6 +51,32 @@ func buildTalkAudioPacket(flags byte, pcm []byte) []byte {
 	binary.BigEndian.PutUint16(packet[6:8], talkAudioRate)
 	copy(packet[8:], pcm)
 	return packet
+}
+
+func buildTalkClipPacket(flags, mime byte, total int, payload []byte) []byte {
+	packet := make([]byte, 12+len(payload))
+	copy(packet[0:4], []byte("RLCL"))
+	packet[4] = talkClipVersion
+	packet[5] = flags
+	packet[6] = mime
+	packet[7] = 0
+	binary.BigEndian.PutUint32(packet[8:12], uint32(total))
+	copy(packet[12:], payload)
+	return packet
+}
+
+func talkClipMimeCode(contentType string) byte {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	switch contentType {
+	case "audio/ogg", "application/ogg":
+		return 2
+	case "audio/wav", "audio/x-wav":
+		return 3
+	case "audio/mp4", "audio/m4a":
+		return 4
+	default:
+		return 1 // WebM/Opus is the normal Chrome/Edge path.
+	}
 }
 
 func cameraOnlyDevice(d *device) bool {
@@ -122,6 +153,36 @@ func (s *server) talkback(w http.ResponseWriter, r *http.Request, id string) {
 
 	action := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("action")))
 	switch action {
+	case "clip":
+		body, err := io.ReadAll(io.LimitReader(r.Body, talkClipMaxBytes+1))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(body) == 0 || len(body) > talkClipMaxBytes {
+			writeError(w, http.StatusBadRequest, "Audio clip must be non-empty and <= 4 MiB")
+			return
+		}
+		mime := talkClipMimeCode(r.Header.Get("Content-Type"))
+		for off := 0; off < len(body); off += talkClipChunkBytes {
+			end := off + talkClipChunkBytes
+			if end > len(body) {
+				end = len(body)
+			}
+			flags := byte(0)
+			if off == 0 {
+				flags |= talkClipFlagStart
+			}
+			if end == len(body) {
+				flags |= talkClipFlagEnd
+			}
+			if err := d.sendControlWebSocket(buildTalkClipPacket(flags, mime, len(body), body[off:end])); err != nil {
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "queued", "bytes": len(body)})
+		return
 	case "start":
 		if err := d.sendControlWebSocket(buildTalkAudioPacket(talkAudioFlagStart, nil)); err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
@@ -153,7 +214,7 @@ func (s *server) talkback(w http.ResponseWriter, r *http.Request, id string) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bytes": len(body)})
 		return
 	default:
-		writeError(w, http.StatusBadRequest, "action must be start, data or stop")
+		writeError(w, http.StatusBadRequest, "action must be clip, start, data or stop")
 		return
 	}
 }
