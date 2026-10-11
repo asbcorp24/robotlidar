@@ -23,6 +23,7 @@ from xml.sax.saxutils import escape
 
 import websocket
 from onvif_discovery import discover as discover_onvif, get_ptz_status
+from tapo_talkback import TapoTalkback, TapoTalkbackError
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = BASE_DIR / "config.json"
@@ -68,6 +69,11 @@ class Config:
     video_watchdog_enabled: bool = True
     video_watchdog_timeout_sec: float = 8.0
     video_watchdog_startup_grace_sec: float = 12.0
+
+    tapo_talkback_enabled: bool = False
+    tapo_host: str = ""
+    tapo_cloud_password: str = ""
+    go2rtc_bin: str = "/usr/local/bin/go2rtc"
 
     ptz_enabled: bool = True
     onvif_auto_discovery: bool = True
@@ -124,6 +130,7 @@ class CameraStreamer:
         self.failover_active = False
         self.no_camera_backoff_index = 0
         self.no_camera_backoff_delays = (2.0, 5.0, 10.0, 30.0)
+        self.talkback = TapoTalkback(lambda: self.cfg, self.log)
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -163,6 +170,7 @@ class CameraStreamer:
             "ptz_port": 6000,
             "device_type": "orange_pi_zero_camera_ptz" if self.cfg.ptz_enabled else "orange_pi_zero_camera",
             "video_transport": "srt",
+            "talkback": bool(self.cfg.tapo_talkback_enabled),
         }
         try:
             status, data = self.json_request("POST", url, payload)
@@ -400,6 +408,25 @@ class CameraStreamer:
             self.stop_event.wait(self.cfg.reconnect_delay_sec)
 
     def handle_control_packet(self, data: bytes) -> None:
+        if len(data) >= 8 and data[:4] == b"RLAU":
+            version = data[4]
+            flags = data[5]
+            sample_rate = struct.unpack(">H", data[6:8])[0]
+            if version != 1:
+                self.log("TAPO TALKBACK ignored: bad audio packet version")
+                return
+            try:
+                if flags & 0x01:
+                    self.talkback.start()
+                elif flags & 0x02:
+                    self.talkback.stop()
+                else:
+                    self.talkback.feed(data[8:], sample_rate)
+            except TapoTalkbackError as exc:
+                self.log("TAPO TALKBACK ERROR: " + str(exc))
+            except Exception as exc:
+                self.log("TAPO TALKBACK ERROR: " + str(exc))
+            return
         if len(data) != 16:
             self.log(f"CONTROL ignored: packet size {len(data)}")
             return
@@ -943,6 +970,10 @@ class CameraStreamer:
                 except Exception:
                     pass
             self.stop_ffmpeg()
+            try:
+                self.talkback.close()
+            except Exception:
+                pass
         return 0
 
 
