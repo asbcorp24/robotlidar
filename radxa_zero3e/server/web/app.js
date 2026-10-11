@@ -11,6 +11,14 @@ let brushSpin=0;
 let brushLift=0;
 let driveActive=false;
 let videoDemand=null;
+let talkActive=false;
+let talkStarting=false;
+let talkStream=null;
+let talkContext=null;
+let talkSource=null;
+let talkProcessor=null;
+let talkPending=new Uint8Array(0);
+let talkSending=false;
 const $=id=>document.getElementById(id);
 
 function authHeaders(extra={}){return token?{...extra,Authorization:`Bearer ${token}`}:{...extra};}
@@ -18,12 +26,12 @@ async function api(url,opts={}){opts.headers=authHeaders(opts.headers||{});const
 
 async function login(register=false){$('authError').textContent='';try{const data=await api(`/api/auth/${register?'register':'login'}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('loginName').value.trim(),password:$('loginPassword').value})});token=data.token;localStorage.setItem('robotlidar_token',token);await enterApp();}catch(e){$('authError').textContent=e.message;}}
 async function enterApp(){try{const me=await api('/api/auth/me');$('usernameLabel').textContent=me.username;$('authScreen').classList.add('hidden');$('appShell').classList.remove('hidden');await Promise.all([loadDevices(),loadLinked()]);}catch(e){logoutLocal();}}
-function logoutLocal(){emergencyStop();exitCardboard();closePeer();token='';localStorage.removeItem('robotlidar_token');$('appShell').classList.add('hidden');$('authScreen').classList.remove('hidden');}
+function logoutLocal(){emergencyStop();stopTalkback();exitCardboard();closePeer();token='';localStorage.removeItem('robotlidar_token');$('appShell').classList.add('hidden');$('authScreen').classList.remove('hidden');}
 async function logout(){try{await emergencyStop();await api('/api/auth/logout',{method:'POST'});}catch{}logoutLocal();}
 
 async function loadDevices(){try{const data=await api('/api/devices',{cache:'no-store'});devices=data.devices||[];}catch(e){return;}renderDevices();if(!selected&&devices.length)selectDevice(devices.find(d=>d.online)||devices[0]);else if(selected){const d=devices.find(x=>x.id===selected.id);if(d)selectDevice(d,false);else{selected=null;emergencyStop();exitCardboard();closePeer();}}}
 function renderDevices(){$('deviceCount').textContent=devices.length;$('deviceList').innerHTML='';if(!devices.length){$('deviceList').innerHTML='<div class="empty-note">Нет привязанных тракторов.<br>Добавьте ID в настройках.</div>';return;}devices.forEach(d=>{const el=document.createElement('div');el.className='device'+(selected?.id===d.id?' active':'');el.innerHTML=`<div class="device-top"><div><div class="device-name">${escapeHtml(d.name)}</div><div class="device-location">${escapeHtml(d.id)}</div></div><span class="device-state ${d.online?'online':'offline'}">${d.online?'online':'offline'}</span></div>`;el.onclick=()=>selectDevice(d);$('deviceList').appendChild(el);});}
-function selectDevice(d,reconnect=true){if(selected&&selected.id!==d.id)emergencyStop();if(cardboardActive)exitCardboard();selected={...d};brushSpin=0;brushLift=0;driveActive=false;renderDevices();$('cameraTitle').textContent=d.name;$('cameraSubtitle').textContent=d.id;setOnline(d.online);$('panRange').value=d.pan||0;$('tiltRange').value=d.tilt||0;updatePtzLabels();updateTelemetry(d);updateCameraUi(d);updateDeviceCapabilities(d);updateDriveUi();updateBrushUi();if(reconnect)connectStream(d);}
+function selectDevice(d,reconnect=true){if(selected&&selected.id!==d.id){emergencyStop();stopTalkback();}if(cardboardActive)exitCardboard();selected={...d};brushSpin=0;brushLift=0;driveActive=false;renderDevices();$('cameraTitle').textContent=d.name;$('cameraSubtitle').textContent=d.id;setOnline(d.online);$('panRange').value=d.pan||0;$('tiltRange').value=d.tilt||0;updatePtzLabels();updateTelemetry(d);updateCameraUi(d);updateDeviceCapabilities(d);updateDriveUi();updateBrushUi();if(reconnect)connectStream(d);}
 function setOnline(v){$('onlineDot').className='dot '+(v?'online':'offline');$('onlineText').textContent=v?'Online':'Offline';}
 function isCameraOnlyDevice(d=selected){
   const t=String(d?.device_type||'').toLowerCase();
@@ -37,11 +45,14 @@ function isCameraOnlyDevice(d=selected){
 function updateDeviceCapabilities(d=selected){
   const cameraOnly=isCameraOnlyDevice(d);
   document.querySelectorAll('.tractor-panel,.brush-panel').forEach(el=>el.classList.toggle('hidden',cameraOnly));
+  $('talkbackPanel')?.classList.toggle('hidden',!d?.talkback);
+  if($('talkBtn'))$('talkBtn').disabled=!d?.online||!d?.talkback;
   if(cameraOnly){
     driveActive=false;
     brushSpin=0;
     brushLift=0;
   }
+  if(!d?.talkback&&talkActive)stopTalkback();
 }
 function updateTelemetry(d){$('fpsMetric').textContent=d.fps||'—';$('bitrateMetric').textContent=d.bitrateKbps?`${d.bitrateKbps} kbps`:'—';$('ethernetMetric').textContent=d.ethernet||'—';$('uptimeMetric').textContent=formatUptime(d.uptimeSec||0);}
 
@@ -102,6 +113,118 @@ function startBrushLift(dir){brushLift=dir==='up'?1000:-1000;sendBrush();}
 function stopBrushLift(){if(brushLift===0)return;brushLift=0;sendBrush();}
 async function emergencyStop(){const hadSelected=selected?.online;driveActive=false;brushLift=0;updateDriveUi();updateBrushUi();if(!hadSelected)return;try{await Promise.allSettled([api(`/api/devices/${encodeURIComponent(selected.id)}/drive-stop`,{method:'POST'}),api(`/api/devices/${encodeURIComponent(selected.id)}/brush`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({spin:brushSpin,lift:0})})]);}catch{}}
 
+function talkSetState(text,active=false){
+  if($('talkState'))$('talkState').textContent=text;
+  if($('talkBtn')){
+    $('talkBtn').classList.toggle('talking',active);
+    $('talkBtn').textContent=active?'🔴 Говорите…':'🎙 Удерживайте, чтобы говорить';
+  }
+}
+function concatBytes(a,b){
+  const out=new Uint8Array(a.length+b.length);
+  out.set(a,0);out.set(b,a.length);return out;
+}
+function resampleTo8k(input,inputRate){
+  if(!input?.length||!inputRate)return new Int16Array(0);
+  const outLen=Math.max(1,Math.floor(input.length*8000/inputRate));
+  const out=new Int16Array(outLen);
+  const step=inputRate/8000;
+  for(let i=0;i<outLen;i++){
+    const pos=i*step;
+    const i0=Math.floor(pos),i1=Math.min(input.length-1,i0+1);
+    const f=pos-i0;
+    const sample=input[i0]*(1-f)+input[i1]*f;
+    out[i]=Math.max(-32768,Math.min(32767,Math.round(sample*32767)));
+  }
+  return out;
+}
+function queueTalkPcm(samples){
+  if(!talkActive||!samples?.length)return;
+  const bytes=new Uint8Array(samples.buffer,samples.byteOffset,samples.byteLength);
+  talkPending=concatBytes(talkPending,bytes);
+  const maxBuffered=1600*8;
+  if(talkPending.length>maxBuffered)talkPending=talkPending.slice(talkPending.length-maxBuffered);
+  flushTalkPcm();
+}
+async function flushTalkPcm(){
+  if(talkSending||!talkActive)return;
+  if(talkPending.length<1600)return;
+  talkSending=true;
+  try{
+    while(talkActive&&talkPending.length>=1600){
+      const chunk=talkPending.slice(0,1600);
+      talkPending=talkPending.slice(1600);
+      const response=await fetch(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=data`,{
+        method:'POST',
+        headers:authHeaders({'Content-Type':'application/octet-stream'}),
+        body:chunk,
+        cache:'no-store',
+      });
+      if(!response.ok){
+        let detail='HTTP '+response.status;
+        try{const d=await response.json();detail=d.detail||detail;}catch{}
+        throw new Error(detail);
+      }
+    }
+  }catch(e){
+    console.warn('talkback',e);
+    talkSetState('Ошибка: '+e.message,false);
+    stopTalkback();
+  }finally{
+    talkSending=false;
+    if(talkActive&&talkPending.length>=1600)flushTalkPcm();
+  }
+}
+async function startTalkback(){
+  if(talkActive||talkStarting||!selected?.online||!selected?.talkback)return;
+  talkStarting=true;
+  talkSetState('Запрашиваю микрофон…',false);
+  try{
+    talkStream=await navigator.mediaDevices.getUserMedia({
+      audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},
+      video:false
+    });
+    await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=start`,{method:'POST'});
+    const AC=window.AudioContext||window.webkitAudioContext;
+    talkContext=new AC();
+    if(talkContext.state==='suspended')await talkContext.resume();
+    talkSource=talkContext.createMediaStreamSource(talkStream);
+    talkProcessor=talkContext.createScriptProcessor(2048,1,1);
+    const silent=talkContext.createGain();silent.gain.value=0;
+    talkProcessor.onaudioprocess=e=>{
+      if(!talkActive)return;
+      const input=e.inputBuffer.getChannelData(0);
+      queueTalkPcm(resampleTo8k(input,talkContext.sampleRate));
+    };
+    talkSource.connect(talkProcessor);
+    talkProcessor.connect(silent);
+    silent.connect(talkContext.destination);
+    talkPending=new Uint8Array(0);
+    talkActive=true;
+    talkSetState('Передача звука в камеру',true);
+  }catch(e){
+    console.warn('talkback start',e);
+    talkSetState('Не удалось включить: '+e.message,false);
+    await stopTalkback(false);
+  }finally{
+    talkStarting=false;
+  }
+}
+async function stopTalkback(sendStop=true){
+  const wasActive=talkActive||talkStarting;
+  talkActive=false;
+  talkStarting=false;
+  try{if(talkProcessor){talkProcessor.onaudioprocess=null;talkProcessor.disconnect();}}catch{}
+  try{talkSource?.disconnect();}catch{}
+  try{talkStream?.getTracks().forEach(t=>t.stop());}catch{}
+  try{if(talkContext&&talkContext.state!=='closed')await talkContext.close();}catch{}
+  talkProcessor=null;talkSource=null;talkStream=null;talkContext=null;talkPending=new Uint8Array(0);
+  if(sendStop&&wasActive&&selected?.id){
+    try{await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=stop`,{method:'POST'});}catch(e){console.warn('talkback stop',e);}
+  }
+  talkSetState('Микрофон выключен',false);
+}
+
 function deg2rad(v){return v*Math.PI/180;}
 function quatFromDevice(alpha,beta,gamma,orient){const x=deg2rad(beta||0),y=deg2rad(gamma||0),z=deg2rad(alpha||0),o=deg2rad(orient||0);const cX=Math.cos(x/2),cY=Math.cos(y/2),cZ=Math.cos(z/2),sX=Math.sin(x/2),sY=Math.sin(y/2),sZ=Math.sin(z/2);let q={x:sX*cY*cZ-cX*sY*sZ,y:cX*sY*cZ+sX*cY*sZ,z:cX*cY*sZ+sX*sY*cZ,w:cX*cY*cZ-sX*sY*sZ};const so=Math.sin(-o/2),co=Math.cos(-o/2);q={x:q.x*co-q.y*so,y:q.x*so+q.y*co,z:q.z*co+q.w*so,w:-q.z*so+q.w*co};return q;}
 function quatInv(q){return{x:-q.x,y:-q.y,z:-q.z,w:q.w};}
@@ -117,7 +240,7 @@ function onDeviceOrientation(e){if(!cardboardActive||!selected?.online)return;co
 async function loadLinked(){try{const data=await api('/api/settings/devices');const list=data.devices||[];$('linkedDevices').innerHTML=list.length?'':'<div class="empty-note">Тракторы пока не добавлены.</div>';list.forEach(d=>{const row=document.createElement('div');row.className='linked-row';row.innerHTML=`<div><strong>${escapeHtml(d.alias||d.device_id)}</strong><span>${escapeHtml(d.device_id)}</span></div><button class="btn danger">Удалить</button>`;row.querySelector('button').onclick=()=>detach(d.device_id);$('linkedDevices').appendChild(row);});}catch(e){}}
 async function attach(){const id=$('attachId').value.trim(),alias=$('attachAlias').value.trim();$('attachError').textContent='';try{await api('/api/settings/devices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:id,alias:alias||null})});$('attachId').value='';$('attachAlias').value='';await Promise.all([loadLinked(),loadDevices()]);}catch(e){$('attachError').textContent=e.message;}}
 async function detach(id){try{await emergencyStop();await api(`/api/settings/devices/${encodeURIComponent(id)}`,{method:'DELETE'});if(selected?.id===id){selected=null;exitCardboard();closePeer();}await Promise.all([loadLinked(),loadDevices()]);}catch(e){alert(e.message);}}
-function switchView(name){emergencyStop();if(cardboardActive)exitCardboard();document.querySelectorAll('.nav-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$('cameraView').classList.toggle('hidden',name!=='cameras');$('settingsView').classList.toggle('hidden',name!=='settings');$('cameraNav').classList.toggle('hidden',name!=='cameras');if(name==='settings'){closePeer();loadLinked();}else if(name==='cameras'&&selected)connectStream(selected);}
+function switchView(name){emergencyStop();stopTalkback();if(cardboardActive)exitCardboard();document.querySelectorAll('.nav-tab').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$('cameraView').classList.toggle('hidden',name!=='cameras');$('settingsView').classList.toggle('hidden',name!=='settings');$('cameraNav').classList.toggle('hidden',name!=='cameras');if(name==='settings'){closePeer();loadLinked();}else if(name==='cameras'&&selected)connectStream(selected);}
 function formatUptime(sec){if(!sec)return '—';const d=Math.floor(sec/86400),h=Math.floor((sec%86400)/3600),m=Math.floor((sec%3600)/60);return d?`${d}д ${h}ч`:`${h}ч ${m}м`;}
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 
@@ -127,6 +250,7 @@ document.querySelectorAll('.drive-btn').forEach(b=>bindHold(b,()=>startDrive(b.d
 document.querySelectorAll('.brush-lift-btn').forEach(b=>bindHold(b,()=>startBrushLift(b.dataset.brushLift),stopBrushLift));
 document.querySelectorAll('.brush-spin-btn').forEach(b=>b.onclick=()=>setBrushSpin(b.dataset.brushSpin));
 document.querySelectorAll('.nav-tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
+bindHold($('talkBtn'),startTalkback,()=>stopTalkback());
 $('driveStopBtn').onclick=stopDrive;$('brushSpinStopBtn').onclick=()=>setBrushSpin('stop');
 $('loginBtn').onclick=()=>login(false);$('registerBtn').onclick=()=>login(true);$('logoutBtn').onclick=logout;$('fullscreenBtn').onclick=toggleVideoFullscreen;$('attachBtn').onclick=attach;$('centerBtn').onclick=center;$('idrBtn').onclick=requestIdr;$('camera1Btn').onclick=()=>switchCamera(1);$('camera2Btn').onclick=()=>switchCamera(2);$('refreshBtn').onclick=loadDevices;$('cardboardBtn').onclick=enterCardboard;$('vrExitBtn').onclick=exitCardboard;$('vrRecenterBtn').onclick=recenterGyro;
 $('panRange').oninput=updatePtzLabels;$('tiltRange').oninput=updatePtzLabels;$('speedRange').oninput=updatePtzLabels;$('panRange').onchange=sendAbsolutePtz;$('tiltRange').onchange=sendAbsolutePtz;
@@ -134,8 +258,8 @@ $('driveSpeedRange').oninput=updateDriveUi;$('brushSpeedRange').oninput=updateBr
 document.addEventListener('fullscreenchange',()=>{updateFullscreenButton();if(cardboardActive&&!document.fullscreenElement)exitCardboard();});document.addEventListener('webkitfullscreenchange',updateFullscreenButton);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&cardboardActive){exitCardboard();return;}if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;const k=String(e.key||'').toLowerCase();const driveMap={w:'forward',s:'backward',a:'left',d:'right'};const cameraMap={arrowup:'up',arrowdown:'down',arrowleft:'left',arrowright:'right'};if(k===' '){e.preventDefault();stopDrive();return;}if(driveMap[k]&&!e.repeat){e.preventDefault();startDrive(driveMap[k]);return;}if(cameraMap[k]){e.preventDefault();move(cameraMap[k]);}});
 document.addEventListener('keyup',e=>{const k=String(e.key||'').toLowerCase();if(['w','a','s','d'].includes(k)){e.preventDefault();stopDrive();}});
-window.addEventListener('blur',()=>{stopDrive();stopBrushLift();});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){stopDrive();stopBrushLift();}});window.addEventListener('pagehide',()=>stopVideoDemand());
+window.addEventListener('blur',()=>{stopDrive();stopBrushLift();stopTalkback();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){stopDrive();stopBrushLift();stopTalkback();}});window.addEventListener('pagehide',()=>{stopVideoDemand();stopTalkback();});
 updateDriveUi();updateBrushUi();
 if(token)enterApp();
 setInterval(()=>{if(token&&!cardboardActive)loadDevices();},3000);
