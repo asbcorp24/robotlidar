@@ -58,6 +58,13 @@
               <div class="hint">Камера: стрелки клавиатуры. В Cardboard — гироскоп.</div>
             </section>
 
+            <section id="talkbackPanel" class="panel control-panel talkback-panel hidden">
+              <div class="panel-title">Громкая связь</div>
+              <button id="talkBtn" class="talk-btn" type="button">🎙 Удерживайте, чтобы говорить</button>
+              <div id="talkState" class="control-state">Микрофон выключен</div>
+              <div class="hint">Звук с микрофона браузера передаётся через сервер на динамик камеры Tapo. Работает только пока кнопка удерживается.</div>
+            </section>
+
             <section class="panel control-panel tractor-panel">
               <div class="panel-title">Движение трактора</div>
               <div class="drive-pad"><button class="drive-btn" data-drive="forward">▲</button><button class="drive-btn" data-drive="left">◀</button><button id="driveStopBtn" class="drive-stop">STOP</button><button class="drive-btn" data-drive="right">▶</button><button class="drive-btn" data-drive="backward">▼</button></div>
