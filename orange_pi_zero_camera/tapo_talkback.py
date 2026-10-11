@@ -238,7 +238,7 @@ class TapoTalkback:
             self._clear_queue()
             self.generation += 1
             self.active = True
-            src = "ffmpeg:http://127.0.0.1:1985/talk.wav#audio=pcma"
+            src = "ffmpeg:http://127.0.0.1:1985/talk.wav#audio=pcma/8000"
             try:
                 self._stream_api(src)
             except Exception:
