@@ -89,6 +89,7 @@ class TapoTalkback:
         self.lock = threading.RLock()
         self.audio_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=16)
         self.active = False
+        self.speaking = False
         self.generation = 0
         self.http_server = None
         self.http_thread = None
@@ -229,21 +230,33 @@ class TapoTalkback:
                 raise TapoTalkbackError("go2rtc API HTTP {}: {}".format(exc.code, detail))
             raise TapoTalkbackError("go2rtc API HTTP {}".format(exc.code))
 
-    def start(self) -> None:
+    def prepare(self) -> None:
         with self.lock:
-            if not self.enabled():
-                raise TapoTalkbackError("Tapo talkback выключен в настройках")
+            if not self.enabled() or self.active:
+                return
             self._ensure_go2rtc()
             self._ensure_http_source()
             self._clear_queue()
             self.generation += 1
             self.active = True
+            self.speaking = False
             src = "ffmpeg:http://127.0.0.1:1985/talk.wav#audio=pcma/8000"
             try:
                 self._stream_api(src)
             except Exception:
                 self.active = False
+                self.speaking = False
                 raise
+            self.log("TAPO TALKBACK: READY")
+
+    def start(self) -> None:
+        with self.lock:
+            if not self.enabled():
+                raise TapoTalkbackError("Tapo talkback выключен в настройках")
+            if not self.active:
+                self.prepare()
+            self._clear_queue()
+            self.speaking = True
             self.log("TAPO TALKBACK: START")
 
     def feed(self, pcm_s16le: bytes, sample_rate: int = 8000) -> None:
@@ -257,7 +270,7 @@ class TapoTalkback:
         if len(pcm_s16le) & 1:
             pcm_s16le = pcm_s16le[:-1]
         with self.lock:
-            if not self.active:
+            if not self.active or not self.speaking:
                 return
             try:
                 self.audio_queue.put_nowait(bytes(pcm_s16le))
@@ -274,21 +287,24 @@ class TapoTalkback:
 
     def stop(self) -> None:
         with self.lock:
+            was_speaking = self.speaking
+            self.speaking = False
+            self._clear_queue()
+            if was_speaking:
+                self.log("TAPO TALKBACK: STOP")
+
+    def close(self) -> None:
+        with self.lock:
+            self.speaking = False
             was_active = self.active
             self.active = False
             self.generation += 1
             self._clear_queue()
-            if self._go2rtc_ready():
+            if was_active and self._go2rtc_ready():
                 try:
                     self._stream_api("")
                 except Exception as exc:
-                    self.log("TAPO TALKBACK stop warning: {}".format(exc))
-            if was_active:
-                self.log("TAPO TALKBACK: STOP")
-
-    def close(self) -> None:
-        self.stop()
-        with self.lock:
+                    self.log("TAPO TALKBACK close warning: {}".format(exc))
             if self.http_server is not None:
                 try:
                     self.http_server.shutdown()
