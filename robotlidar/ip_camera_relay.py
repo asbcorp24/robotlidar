@@ -35,6 +35,7 @@ class IpCameraRelayManager:
         self._last_error = ''
         self._last_register_at = 0.0
         self._last_telemetry_at = 0.0
+        self._last_gps_sent_at = 0.0
         self._restart_count = 0
         self._started_at = time.monotonic()
         self._video_requested = False
@@ -409,6 +410,20 @@ class IpCameraRelayManager:
             'link_mbps': self._ethernet_speed_mbps(),
             'active_camera': int(cfg.get('active_camera') or 1),
         }
+
+        now = time.time()
+        if now - self._last_gps_sent_at >= 60.0:
+            gps = self._read_gps_state()
+            if gps and gps.get('valid'):
+                payload.update({
+                    'gps_valid': True,
+                    'gps_latitude': gps['latitude'],
+                    'gps_longitude': gps['longitude'],
+                    'gps_updated_ms': int(float(gps.get('received_at') or now) * 1000),
+                })
+            else:
+                payload['gps_valid'] = False
+
         try:
             self._json_request(
                 'POST',
@@ -416,7 +431,9 @@ class IpCameraRelayManager:
                 payload,
             )
             with self._lock:
-                self._last_telemetry_at = time.time()
+                self._last_telemetry_at = now
+                if 'gps_valid' in payload:
+                    self._last_gps_sent_at = now
                 self._last_error = ''
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -427,6 +444,31 @@ class IpCameraRelayManager:
                 self._stop_ffmpeg()
                 return
             raise
+
+    @staticmethod
+    def _read_gps_state() -> Optional[dict[str, Any]]:
+        data_dir = Path(os.environ.get('ROBOTLIDAR_DATA_DIR', '~/robotlidar_data')).expanduser()
+        path = data_dir / 'state' / 'last_position.json'
+        try:
+            snap = json.loads(path.read_text(encoding='utf-8'))
+            gps = snap.get('gps') if isinstance(snap, dict) else None
+            if not isinstance(gps, dict) or not gps.get('valid'):
+                return None
+            lat = float(gps.get('latitude'))
+            lon = float(gps.get('longitude'))
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                return None
+            received_at = float(gps.get('received_at') or 0.0)
+            if received_at <= 0 or time.time() - received_at > 120.0:
+                return None
+            return {
+                'valid': True,
+                'latitude': lat,
+                'longitude': lon,
+                'received_at': received_at,
+            }
+        except Exception:
+            return None
 
     @staticmethod
     def _local_ip_for(host: str) -> str:
