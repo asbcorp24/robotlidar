@@ -64,6 +64,10 @@ type device struct {
 	LinkMbps   atomic.Int64
 	ActiveCamera atomic.Int64
 	Talkback    bool
+	GPSValid    atomic.Int64
+	GPSLatE7    atomic.Int64
+	GPSLonE7    atomic.Int64
+	GPSUpdatedMS atomic.Int64
 	stream     *rtpStream
 	srt        *srtBridge
 	controlM   sync.RWMutex
