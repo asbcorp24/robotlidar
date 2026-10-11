@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"io"
 	"fmt"
 	"net"
 	"net/http"
@@ -27,6 +28,24 @@ type brushRequest struct {
 
 type cameraRequest struct {
 	Camera int `json:"camera"`
+}
+
+const (
+	talkAudioVersion   = 1
+	talkAudioFlagStart = 1
+	talkAudioFlagStop  = 2
+	talkAudioRate      = 8000
+	talkAudioMaxBytes  = 32768
+)
+
+func buildTalkAudioPacket(flags byte, pcm []byte) []byte {
+	packet := make([]byte, 8+len(pcm))
+	copy(packet[0:4], []byte("RLAU"))
+	packet[4] = talkAudioVersion
+	packet[5] = flags
+	binary.BigEndian.PutUint16(packet[6:8], talkAudioRate)
+	copy(packet[8:], pcm)
+	return packet
 }
 
 func cameraOnlyDevice(d *device) bool {
@@ -77,6 +96,66 @@ func (s *server) cameraSelect(w http.ResponseWriter, r *http.Request, id string)
 	}
 	d.ActiveCamera.Store(int64(req.Camera))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "camera": req.Camera})
+}
+
+func (s *server) talkback(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	u, ok := s.requireUser(w, r)
+	if !ok {
+		return
+	}
+	d, ok := s.ownedDevice(w, u.ID, id)
+	if !ok {
+		return
+	}
+	if !d.Talkback {
+		writeError(w, http.StatusConflict, "Talkback is not enabled on this camera")
+		return
+	}
+	if !d.websocketControlConnected() {
+		writeError(w, http.StatusServiceUnavailable, "Camera control WebSocket is offline")
+		return
+	}
+
+	action := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("action")))
+	switch action {
+	case "start":
+		if err := d.sendControlWebSocket(buildTalkAudioPacket(talkAudioFlagStart, nil)); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "talking"})
+		return
+	case "stop":
+		if err := d.sendControlWebSocket(buildTalkAudioPacket(talkAudioFlagStop, nil)); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "stopped"})
+		return
+	case "data", "":
+		body, err := io.ReadAll(io.LimitReader(r.Body, talkAudioMaxBytes+1))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(body) == 0 || len(body) > talkAudioMaxBytes || len(body)%2 != 0 {
+			writeError(w, http.StatusBadRequest, "PCM chunk must be non-empty S16LE and <= 32768 bytes")
+			return
+		}
+		if err := d.sendControlWebSocket(buildTalkAudioPacket(0, body)); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bytes": len(body)})
+		return
+	default:
+		writeError(w, http.StatusBadRequest, "action must be start, data or stop")
+		return
+	}
 }
 
 func (s *server) drive(w http.ResponseWriter, r *http.Request, id string) {
