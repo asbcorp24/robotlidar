@@ -376,14 +376,6 @@ class CameraStreamer:
     def start_control(self) -> None:
         self.ws_thread = threading.Thread(target=self.control_loop, name="control-wss", daemon=True)
         self.ws_thread.start()
-        if self.cfg.tapo_talkback_enabled:
-            threading.Thread(target=self.prepare_talkback, name="tapo-talkback-prepare", daemon=True).start()
-
-    def prepare_talkback(self) -> None:
-        try:
-            self.talkback.prepare()
-        except Exception as exc:
-            self.log("TAPO TALKBACK PREPARE ERROR: " + str(exc))
 
     def control_loop(self) -> None:
         self.ws_url = self.control_ws_url()
