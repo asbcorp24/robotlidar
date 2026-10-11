@@ -124,12 +124,13 @@ class IpCameraRelayManager:
             'reported_fps': int(settings.get('camera_reported_fps') or 25),
             'reported_bitrate_bps': int(settings.get('camera_reported_bitrate_bps') or 2_000_000),
             'srt_latency_ms': max(80, min(2000, int(settings.get('camera_srt_latency_ms') or 200))),
+            'tapo_talkback_enabled': bool(settings.get('camera_tapo_talkback_enabled', False)),
         }
 
     def _run(self) -> None:
         while not self._stop.is_set():
             cfg = self._snapshot_config()
-            active = bool(cfg.get('enabled') or cfg.get('remote_control_enabled'))
+            active = bool(cfg.get('enabled') or cfg.get('remote_control_enabled') or cfg.get('tapo_talkback_enabled'))
             if not active:
                 self._stop_ffmpeg()
                 self._sleep(1.0)
@@ -185,6 +186,7 @@ class IpCameraRelayManager:
             'ptz_port': cfg['control_port'],
             'device_type': 'raspberry_robotlidar',
             'video_transport': requested_transport,
+            'talkback': bool(cfg.get('tapo_talkback_enabled')),
         }
         data = self._json_request(
             'POST',
