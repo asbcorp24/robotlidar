@@ -299,15 +299,23 @@ class TapoTalkback:
         extension = str(extension or "webm").lower().strip().lstrip(".")
         if extension not in ("webm", "ogg", "wav", "m4a", "mp4"):
             extension = "webm"
-        path = Path("/run/robotlidar-talkback-{}.{}".format(int(time.time() * 1000), extension))
+        stamp = int(time.time() * 1000)
+        path = Path("/run/robotlidar-talkback-{}.{}".format(stamp, extension))
+        padded_path = Path("/run/robotlidar-talkback-{}-padded.wav".format(stamp))
 
         with self.lock:
             if not self.enabled():
                 raise TapoTalkbackError("Tapo talkback выключен в настройках")
             self._ensure_go2rtc()
+            cfg = self._cfg()
+            ffmpeg_bin = str(
+                getattr(cfg, "go2rtc_ffmpeg_bin", "/opt/ffmpeg-6.0.1-armhf-static/ffmpeg")
+                or "/opt/ffmpeg-6.0.1-armhf-static/ffmpeg"
+            )
 
-            # Stop the live PCM bridge, if it was prepared, and let go2rtc play
-            # the complete browser recording at its natural clock rate.
+            # Stop any previous source. Tapo needs a short lead-in before speech
+            # and a tail after speech, otherwise its backchannel eats the first
+            # and last syllables while opening/flushing the audio path.
             self.speaking = False
             self.active = False
             self.generation += 1
@@ -319,8 +327,32 @@ class TapoTalkback:
                     pass
 
             path.write_bytes(data)
-            src = "ffmpeg:{}#audio=pcma/8000#input=file".format(path)
-            self.log("TAPO TALKBACK CLIP: PLAY {} bytes".format(len(data)))
+            cmd = [
+                ffmpeg_bin,
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(path),
+                "-af", "adelay=450|450,apad=pad_dur=0.7",
+                "-ac", "1", "-ar", "8000",
+                "-c:a", "pcm_s16le",
+                str(padded_path),
+            ]
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=30,
+            )
+            if result.returncode != 0 or not padded_path.exists():
+                detail = (result.stderr or "").strip()
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+                raise TapoTalkbackError("FFmpeg clip prepare failed: {}".format(detail[-500:]))
+
+            src = "ffmpeg:{}#audio=pcma/8000#input=file".format(padded_path)
+            self.log("TAPO TALKBACK CLIP: PLAY {} bytes + 450ms/700ms padding".format(len(data)))
             try:
                 self._stream_api(src)
             except Exception:
@@ -328,14 +360,19 @@ class TapoTalkback:
                     path.unlink()
                 except Exception:
                     pass
+                try:
+                    padded_path.unlink()
+                except Exception:
+                    pass
                 raise
 
         def cleanup() -> None:
             time.sleep(120)
-            try:
-                path.unlink()
-            except Exception:
-                pass
+            for item in (path, padded_path):
+                try:
+                    item.unlink()
+                except Exception:
+                    pass
 
         threading.Thread(target=cleanup, name="tapo-talkback-clip-cleanup", daemon=True).start()
 
