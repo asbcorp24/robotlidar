@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
+import hmac
 import ipaddress
 import json
+import secrets
 import os
 import socket
 import subprocess
@@ -26,6 +29,11 @@ LISTEN_PORT = int(os.environ.get("ORANGE_PI_WEB_PORT", "8088"))
 STREAM_SERVICE = "orange-pi-zero-camera.service"
 SETUP_AP_CONNECTION = "RobotLiDAR-Setup"
 WIFI_CONFIG_MARKER = Path("/run/robotlidar-wifi-configuring")
+DEFAULT_WEB_PASSWORD_SHA256 = "b68ee8164f4aee61f641f51f5aa3b1b71ca02cc223a5ba91b3ed5b0b95e974db"
+AUTH_COOKIE = "robotlidar_opi_session"
+AUTH_TTL_SEC = 12 * 60 * 60
+_AUTH_SESSIONS: dict[str, float] = {}
+_AUTH_LOCK = threading.RLock()
 
 RTSP_PORTS = (554, 8554, 10554)
 ONVIF_PORTS = (80, 8000, 8080, 8899)
@@ -62,6 +70,48 @@ def save_config(data: dict[str, Any]) -> None:
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
     tmp.replace(CONFIG_PATH)
+
+
+def _password_hash(cfg: dict[str, Any] | None = None) -> str:
+    cfg = cfg or load_config()
+    value = str(cfg.get("web_password_sha256") or "").strip().lower()
+    return value if len(value) == 64 else DEFAULT_WEB_PASSWORD_SHA256
+
+
+def _check_password(password: str) -> bool:
+    candidate = hashlib.sha256(str(password).encode("utf-8")).hexdigest()
+    return hmac.compare_digest(candidate, _password_hash())
+
+
+def _new_session() -> str:
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with _AUTH_LOCK:
+        for old, expiry in list(_AUTH_SESSIONS.items()):
+            if expiry <= now:
+                _AUTH_SESSIONS.pop(old, None)
+        _AUTH_SESSIONS[token] = now + AUTH_TTL_SEC
+    return token
+
+
+def _session_valid(token: str) -> bool:
+    if not token:
+        return False
+    now = time.time()
+    with _AUTH_LOCK:
+        expiry = float(_AUTH_SESSIONS.get(token) or 0.0)
+        if expiry <= now:
+            _AUTH_SESSIONS.pop(token, None)
+            return False
+        _AUTH_SESSIONS[token] = now + AUTH_TTL_SEC
+        return True
+
+
+def _drop_session(token: str) -> None:
+    if not token:
+        return
+    with _AUTH_LOCK:
+        _AUTH_SESSIONS.pop(token, None)
 
 
 def ethernet_info() -> list[dict[str, str]]:
@@ -868,6 +918,25 @@ def return_to_software_home(cfg: dict[str, Any], speed: float = 0.30) -> dict:
     )
 
 
+LOGIN_HTML = r'''<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RobotLiDAR · Вход</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#15202b;background:#eef2f6}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:min(420px,100%);background:#fff;border-radius:16px;padding:24px;box-shadow:0 12px 40px #00000018}
+h1{margin:0 0 6px;font-size:23px}.muted{color:#687684;font-size:13px;margin-bottom:18px}label{display:block;font-size:13px;color:#53606d;margin:10px 0 5px}
+input{width:100%;padding:12px;border:1px solid #ccd5df;border-radius:9px;font-size:16px}button{width:100%;margin-top:14px;border:0;border-radius:9px;padding:12px;background:#1769e0;color:#fff;font-weight:700;cursor:pointer}
+.msg{min-height:20px;margin-top:10px;color:#b62f2f;font-size:13px}
+</style></head><body><div class="card"><h1>RobotLiDAR · Orange Pi</h1><div class="muted">Вход в локальную панель управления</div>
+<label>Пароль</label><input id="password" type="password" autocomplete="current-password" autofocus>
+<button id="login">Войти</button><div id="msg" class="msg"></div></div>
+<script>
+const p=document.getElementById('password'),m=document.getElementById('msg'),b=document.getElementById('login');
+async function login(){m.textContent='';b.disabled=true;try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p.value})});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||'Неверный пароль');location.href='/';}catch(e){m.textContent=e.message;p.select()}finally{b.disabled=false}}
+b.onclick=login;p.addEventListener('keydown',e=>{if(e.key==='Enter')login()});
+</script></body></html>'''
+
+
 CAMERA_HTML = r'''<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>RobotLiDAR · Локальная камера</title>
@@ -923,6 +992,18 @@ HTML = r'''<!doctype html>
 <div id="tapoArchiveMsg" class="msg"></div><div id="tapoArchiveList"></div>
 <p class="muted">Записи читаются напрямую с microSD камеры через pytapo. Для громкой связи используется локальный go2rtc и тот же пароль Tapo Cloud. После изменения IP/пароля или включения Push-to-Talk нажмите «Сохранить и перезапустить».</p>
 </section>
+<section class="card"><h2>GPS · GY-NEO-6M-V2</h2>
+<label><input id="gps_enabled" type="checkbox" style="width:auto"> GPS включён</label>
+<div class="row"><div><label>UART устройство</label><input id="gps_port" placeholder="/dev/ttyS1"></div><div><label>Скорость, baud</label><input id="gps_baud" type="number" value="9600"></div></div>
+<label>Отправлять координаты на сервер, сек</label><input id="gps_report_interval_sec" type="number" min="10" max="3600" value="60">
+<p class="muted">GPS необязателен. Координаты отправляются только при валидном фиксе. Если GPS выключен, отсутствует или нет фикса, кнопка местоположения на центральном сайте не показывается.</p>
+</section>
+<section class="card"><h2>Защита веб-панели</h2>
+<p class="muted">Панель, API, локальное видео и PTZ доступны только после входа. Сессия действует 12 часов.</p>
+<label>Новый пароль панели</label><input id="new_web_password" type="password" autocomplete="new-password" placeholder="Не менее 6 символов">
+<div class="actions"><button class="secondary" onclick="changeWebPassword()">Сменить пароль</button><button class="secondary" onclick="logoutWeb()">Выйти</button></div>
+<div id="passwordMsg" class="msg"></div>
+</section>
 <section class="card"><h2>ONVIF / PTZ</h2><label><input id="ptz_enabled" type="checkbox" style="width:auto"> PTZ включён</label><label><input id="onvif_auto_discovery" type="checkbox" style="width:auto"> Автоопределение ONVIF</label><label>ONVIF Device URL (необязательно)</label><input id="onvif_device_url"><label>ONVIF PTZ URL (необязательно)</label><input id="onvif_url"><div class="row"><div><label>Логин камеры</label><input id="onvif_username"></div><div><label>Пароль камеры</label><input id="onvif_password" type="password" placeholder="Оставьте пустым, чтобы не менять"></div></div><label>Profile Token (необязательно)</label><input id="onvif_profile_token"><div class="actions"><button class="secondary" onclick="probeOnvif()">Проверить возможности ONVIF</button></div><pre id="onvifDiag" class="logbox" style="height:220px">Диагностика ещё не запускалась.</pre></section>
 </div>
 <section class="card" style="margin-top:16px"><h2>Поиск RTSP / ONVIF камер</h2><p class="muted">Сканируется локальный проводной сегмент. Проверяются RTSP-порты 554, 8554, 10554 и типовые ONVIF HTTP-порты. Сканируйте только сеть, которой вы управляете или имеете разрешение проверять.</p><div class="actions"><button id="scanBtn" class="primary" onclick="scanCameras()">Сканировать сеть</button></div><div id="scanMsg" class="msg"></div><div id="scanResults"></div></section>
@@ -947,6 +1028,10 @@ async function load(){try{
  if(!Object.prototype.hasOwnProperty.call(cfg,'video_watchdog_startup_grace_sec'))cfg.video_watchdog_startup_grace_sec=12;
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_archive_enabled'))cfg.tapo_archive_enabled=false;
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_talkback_enabled'))cfg.tapo_talkback_enabled=false;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'gps_enabled'))cfg.gps_enabled=false;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'gps_port'))cfg.gps_port='/dev/ttyS1';
+ if(!Object.prototype.hasOwnProperty.call(cfg,'gps_baud'))cfg.gps_baud=9600;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'gps_report_interval_sec'))cfg.gps_report_interval_sec=60;
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_user'))cfg.tapo_user='admin';
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_download_window'))cfg.tapo_download_window=50;
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_download_timeout'))cfg.tapo_download_timeout=120;
@@ -971,9 +1056,11 @@ async function applyNetwork(){const m=$('networkMsg');m.className='msg';m.textCo
 async function scanWifi(){const m=$('wifiMsg'),sel=$('wifi_ssid');m.className='msg';m.textContent='Сканирование Wi-Fi...';try{const d=await api('/api/wifi-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface:$('wifi_interface').value})});sel.innerHTML='';for(const x of (d.networks||[])){const o=document.createElement('option');o.value=x.ssid;o.textContent=x.ssid+' · '+x.signal+'%'+(x.security?' · '+x.security:'')+(x.active?' · подключено':'');sel.appendChild(o)}if(!(d.networks||[]).length){const o=document.createElement('option');o.value='';o.textContent='Сети не найдены';sel.appendChild(o)}m.className='msg oktxt';m.textContent='Найдено сетей: '+(d.networks||[]).length}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function connectWifi(){const m=$('wifiMsg');const manual=$('wifi_ssid_manual').value.trim();const body={interface:$('wifi_interface').value,ssid:manual||$('wifi_ssid').value,password:$('wifi_password').value,ethernet_metric:Number($('ethernet_metric').value||100),wifi_metric:Number($('wifi_metric').value||600)};if(!body.ssid){m.className='msg errtxt';m.textContent='Выберите Wi-Fi сеть';return}m.className='msg';m.textContent='Подключение...';try{const d=await api('/api/wifi-connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('wifi_password').value='';m.className='msg oktxt';m.textContent=(d.message||'Подключение запланировано')+' После переключения подключите телефон/ноутбук к выбранной сети и откройте Orange Pi по её новому IP.'}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function disconnectWifi(){const m=$('wifiMsg');try{const d=await api('/api/wifi-disconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface:$('wifi_interface').value})});m.className='msg oktxt';m.textContent=d.message||'Wi-Fi отключён';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
-function collect(){const keys=['device_id','device_name','server_url','input_mode','input_url','camera1_name','camera1_url','camera2_name','camera2_url','video_device','encoder','onvif_device_url','onvif_url','onvif_username','onvif_profile_token','tapo_host','tapo_user'];const nums=['width','height','fps','bitrate_kbps','srt_latency_ms','telemetry_period_sec','active_camera','primary_camera','failover_after_failures','failover_probe_interval_sec','video_watchdog_timeout_sec','video_watchdog_startup_grace_sec','tapo_download_window','tapo_download_timeout'];const out={...cfg};keys.forEach(k=>out[k]=$(k).value);nums.forEach(k=>out[k]=Number($(k).value));if(!out.camera1_url)out.camera1_url=out.input_url;out.input_url=out.camera1_url;out.stream_enabled=$('stream_enabled').checked;out.local_preview_enabled=$('local_preview_enabled').checked;out.auto_failover_enabled=$('auto_failover_enabled').checked;out.return_to_primary=$('return_to_primary').checked;out.video_watchdog_enabled=$('video_watchdog_enabled').checked;out.ptz_enabled=$('ptz_enabled').checked;out.onvif_auto_discovery=$('onvif_auto_discovery').checked;out.tapo_archive_enabled=$('tapo_archive_enabled').checked;out.tapo_talkback_enabled=$('tapo_talkback_enabled').checked;const p=$('onvif_password').value;if(p)out.onvif_password=p;const tp=$('tapo_cloud_password').value;if(tp)out.tapo_cloud_password=tp;return out}
+function collect(){const keys=['device_id','device_name','server_url','input_mode','input_url','camera1_name','camera1_url','camera2_name','camera2_url','video_device','encoder','onvif_device_url','onvif_url','onvif_username','onvif_profile_token','tapo_host','tapo_user','gps_port'];const nums=['width','height','fps','bitrate_kbps','srt_latency_ms','telemetry_period_sec','active_camera','primary_camera','failover_after_failures','failover_probe_interval_sec','video_watchdog_timeout_sec','video_watchdog_startup_grace_sec','tapo_download_window','tapo_download_timeout','gps_baud','gps_report_interval_sec'];const out={...cfg};keys.forEach(k=>out[k]=$(k).value);nums.forEach(k=>out[k]=Number($(k).value));if(!out.camera1_url)out.camera1_url=out.input_url;out.input_url=out.camera1_url;out.stream_enabled=$('stream_enabled').checked;out.local_preview_enabled=$('local_preview_enabled').checked;out.auto_failover_enabled=$('auto_failover_enabled').checked;out.return_to_primary=$('return_to_primary').checked;out.video_watchdog_enabled=$('video_watchdog_enabled').checked;out.ptz_enabled=$('ptz_enabled').checked;out.onvif_auto_discovery=$('onvif_auto_discovery').checked;out.tapo_archive_enabled=$('tapo_archive_enabled').checked;out.tapo_talkback_enabled=$('tapo_talkback_enabled').checked;out.gps_enabled=$('gps_enabled').checked;const p=$('onvif_password').value;if(p)out.onvif_password=p;const tp=$('tapo_cloud_password').value;if(tp)out.tapo_cloud_password=tp;return out}
 async function saveConfig(restart){const m=$('saveMsg');m.className='msg';m.textContent='Сохранение...';try{const d=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collect(),restart})});m.className='msg oktxt';m.textContent=d.message||'Сохранено';$('onvif_password').value='';$('tapo_cloud_password').value='';await load()}catch(e){m.className='msg errtxt';m.textContent=e.message}}
 async function restartService(){try{const d=await api('/api/restart',{method:'POST'});$('saveMsg').className='msg oktxt';$('saveMsg').textContent=d.message||'Перезапущено';setTimeout(load,800)}catch(e){$('saveMsg').className='msg errtxt';$('saveMsg').textContent=e.message}}
+async function changeWebPassword(){const m=$('passwordMsg'),p=$('new_web_password').value;m.className='msg';m.textContent='';if(p.length<6){m.className='msg errtxt';m.textContent='Пароль должен быть не короче 6 символов';return}try{const d=await api('/api/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});$('new_web_password').value='';m.className='msg oktxt';m.textContent=d.message||'Пароль изменён'}catch(e){m.className='msg errtxt';m.textContent=e.message}}
+async function logoutWeb(){try{await fetch('/api/logout',{method:'POST'})}catch{}location.href='/login'}
 function useCamera(slot,url,ip,onvifPort){$('input_mode').value='rtsp';$('camera'+slot+'_url').value=url;if(slot===1)$('input_url').value=url;if(onvifPort&&slot===1){$('onvif_auto_discovery').checked=true;$('onvif_device_url').value=`http://${ip}:${onvifPort}/onvif/device_service`}$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Камера добавлена как Camera ${slot}. Сохраните настройки.`;window.scrollTo({top:$('camera'+slot+'_url').getBoundingClientRect().top+window.scrollY-100,behavior:'smooth'})}
 function renderScan(d){const devs=d.devices||[];if(!devs.length){$('scanResults').innerHTML='';$('scanMsg').className='msg';$('scanMsg').textContent=`Сканирование ${d.network||''} завершено. RTSP/ONVIF устройств не найдено.`;return}let h='<table class="scanTable"><thead><tr><th>IP</th><th>RTSP</th><th>ONVIF</th><th></th></tr></thead><tbody>';for(const x of devs){const r=(x.rtsp||[]);const o=(x.onvif_ports||[]);const rt=r.length?r.map(v=>`<div><span class="pill">:${v.port}</span> <span class="url">${v.url}</span><br><span class="muted">${v.response||''}</span></div>`).join(''):'—';const ov=o.length?o.map(p=>`<span class="pill">:${p}</span>`).join(' '):'—';let btn='';if(r.length){const u=JSON.stringify(r[0].url),ip=JSON.stringify(x.ip),op=o.length?o[0]:0;btn=`<button class="secondary" onclick='useCamera(1,${u},${ip},${op})'>В Camera 1</button> <button class="secondary" onclick='useCamera(2,${u},${ip},0)'>В Camera 2</button>`}h+=`<tr><td><strong>${x.ip}</strong>${x.hostname?`<div class="muted">${x.hostname}</div>`:''}</td><td>${rt}</td><td>${ov}</td><td>${btn}</td></tr>`}h+='</tbody></table>';$('scanResults').innerHTML=h;$('scanMsg').className='msg oktxt';$('scanMsg').textContent=`Найдено устройств: ${devs.length}. Сеть: ${d.network||''}`}
 async function scanCameras(){const b=$('scanBtn'),m=$('scanMsg');b.disabled=true;b.textContent='Сканирование...';m.className='msg';m.textContent='Проверяю локальную сеть. Это может занять несколько секунд...';$('scanResults').innerHTML='';try{const d=await api('/api/camera-scan',{method:'POST'});renderScan(d)}catch(e){m.className='msg errtxt';m.textContent=e.message}finally{b.disabled=false;b.textContent='Сканировать сеть'}}
@@ -1011,7 +1098,49 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8")) if raw else {}
 
+    def auth_token(self) -> str:
+        cookie = str(self.headers.get("Cookie") or "")
+        for item in cookie.split(";"):
+            name, sep, value = item.strip().partition("=")
+            if sep and name == AUTH_COOKIE:
+                return value.strip()
+        return ""
+
+    def authenticated(self) -> bool:
+        return _session_valid(self.auth_token())
+
+    def require_auth(self) -> bool:
+        if self.authenticated():
+            return True
+        if self.path.startswith("/api/"):
+            self.send_json(401, {"detail": "Требуется вход"})
+        else:
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+        return False
+
+    def send_html(self, body_text: str, status: int = 200) -> None:
+        body = body_text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
+        if self.path == "/login":
+            if self.authenticated():
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+            else:
+                self.send_html(LOGIN_HTML)
+            return
+        if not self.require_auth():
+            return
         if self.path == "/camera":
             body = CAMERA_HTML.encode("utf-8")
             self.send_response(200)
@@ -1133,12 +1262,51 @@ class Handler(BaseHTTPRequestHandler):
             cfg = load_config()
             cfg["onvif_password"] = ""
             cfg["tapo_cloud_password"] = ""
+            cfg.pop("web_password_sha256", None)
             self.send_json(200, {"ok": True, "config": cfg, "active_camera_runtime": runtime_active_camera(cfg), "ethernet": ethernet_info(), "network": network_state(cfg), "streamer": service_state(STREAM_SERVICE)})
             return
         self.send_json(404, {"detail": "Not found"})
 
     def do_POST(self) -> None:
         try:
+            if self.path == "/api/login":
+                req = self.read_json()
+                if not _check_password(str(req.get("password") or "")):
+                    self.send_json(401, {"detail": "Неверный пароль"})
+                    return
+                token = _new_session()
+                body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}".format(AUTH_COOKIE, token, AUTH_TTL_SEC))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if not self.require_auth():
+                return
+            if self.path == "/api/logout":
+                _drop_session(self.auth_token())
+                body = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Set-Cookie", "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0".format(AUTH_COOKIE))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/api/password":
+                req = self.read_json()
+                password = str(req.get("password") or "")
+                if len(password) < 6:
+                    self.send_json(400, {"detail": "Пароль должен быть не короче 6 символов"})
+                    return
+                cfg = load_config()
+                cfg["web_password_sha256"] = hashlib.sha256(password.encode("utf-8")).hexdigest()
+                save_config(cfg)
+                self.send_json(200, {"ok": True, "message": "Пароль веб-панели изменён"})
+                return
             if self.path == "/api/software-home/save":
                 cfg = load_config()
                 try:
@@ -1211,6 +1379,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(400, {"detail": "config object required"})
                     return
                 old_cfg = load_config()
+                if old_cfg.get("web_password_sha256"):
+                    new_cfg["web_password_sha256"] = old_cfg["web_password_sha256"]
                 if not new_cfg.get("onvif_password") and old_cfg.get("onvif_password"):
                     new_cfg["onvif_password"] = old_cfg["onvif_password"]
                 if not new_cfg.get("tapo_cloud_password") and old_cfg.get("tapo_cloud_password"):
