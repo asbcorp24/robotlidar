@@ -331,7 +331,7 @@ class TapoTalkback:
                 ffmpeg_bin,
                 "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(path),
-                "-af", "adelay=450|450,apad=pad_dur=0.7",
+                "-af", "adelay=800|800,volume=2.0,alimiter=limit=0.98:attack=5:release=50,apad=pad_dur=0.8",
                 "-ac", "1", "-ar", "8000",
                 "-c:a", "pcm_s16le",
                 str(padded_path),
@@ -352,7 +352,7 @@ class TapoTalkback:
                 raise TapoTalkbackError("FFmpeg clip prepare failed: {}".format(detail[-500:]))
 
             src = "ffmpeg:{}#audio=pcma/8000#input=file".format(padded_path)
-            self.log("TAPO TALKBACK CLIP: PLAY {} bytes + 450ms/700ms padding".format(len(data)))
+            self.log("TAPO TALKBACK CLIP: PLAY {} bytes + 800ms/800ms padding + boosted volume".format(len(data)))
             try:
                 self._stream_api(src)
             except Exception:
