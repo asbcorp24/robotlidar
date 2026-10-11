@@ -293,6 +293,52 @@ class TapoTalkback:
             if was_speaking:
                 self.log("TAPO TALKBACK: STOP")
 
+    def play_clip(self, data: bytes, extension: str = "webm") -> None:
+        if not data:
+            return
+        extension = str(extension or "webm").lower().strip().lstrip(".")
+        if extension not in ("webm", "ogg", "wav", "m4a", "mp4"):
+            extension = "webm"
+        path = Path("/run/robotlidar-talkback-{}.{}".format(int(time.time() * 1000), extension))
+
+        with self.lock:
+            if not self.enabled():
+                raise TapoTalkbackError("Tapo talkback выключен в настройках")
+            self._ensure_go2rtc()
+
+            # Stop the live PCM bridge, if it was prepared, and let go2rtc play
+            # the complete browser recording at its natural clock rate.
+            self.speaking = False
+            self.active = False
+            self.generation += 1
+            self._clear_queue()
+            if self._go2rtc_ready():
+                try:
+                    self._stream_api("")
+                except Exception:
+                    pass
+
+            path.write_bytes(data)
+            src = "ffmpeg:{}#audio=pcma/8000#input=file".format(path)
+            self.log("TAPO TALKBACK CLIP: PLAY {} bytes".format(len(data)))
+            try:
+                self._stream_api(src)
+            except Exception:
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+                raise
+
+        def cleanup() -> None:
+            time.sleep(120)
+            try:
+                path.unlink()
+            except Exception:
+                pass
+
+        threading.Thread(target=cleanup, name="tapo-talkback-clip-cleanup", daemon=True).start()
+
     def close(self) -> None:
         with self.lock:
             self.speaking = False
