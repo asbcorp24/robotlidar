@@ -63,6 +63,7 @@ type device struct {
 	TiltCDeg   atomic.Int64
 	LinkMbps   atomic.Int64
 	ActiveCamera atomic.Int64
+	Talkback    bool
 	stream     *rtpStream
 	srt        *srtBridge
 	controlM   sync.RWMutex
