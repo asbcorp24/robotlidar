@@ -29,6 +29,7 @@ from xml.sax.saxutils import escape
 import websocket
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32, Int8
+from robotlidar.tapo_talkback import TapoTalkback, TapoTalkbackError
 
 CONTROL_MAGIC = 0x5354
 CONTROL_VERSION = 1
@@ -79,6 +80,10 @@ class RemoteControlGateway:
         self._ws_reconnects = 0
         self._ptz_move_mode = 'auto'
         self._ptz_home_supported: Optional[bool] = None
+        self._talk_clip_buffer = bytearray()
+        self._talk_clip_total = 0
+        self._talk_clip_mime = "webm"
+        self._talkback = TapoTalkback(self._snapshot, self._log)
 
         self._cmd_pub = node.create_publisher(Twist, '/cmd_vel', 20)
         self._brush_pub = node.create_publisher(Float32, '/brush/command', 20)
@@ -100,7 +105,11 @@ class RemoteControlGateway:
         user_control_enabled = bool(settings.get('camera_remote_control_enabled', False))
         cfg = {
             'enabled': user_control_enabled,
-            'transport_enabled': bool(user_control_enabled or settings.get('camera_enabled', False)),
+            'transport_enabled': bool(
+                user_control_enabled
+                or settings.get('camera_enabled', False)
+                or settings.get('camera_tapo_talkback_enabled', False)
+            ),
             'port': int(settings.get('camera_control_port') or 6000),
             'server_url': str(settings.get('camera_server_url') or '').strip().rstrip('/'),
             'device_id': str(settings.get('camera_device_id') or '').strip(),
@@ -112,6 +121,13 @@ class RemoteControlGateway:
             'onvif_username': str(settings.get('camera_onvif_username') or '').strip(),
             'onvif_password': str(settings.get('camera_onvif_password') or ''),
             'onvif_profile_token': str(settings.get('camera_onvif_profile_token') or 'Profile_1').strip() or 'Profile_1',
+            'camera_tapo_talkback_enabled': bool(settings.get('camera_tapo_talkback_enabled', False)),
+            'camera_tapo_host': str(settings.get('camera_tapo_host') or '').strip(),
+            'camera_tapo_cloud_password': str(settings.get('camera_tapo_cloud_password') or ''),
+            'camera_go2rtc_bin': str(settings.get('camera_go2rtc_bin') or '/usr/local/bin/go2rtc').strip() or '/usr/local/bin/go2rtc',
+            'camera_talkback_ffmpeg_bin': str(settings.get('camera_talkback_ffmpeg_bin') or 'ffmpeg').strip() or 'ffmpeg',
+            'camera1_rtsp_url': str(settings.get('camera1_rtsp_url') or settings.get('camera_rtsp_url') or '').strip(),
+            'camera_rtsp_url': str(settings.get('camera_rtsp_url') or '').strip(),
         }
         if not 1 <= cfg['port'] <= 65535:
             cfg['port'] = 6000
@@ -137,6 +153,10 @@ class RemoteControlGateway:
         self._close_socket()
         self._close_ws()
         self._safe_stop_outputs('gateway stop')
+        try:
+            self._talkback.close()
+        except Exception:
+            pass
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -292,6 +312,55 @@ class RemoteControlGateway:
                 pass
 
     def _handle_packet(self, data: bytes) -> None:
+        if len(data) >= 12 and data[:4] == b"RLCL":
+            version = data[4]
+            flags = data[5]
+            mime_code = data[6]
+            total = struct.unpack(">I", data[8:12])[0]
+            if version != 1:
+                raise ValueError("bad talkback clip version")
+            if total <= 0 or total > (4 << 20):
+                self._talk_clip_buffer = bytearray()
+                self._talk_clip_total = 0
+                raise ValueError("invalid talkback clip size")
+            if flags & 0x01:
+                self._talk_clip_buffer = bytearray()
+                self._talk_clip_total = total
+                self._talk_clip_mime = {1: "webm", 2: "ogg", 3: "wav", 4: "m4a"}.get(mime_code, "webm")
+            if self._talk_clip_total != total:
+                self._talk_clip_buffer = bytearray()
+                self._talk_clip_total = 0
+                raise ValueError("talkback clip size changed")
+            self._talk_clip_buffer.extend(data[12:])
+            if len(self._talk_clip_buffer) > self._talk_clip_total:
+                self._talk_clip_buffer = bytearray()
+                self._talk_clip_total = 0
+                raise ValueError("talkback clip overflow")
+            if flags & 0x02:
+                if len(self._talk_clip_buffer) != self._talk_clip_total:
+                    got = len(self._talk_clip_buffer)
+                    self._talk_clip_buffer = bytearray()
+                    self._talk_clip_total = 0
+                    raise ValueError(f"incomplete talkback clip {got}/{total}")
+                clip = bytes(self._talk_clip_buffer)
+                mime = self._talk_clip_mime
+                self._talk_clip_buffer = bytearray()
+                self._talk_clip_total = 0
+                self._log(f"TAPO TALKBACK CLIP received: {len(clip)} bytes ({mime})")
+                threading.Thread(
+                    target=self._play_talkback_clip,
+                    args=(clip, mime),
+                    name="tapo-talkback-rpi-clip",
+                    daemon=True,
+                ).start()
+            return
+
+        # Legacy live PCM talkback packets are intentionally ignored on Raspberry:
+        # the central UI now sends a complete recorded phrase (RLCL), matching the
+        # more reliable Orange Pi path.
+        if len(data) >= 8 and data[:4] == b"RLAU":
+            return
+
         if len(data) != 16:
             raise ValueError(f'packet size {len(data)}, expected 16')
         magic, version, packet_type, seq, value1, value2, speed, flags = struct.unpack('>HBBIhhHH', data)
@@ -360,6 +429,16 @@ class RemoteControlGateway:
             self._log(f'CONTROL/STREAM: {message}')
         else:
             raise ValueError(f'unknown packet type {packet_type}')
+
+    def _play_talkback_clip(self, clip: bytes, mime: str) -> None:
+        try:
+            self._talkback.play_clip(clip, mime)
+        except TapoTalkbackError as exc:
+            self._set_error("TAPO TALKBACK: " + str(exc))
+            self._log("TAPO TALKBACK ERROR: " + str(exc))
+        except Exception as exc:
+            self._set_error("TAPO TALKBACK: " + str(exc))
+            self._log("TAPO TALKBACK ERROR: " + str(exc))
 
     def _safe_stop_outputs(self, reason: str) -> None:
         with self._lock:
