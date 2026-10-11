@@ -20,6 +20,10 @@ let talkProcessor=null;
 let talkPending=new Uint8Array(0);
 let talkSending=false;
 let talkGestureToken=0;
+let talkResampleRate=0;
+let talkResampleNeed=0;
+let talkResampleAcc=0;
+let talkResampleWeight=0;
 const $=id=>document.getElementById(id);
 
 function authHeaders(extra={}){return token?{...extra,Authorization:`Bearer ${token}`}:{...extra};}
@@ -125,23 +129,60 @@ function concatBytes(a,b){
   const out=new Uint8Array(a.length+b.length);
   out.set(a,0);out.set(b,a.length);return out;
 }
+function resetTalkResampler(inputRate=0){
+  talkResampleRate=Number(inputRate)||0;
+  talkResampleNeed=talkResampleRate>0?talkResampleRate/8000:0;
+  talkResampleAcc=0;
+  talkResampleWeight=0;
+}
 function resampleTo8k(input,inputRate){
   if(!input?.length||!inputRate)return new Int16Array(0);
-  const outLen=Math.max(1,Math.floor(input.length*8000/inputRate));
-  const out=new Int16Array(outLen);
-  const step=inputRate/8000;
-  for(let i=0;i<outLen;i++){
-    const pos=i*step;
-    const i0=Math.floor(pos),i1=Math.min(input.length-1,i0+1);
-    const f=pos-i0;
-    const sample=input[i0]*(1-f)+input[i1]*f;
-    out[i]=Math.max(-32768,Math.min(32767,Math.round(sample*32767)));
+  if(talkResampleRate!==inputRate||talkResampleNeed<=0)resetTalkResampler(inputRate);
+
+  // Stateful area/box resampler. Unlike sampling each ScriptProcessor block
+  // independently, this keeps fractional phase across block boundaries and
+  // low-pass filters before reducing 44.1/48 kHz microphone audio to 8 kHz.
+  const ratio=inputRate/8000;
+  const tmp=[];
+  let need=talkResampleNeed;
+  let acc=talkResampleAcc;
+  let weight=talkResampleWeight;
+
+  for(let i=0;i<input.length;i++){
+    let remaining=1;
+    const x=Number.isFinite(input[i])?input[i]:0;
+    while(remaining>1e-9){
+      const take=Math.min(remaining,need);
+      acc+=x*take;
+      weight+=take;
+      need-=take;
+      remaining-=take;
+      if(need<=1e-9){
+        let sample=weight>0?acc/weight:0;
+        // Leave headroom for Tapo's narrow-band PCMA path and avoid hard clipping.
+        sample=Math.max(-0.92,Math.min(0.92,sample*0.72));
+        tmp.push(Math.round(sample*32767));
+        acc=0;
+        weight=0;
+        need=ratio;
+      }
+    }
   }
-  return out;
+
+  talkResampleNeed=need;
+  talkResampleAcc=acc;
+  talkResampleWeight=weight;
+  return Int16Array.from(tmp);
+}
+function pcm16leBytes(samples){
+  const bytes=new Uint8Array(samples.length*2);
+  const view=new DataView(bytes.buffer);
+  for(let i=0;i<samples.length;i++)view.setInt16(i*2,samples[i],true);
+  return bytes;
 }
 function queueTalkPcm(samples){
   if(!talkActive||!samples?.length)return;
-  const bytes=new Uint8Array(samples.buffer,samples.byteOffset,samples.byteLength);
+  const bytes=pcm16leBytes(samples);
   talkPending=concatBytes(talkPending,bytes);
   const maxBuffered=1600*8;
   if(talkPending.length>maxBuffered)talkPending=talkPending.slice(talkPending.length-maxBuffered);
@@ -183,14 +224,15 @@ async function startTalkback(){
   talkSetState('Запрашиваю микрофон…',false);
   try{
     talkStream=await navigator.mediaDevices.getUserMedia({
-      audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},
+      audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:false,sampleRate:{ideal:48000}},
       video:false
     });
     if(gesture!==talkGestureToken){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;return;}
     await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=start`,{method:'POST'});
     if(gesture!==talkGestureToken){await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=stop`,{method:'POST'}).catch(()=>{});return;}
     const AC=window.AudioContext||window.webkitAudioContext;
-    talkContext=new AC();
+    try{talkContext=new AC({latencyHint:'interactive',sampleRate:48000});}
+    catch{talkContext=new AC({latencyHint:'interactive'});}
     if(talkContext.state==='suspended')await talkContext.resume();
     talkSource=talkContext.createMediaStreamSource(talkStream);
     talkProcessor=talkContext.createScriptProcessor(2048,1,1);
@@ -204,6 +246,7 @@ async function startTalkback(){
     talkProcessor.connect(silent);
     silent.connect(talkContext.destination);
     talkPending=new Uint8Array(0);
+    resetTalkResampler(talkContext.sampleRate);
     talkActive=true;
     talkSetState('Передача звука в камеру',true);
   }catch(e){
@@ -223,7 +266,7 @@ async function stopTalkback(sendStop=true){
   try{talkSource?.disconnect();}catch{}
   try{talkStream?.getTracks().forEach(t=>t.stop());}catch{}
   try{if(talkContext&&talkContext.state!=='closed')await talkContext.close();}catch{}
-  talkProcessor=null;talkSource=null;talkStream=null;talkContext=null;talkPending=new Uint8Array(0);
+  talkProcessor=null;talkSource=null;talkStream=null;talkContext=null;talkPending=new Uint8Array(0);resetTalkResampler();
   if(sendStop&&wasActive&&selected?.id){
     try{await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=stop`,{method:'POST'});}catch(e){console.warn('talkback stop',e);}
   }
