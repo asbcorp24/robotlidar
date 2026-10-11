@@ -36,6 +36,11 @@ class CameraSettingsRequest(BaseModel):
     onvif_username: str = Field(default='', max_length=128)
     onvif_password: str = Field(default='', max_length=256)
     onvif_profile_token: str = Field(default='Profile_1', max_length=256)
+    tapo_talkback_enabled: bool = False
+    tapo_host: str = Field(default='', max_length=255)
+    tapo_cloud_password: str = Field(default='', max_length=256)
+    go2rtc_bin: str = Field(default='/usr/local/bin/go2rtc', max_length=512)
+    talkback_ffmpeg_bin: str = Field(default='ffmpeg', max_length=512)
 
 
 class CameraEnabledRequest(BaseModel):
@@ -108,8 +113,10 @@ def api_camera_settings(request: CameraSettingsRequest) -> dict:
 
     if request.enabled and not camera1_url:
         raise HTTPException(status_code=400, detail='Укажите RTSP URL Camera 1')
-    if (request.enabled or request.remote_control_enabled) and not server_url:
+    if (request.enabled or request.remote_control_enabled or request.tapo_talkback_enabled) and not server_url:
         raise HTTPException(status_code=400, detail='Укажите адрес центрального сервера')
+    if request.tapo_talkback_enabled and not request.tapo_cloud_password:
+        raise HTTPException(status_code=400, detail='Для громкой связи укажите пароль Tapo Cloud')
 
     settings = web_app.settings.update(
         camera_enabled=bool(request.enabled),
@@ -128,6 +135,11 @@ def api_camera_settings(request: CameraSettingsRequest) -> dict:
         camera_onvif_username=request.onvif_username.strip(),
         camera_onvif_password=request.onvif_password,
         camera_onvif_profile_token=request.onvif_profile_token.strip() or 'Profile_1',
+        camera_tapo_talkback_enabled=bool(request.tapo_talkback_enabled),
+        camera_tapo_host=request.tapo_host.strip(),
+        camera_tapo_cloud_password=request.tapo_cloud_password,
+        camera_go2rtc_bin=request.go2rtc_bin.strip() or '/usr/local/bin/go2rtc',
+        camera_talkback_ffmpeg_bin=request.talkback_ffmpeg_bin.strip() or 'ffmpeg',
     )
     camera_relay.configure(settings)
     remote_control.configure(settings)
@@ -223,6 +235,7 @@ _CAMERA_CARD = r'''
     <label class="switch-line camera-master-switch"><input type="checkbox" id="cameraEnabled"> <strong>Передавать RTSP на сервер</strong></label>
     <label class="switch-line camera-master-switch"><input type="checkbox" id="cameraLocalPreviewEnabled"> <strong>Разрешить локальный просмотр</strong></label>
     <label class="switch-line camera-master-switch"><input type="checkbox" id="remoteControlEnabled"> <strong>Разрешить управление с сайта</strong></label>
+    <label class="switch-line camera-master-switch"><input type="checkbox" id="tapoTalkbackEnabled"> <strong>Громкая связь Tapo</strong></label>
   </div>
   <div class="settings-row camera-settings-row">
     <label class="camera-device-label">Device ID
@@ -237,6 +250,15 @@ _CAMERA_CARD = r'''
     <input id="cameraRtspUrl" type="hidden">
     <label>Камера при запуске<select id="cameraActiveCamera"><option value="1">Camera 1</option><option value="2">Camera 2</option></select></label>
   </div>
+  <details class="camera-onvif"><summary><strong>Громкая связь Tapo</strong> — настройки динамика камеры</summary>
+    <div class="settings-row camera-settings-row camera-onvif-grid">
+      <label>IP Tapo<input id="tapoHost" autocomplete="off" placeholder="192.168.1.115"></label>
+      <label class="camera-wide">Пароль Tapo Cloud<input id="tapoCloudPassword" type="password" autocomplete="new-password"></label>
+      <label class="camera-wide">go2rtc<input id="cameraGo2rtcBin" autocomplete="off" value="/usr/local/bin/go2rtc"></label>
+      <label class="camera-wide">FFmpeg для talkback<input id="cameraTalkbackFfmpegBin" autocomplete="off" value="ffmpeg"></label>
+    </div>
+    <div class="notice">Как на Orange Pi: браузер записывает фразу целиком, Raspberry Pi получает файл и проигрывает его через go2rtc → PCMA/8000 → Tapo.</div>
+  </details>
   <details class="camera-onvif"><summary><strong>ONVIF PTZ камеры</strong> — открыть настройки поворота</summary>
     <div class="settings-row camera-settings-row camera-onvif-grid">
       <label class="camera-wide">ONVIF PTZ URL<input id="cameraOnvifUrl" autocomplete="off" placeholder="http://192.168.1.60/onvif/ptz_service"></label>
@@ -276,7 +298,8 @@ _CAMERA_SCRIPT = r'''
   if(document.activeElement!==byId('cameraEnabled'))byId('cameraEnabled').checked=!!s.camera_enabled;
   if(document.activeElement!==byId('cameraLocalPreviewEnabled'))byId('cameraLocalPreviewEnabled').checked=s.camera_local_preview_enabled!==false;
   if(document.activeElement!==byId('remoteControlEnabled'))byId('remoteControlEnabled').checked=!!s.camera_remote_control_enabled;
-  const fields=[['cameraDeviceId','camera_device_id'],['cameraRtspUrl','camera_rtsp_url'],['camera1Name','camera1_name'],['camera2Name','camera2_name'],['camera1RtspUrl','camera1_rtsp_url'],['camera2RtspUrl','camera2_rtsp_url'],['cameraActiveCamera','camera_active_camera'],['cameraServerUrl','camera_server_url'],['cameraControlPort','camera_control_port'],['cameraOnvifUrl','camera_onvif_url'],['cameraOnvifUsername','camera_onvif_username'],['cameraOnvifPassword','camera_onvif_password'],['cameraOnvifProfileToken','camera_onvif_profile_token']];
+  if(document.activeElement!==byId('tapoTalkbackEnabled'))byId('tapoTalkbackEnabled').checked=!!s.camera_tapo_talkback_enabled;
+  const fields=[['cameraDeviceId','camera_device_id'],['cameraRtspUrl','camera_rtsp_url'],['camera1Name','camera1_name'],['camera2Name','camera2_name'],['camera1RtspUrl','camera1_rtsp_url'],['camera2RtspUrl','camera2_rtsp_url'],['cameraActiveCamera','camera_active_camera'],['cameraServerUrl','camera_server_url'],['cameraControlPort','camera_control_port'],['cameraOnvifUrl','camera_onvif_url'],['cameraOnvifUsername','camera_onvif_username'],['cameraOnvifPassword','camera_onvif_password'],['cameraOnvifProfileToken','camera_onvif_profile_token'],['tapoHost','camera_tapo_host'],['tapoCloudPassword','camera_tapo_cloud_password'],['cameraGo2rtcBin','camera_go2rtc_bin'],['cameraTalkbackFfmpegBin','camera_talkback_ffmpeg_bin']];
   fields.forEach(([id,key])=>{if(document.activeElement!==byId(id)&&s[key]!=null)byId(id).value=s[key]});
   byId('cameraTransferState').textContent=c.enabled?(c.ffmpeg_running?'ВКЛ / поток идёт':'ВКЛ / ожидание'):'ВЫКЛ'; byId('cameraTransferState').className=c.enabled&&c.ffmpeg_running?'value-ok':(c.enabled?'value-warn':'');
   byId('cameraActiveState').textContent=`Camera ${c.active_camera||1}: ${(c.active_camera||1)===2?(c.camera2_name||'Camera 2'):(c.camera1_name||'Camera 1')}`;
@@ -294,7 +317,7 @@ _CAMERA_SCRIPT = r'''
  byId('cameraLocalPreviewEnabled').addEventListener('change',()=>toggle('/api/camera/local-preview-enabled',byId('cameraLocalPreviewEnabled'),'Локальный просмотр включён','Локальный просмотр выключен'));
  byId('remoteControlEnabled').addEventListener('change',()=>toggle('/api/control/enabled',byId('remoteControlEnabled'),'Удалённое управление включено','Удалённое управление выключено'));
  byId('generateCameraDeviceId').addEventListener('click',async()=>{if(!confirm('Создать новый device_id? Его потребуется привязать на центральном сервере.'))return;try{const d=await req('/api/camera/generate-device-id',{method:'POST'});byId('cameraDeviceId').value=d.device_id;msg(`Новый ID: ${d.device_id}`,'success');refresh()}catch(e){msg(e.message,'error')}});
- byId('saveCameraSettings').addEventListener('click',async()=>{try{await req('/api/camera/settings',{method:'POST',body:JSON.stringify({enabled:byId('cameraEnabled').checked,local_preview_enabled:byId('cameraLocalPreviewEnabled').checked,remote_control_enabled:byId('remoteControlEnabled').checked,device_id:val('cameraDeviceId'),rtsp_url:val('camera1RtspUrl'),camera1_name:val('camera1Name'),camera1_rtsp_url:val('camera1RtspUrl'),camera2_name:val('camera2Name'),camera2_rtsp_url:val('camera2RtspUrl'),active_camera:Number(val('cameraActiveCamera')||1),server_url:val('cameraServerUrl'),control_port:Number(val('cameraControlPort')||6000),onvif_url:val('cameraOnvifUrl'),onvif_username:val('cameraOnvifUsername'),onvif_password:byId('cameraOnvifPassword').value,onvif_profile_token:val('cameraOnvifProfileToken')||'Profile_1'})});msg('Настройки сохранены','success');refresh()}catch(e){msg(e.message,'error')}});
+ byId('saveCameraSettings').addEventListener('click',async()=>{try{await req('/api/camera/settings',{method:'POST',body:JSON.stringify({enabled:byId('cameraEnabled').checked,local_preview_enabled:byId('cameraLocalPreviewEnabled').checked,remote_control_enabled:byId('remoteControlEnabled').checked,tapo_talkback_enabled:byId('tapoTalkbackEnabled').checked,device_id:val('cameraDeviceId'),rtsp_url:val('camera1RtspUrl'),camera1_name:val('camera1Name'),camera1_rtsp_url:val('camera1RtspUrl'),camera2_name:val('camera2Name'),camera2_rtsp_url:val('camera2RtspUrl'),active_camera:Number(val('cameraActiveCamera')||1),server_url:val('cameraServerUrl'),control_port:Number(val('cameraControlPort')||6000),onvif_url:val('cameraOnvifUrl'),onvif_username:val('cameraOnvifUsername'),onvif_password:byId('cameraOnvifPassword').value,onvif_profile_token:val('cameraOnvifProfileToken'),tapo_host:val('tapoHost'),tapo_cloud_password:byId('tapoCloudPassword').value,go2rtc_bin:val('cameraGo2rtcBin')||'/usr/local/bin/go2rtc',talkback_ffmpeg_bin:val('cameraTalkbackFfmpegBin')||'ffmpeg'||'Profile_1'})});msg('Настройки сохранены','success');refresh()}catch(e){msg(e.message,'error')}});
  byId('selectCamera1').addEventListener('click',async()=>{try{await req('/api/camera/select/1',{method:'POST'});msg('Выбрана Camera 1','success');refresh()}catch(e){msg(e.message,'error')}});
  byId('selectCamera2').addEventListener('click',async()=>{try{await req('/api/camera/select/2',{method:'POST'});msg('Выбрана Camera 2','success');refresh()}catch(e){msg(e.message,'error')}});
  byId('restartCameraRelay').addEventListener('click',async()=>{try{await req('/api/camera/restart',{method:'POST'});msg('Видеопоток перезапускается','success')}catch(e){msg(e.message,'error')}setTimeout(refresh,500)});
