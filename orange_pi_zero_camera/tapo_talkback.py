@@ -217,7 +217,7 @@ class TapoTalkback:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 if resp.status >= 300:
                     raise TapoTalkbackError("go2rtc API HTTP {}".format(resp.status))
         except urllib.error.HTTPError as exc:
