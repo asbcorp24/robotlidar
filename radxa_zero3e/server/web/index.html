@@ -82,7 +82,7 @@
               <div class="hint">Подъём/опускание работает только пока кнопка удерживается. Вращение щётки остаётся включённым до STOP или смены направления.</div>
             </section>
 
-            <section class="panel telemetry-panel"><div class="panel-title">Телеметрия</div><div class="metric"><span>FPS</span><strong id="fpsMetric">—</strong></div><div class="metric"><span>Битрейт</span><strong id="bitrateMetric">—</strong></div><div class="metric"><span>Ethernet</span><strong id="ethernetMetric">—</strong></div><div class="metric"><span>Uptime</span><strong id="uptimeMetric">—</strong></div></section>
+            <section class="panel telemetry-panel"><div class="panel-title">Телеметрия</div><div class="metric"><span>FPS</span><strong id="fpsMetric">—</strong></div><div class="metric"><span>Битрейт</span><strong id="bitrateMetric">—</strong></div><div class="metric"><span>Ethernet</span><strong id="ethernetMetric">—</strong></div><div class="metric"><span>Uptime</span><strong id="uptimeMetric">—</strong></div><button id="gpsBtn" class="btn secondary gps-btn hidden" type="button">📍 Местоположение</button></section>
           </aside>
         </section>
       </section>
@@ -96,6 +96,18 @@
       </section>
     </main>
   </div>
+
+  <section id="gpsModal" class="gps-modal hidden" aria-hidden="true">
+    <div class="gps-dialog panel">
+      <div class="gps-dialog-head">
+        <div><div class="panel-title" style="margin:0">Местоположение трактора</div><div id="gpsTitle" class="muted"></div></div>
+        <button id="gpsCloseBtn" class="btn secondary" type="button">Закрыть</button>
+      </div>
+      <div id="gpsCoords" class="gps-coords"></div>
+      <iframe id="gpsMap" class="gps-map" title="Карта местоположения" loading="lazy" referrerpolicy="no-referrer"></iframe>
+      <div id="gpsUpdated" class="muted"></div>
+    </div>
+  </section>
 
   <section id="cardboardView" class="cardboard-view hidden">
     <div class="cardboard-eye left-eye"><video id="vrVideoLeft" autoplay playsinline muted></video><div class="vr-reticle"></div></div>
