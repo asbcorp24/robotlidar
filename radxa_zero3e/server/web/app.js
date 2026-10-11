@@ -20,6 +20,10 @@ let talkProcessor=null;
 let talkPending=new Uint8Array(0);
 let talkSending=false;
 let talkGestureToken=0;
+let talkRecorder=null;
+let talkRecordedChunks=[];
+let talkRecordedMime='audio/webm';
+let talkRecordedDeviceId='';
 let talkResampleRate=0;
 let talkResampleNeed=0;
 let talkResampleAcc=0;
@@ -240,54 +244,98 @@ async function startTalkback(){
   talkStarting=true;
   talkSetState('Запрашиваю микрофон…',false);
   try{
+    if(typeof MediaRecorder==='undefined')throw new Error('Браузер не поддерживает запись микрофона');
     talkStream=await navigator.mediaDevices.getUserMedia({
       audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:{ideal:48000}},
       video:false
     });
     if(gesture!==talkGestureToken){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;return;}
-    await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=start`,{method:'POST'});
-    if(gesture!==talkGestureToken){await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=stop`,{method:'POST'}).catch(()=>{});return;}
-    const AC=window.AudioContext||window.webkitAudioContext;
-    try{talkContext=new AC({latencyHint:'interactive',sampleRate:48000});}
-    catch{talkContext=new AC({latencyHint:'interactive'});}
-    if(talkContext.state==='suspended')await talkContext.resume();
-    talkSource=talkContext.createMediaStreamSource(talkStream);
-    talkProcessor=talkContext.createScriptProcessor(2048,1,1);
-    const silent=talkContext.createGain();silent.gain.value=0;
-    talkProcessor.onaudioprocess=e=>{
-      if(!talkActive)return;
-      const input=e.inputBuffer.getChannelData(0);
-      queueTalkPcm(resampleTo8k(input,talkContext.sampleRate));
+
+    const candidates=[
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/ogg'
+    ];
+    talkRecordedMime=candidates.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
+    const opts=talkRecordedMime?{mimeType:talkRecordedMime,audioBitsPerSecond:64000}:{audioBitsPerSecond:64000};
+    talkRecorder=new MediaRecorder(talkStream,opts);
+    talkRecordedChunks=[];
+    talkRecordedDeviceId=selected.id;
+    talkRecorder.ondataavailable=e=>{
+      if(e.data&&e.data.size>0)talkRecordedChunks.push(e.data);
     };
-    talkSource.connect(talkProcessor);
-    talkProcessor.connect(silent);
-    silent.connect(talkContext.destination);
-    talkPending=new Uint8Array(0);
-    resetTalkResampler(talkContext.sampleRate);
+    talkRecorder.onerror=e=>{
+      console.warn('talkback recorder',e);
+      talkSetState('Ошибка записи микрофона',false);
+    };
+    talkRecorder.start();
     talkActive=true;
-    talkSetState('Передача звука в камеру',true);
+    talkSetState('Идёт запись — отпустите кнопку для отправки',true);
   }catch(e){
     console.warn('talkback start',e);
     talkSetState('Не удалось включить: '+e.message,false);
-    await stopTalkback(false);
+    try{talkStream?.getTracks().forEach(t=>t.stop());}catch{}
+    talkRecorder=null;talkStream=null;talkRecordedChunks=[];talkRecordedDeviceId='';
   }finally{
     talkStarting=false;
   }
 }
-async function stopTalkback(sendStop=true){
+async function stopTalkback(sendClip=true){
   ++talkGestureToken;
-  const wasActive=talkActive||talkStarting;
+  const recorder=talkRecorder;
+  const stream=talkStream;
+  const deviceId=talkRecordedDeviceId;
+  const hadRecording=!!recorder&&recorder.state!=='inactive';
+
   talkActive=false;
   talkStarting=false;
-  try{if(talkProcessor){talkProcessor.onaudioprocess=null;talkProcessor.disconnect();}}catch{}
-  try{talkSource?.disconnect();}catch{}
-  try{talkStream?.getTracks().forEach(t=>t.stop());}catch{}
-  try{if(talkContext&&talkContext.state!=='closed')await talkContext.close();}catch{}
-  talkProcessor=null;talkSource=null;talkStream=null;talkContext=null;talkPending=new Uint8Array(0);resetTalkResampler();
-  if(sendStop&&wasActive&&selected?.id){
-    try{await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=stop`,{method:'POST'});}catch(e){console.warn('talkback stop',e);}
+
+  try{
+    if(hadRecording){
+      await new Promise(resolve=>{
+        const done=()=>resolve();
+        recorder.addEventListener('stop',done,{once:true});
+        try{recorder.stop();}catch{resolve();}
+      });
+    }
+  }catch(e){console.warn('talkback recorder stop',e);}
+
+  try{stream?.getTracks().forEach(t=>t.stop());}catch{}
+  talkRecorder=null;talkStream=null;
+
+  const chunks=talkRecordedChunks;
+  talkRecordedChunks=[];
+  talkRecordedDeviceId='';
+
+  if(!sendClip||!deviceId||!chunks.length){
+    talkSetState('Микрофон выключен',false);
+    return;
   }
-  talkSetState('Микрофон выключен',false);
+
+  try{
+    const type=recorder?.mimeType||talkRecordedMime||chunks[0]?.type||'audio/webm';
+    const blob=new Blob(chunks,{type});
+    if(blob.size<=0)throw new Error('Пустая запись');
+    if(blob.size>4*1024*1024)throw new Error('Фраза слишком длинная — максимум 4 МБ');
+
+    talkSetState('Отправка записи на камеру…',false);
+    const response=await fetch(`/api/devices/${encodeURIComponent(deviceId)}/talk?action=clip`,{
+      method:'POST',
+      headers:authHeaders({'Content-Type':blob.type||'audio/webm'}),
+      body:blob,
+      cache:'no-store',
+    });
+    if(!response.ok){
+      let detail='HTTP '+response.status;
+      try{const d=await response.json();detail=d.detail||detail;}catch{}
+      throw new Error(detail);
+    }
+    talkSetState('Фраза отправлена в камеру',false);
+  }catch(e){
+    console.warn('talkback clip',e);
+    talkSetState('Ошибка отправки: '+e.message,false);
+  }
 }
 
 function deg2rad(v){return v*Math.PI/180;}
