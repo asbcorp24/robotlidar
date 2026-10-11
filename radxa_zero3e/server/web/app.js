@@ -24,6 +24,8 @@ let talkResampleRate=0;
 let talkResampleNeed=0;
 let talkResampleAcc=0;
 let talkResampleWeight=0;
+let talkFilterState=new Float32Array(12);
+let talkFilterPos=0;
 const $=id=>document.getElementById(id);
 
 function authHeaders(extra={}){return token?{...extra,Authorization:`Bearer ${token}`}:{...extra};}
@@ -134,6 +136,17 @@ function resetTalkResampler(inputRate=0){
   talkResampleNeed=talkResampleRate>0?talkResampleRate/8000:0;
   talkResampleAcc=0;
   talkResampleWeight=0;
+  talkFilterState=new Float32Array(12);
+  talkFilterPos=0;
+}
+function lowpassTalkSample(x){
+  // Simple 12-tap moving-average low-pass before 44.1/48 kHz -> 8 kHz
+  // downsampling. Speech bandwidth is limited anyway by Tapo PCMA/8000.
+  talkFilterState[talkFilterPos]=x;
+  talkFilterPos=(talkFilterPos+1)%talkFilterState.length;
+  let sum=0;
+  for(let i=0;i<talkFilterState.length;i++)sum+=talkFilterState[i];
+  return sum/talkFilterState.length;
 }
 function resampleTo8k(input,inputRate){
   if(!input?.length||!inputRate)return new Int16Array(0);
@@ -150,7 +163,8 @@ function resampleTo8k(input,inputRate){
 
   for(let i=0;i<input.length;i++){
     let remaining=1;
-    const x=Number.isFinite(input[i])?input[i]:0;
+    const raw=Number.isFinite(input[i])?input[i]:0;
+    const x=lowpassTalkSample(raw);
     while(remaining>1e-9){
       const take=Math.min(remaining,need);
       acc+=x*take;
@@ -159,8 +173,11 @@ function resampleTo8k(input,inputRate){
       remaining-=take;
       if(need<=1e-9){
         let sample=weight>0?acc/weight:0;
-        // Leave headroom for Tapo's narrow-band PCMA path and avoid hard clipping.
-        sample=Math.max(-0.92,Math.min(0.92,sample*0.72));
+        // Mild gain with soft limiting. Keep speech level healthy without
+        // hard clipping before G.711 A-law encoding.
+        sample*=1.15;
+        sample=Math.tanh(sample);
+        sample=Math.max(-0.98,Math.min(0.98,sample));
         tmp.push(Math.round(sample*32767));
         acc=0;
         weight=0;
@@ -184,18 +201,18 @@ function queueTalkPcm(samples){
   if(!talkActive||!samples?.length)return;
   const bytes=pcm16leBytes(samples);
   talkPending=concatBytes(talkPending,bytes);
-  const maxBuffered=1600*8;
+  const maxBuffered=640*6;
   if(talkPending.length>maxBuffered)talkPending=talkPending.slice(talkPending.length-maxBuffered);
   flushTalkPcm();
 }
 async function flushTalkPcm(){
   if(talkSending||!talkActive)return;
-  if(talkPending.length<1600)return;
+  if(talkPending.length<640)return;
   talkSending=true;
   try{
-    while(talkActive&&talkPending.length>=1600){
-      const chunk=talkPending.slice(0,1600);
-      talkPending=talkPending.slice(1600);
+    while(talkActive&&talkPending.length>=640){
+      const chunk=talkPending.slice(0,640);
+      talkPending=talkPending.slice(640);
       const response=await fetch(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=data`,{
         method:'POST',
         headers:authHeaders({'Content-Type':'application/octet-stream'}),
@@ -214,7 +231,7 @@ async function flushTalkPcm(){
     stopTalkback();
   }finally{
     talkSending=false;
-    if(talkActive&&talkPending.length>=1600)flushTalkPcm();
+    if(talkActive&&talkPending.length>=640)flushTalkPcm();
   }
 }
 async function startTalkback(){
@@ -224,7 +241,7 @@ async function startTalkback(){
   talkSetState('Запрашиваю микрофон…',false);
   try{
     talkStream=await navigator.mediaDevices.getUserMedia({
-      audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:false,sampleRate:{ideal:48000}},
+      audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:{ideal:48000}},
       video:false
     });
     if(gesture!==talkGestureToken){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;return;}
