@@ -57,6 +57,7 @@ function updateDeviceCapabilities(d=selected){
   const cameraOnly=isCameraOnlyDevice(d);
   document.querySelectorAll('.tractor-panel,.brush-panel').forEach(el=>el.classList.toggle('hidden',cameraOnly));
   $('talkbackPanel')?.classList.toggle('hidden',!d?.talkback);
+  $('gpsBtn')?.classList.toggle('hidden',!d?.gps?.valid);
   if($('talkBtn'))$('talkBtn').disabled=!d?.online||!d?.talkback;
   if(cameraOnly){
     driveActive=false;
@@ -64,8 +65,30 @@ function updateDeviceCapabilities(d=selected){
     brushLift=0;
   }
   if(!d?.talkback&&talkActive)stopTalkback();
+  if(!d?.gps?.valid&&!$('gpsModal')?.classList.contains('hidden'))closeGpsModal();
 }
 function updateTelemetry(d){$('fpsMetric').textContent=d.fps||'—';$('bitrateMetric').textContent=d.bitrateKbps?`${d.bitrateKbps} kbps`:'—';$('ethernetMetric').textContent=d.ethernet||'—';$('uptimeMetric').textContent=formatUptime(d.uptimeSec||0);}
+
+function openGpsModal(){
+  const gps=selected?.gps;
+  if(!gps?.valid)return;
+  const lat=Number(gps.latitude),lon=Number(gps.longitude);
+  if(!Number.isFinite(lat)||!Number.isFinite(lon))return;
+  const delta=.006;
+  const bbox=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');
+  $('gpsTitle').textContent=selected?.name||selected?.id||'Трактор';
+  $('gpsCoords').textContent=`${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  const updated=Number(gps.updated_ms||0);
+  $('gpsUpdated').textContent=updated?`Последняя координата: ${new Date(updated).toLocaleString('ru-RU')}`:'';
+  $('gpsMap').src='https://www.openstreetmap.org/export/embed.html?bbox='+encodeURIComponent(bbox)+'&layer=mapnik&marker='+encodeURIComponent(lat+','+lon);
+  $('gpsModal').classList.remove('hidden');
+  $('gpsModal').setAttribute('aria-hidden','false');
+}
+function closeGpsModal(){
+  $('gpsModal')?.classList.add('hidden');
+  $('gpsModal')?.setAttribute('aria-hidden','true');
+  if($('gpsMap'))$('gpsMap').src='about:blank';
+}
 
 function stopVideoDemand(){const d=videoDemand;if(!d)return;videoDemand=null;if(d.timer)clearInterval(d.timer);api(`/api/devices/${encodeURIComponent(d.deviceId)}/video-demand`,{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:d.sessionId,active:false})}).catch(()=>{});}
 function closePeer(){stopVideoDemand();if(currentPeer){try{currentPeer.close();}catch{}currentPeer=null;}const v=$('video');v.srcObject=null;syncVrStreams(null);}
@@ -365,9 +388,10 @@ document.querySelectorAll('.brush-spin-btn').forEach(b=>b.onclick=()=>setBrushSp
 document.querySelectorAll('.nav-tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 bindHold($('talkBtn'),startTalkback,()=>stopTalkback());
 $('driveStopBtn').onclick=stopDrive;$('brushSpinStopBtn').onclick=()=>setBrushSpin('stop');
-$('loginBtn').onclick=()=>login(false);$('registerBtn').onclick=()=>login(true);$('logoutBtn').onclick=logout;$('fullscreenBtn').onclick=toggleVideoFullscreen;$('attachBtn').onclick=attach;$('centerBtn').onclick=center;$('idrBtn').onclick=requestIdr;$('camera1Btn').onclick=()=>switchCamera(1);$('camera2Btn').onclick=()=>switchCamera(2);$('refreshBtn').onclick=loadDevices;$('cardboardBtn').onclick=enterCardboard;$('vrExitBtn').onclick=exitCardboard;$('vrRecenterBtn').onclick=recenterGyro;
+$('loginBtn').onclick=()=>login(false);$('registerBtn').onclick=()=>login(true);$('logoutBtn').onclick=logout;$('fullscreenBtn').onclick=toggleVideoFullscreen;$('attachBtn').onclick=attach;$('centerBtn').onclick=center;$('idrBtn').onclick=requestIdr;$('camera1Btn').onclick=()=>switchCamera(1);$('camera2Btn').onclick=()=>switchCamera(2);$('refreshBtn').onclick=loadDevices;$('cardboardBtn').onclick=enterCardboard;$('vrExitBtn').onclick=exitCardboard;$('vrRecenterBtn').onclick=recenterGyro;$('gpsBtn').onclick=openGpsModal;$('gpsCloseBtn').onclick=closeGpsModal;
 $('panRange').oninput=updatePtzLabels;$('tiltRange').oninput=updatePtzLabels;$('speedRange').oninput=updatePtzLabels;$('panRange').onchange=sendAbsolutePtz;$('tiltRange').onchange=sendAbsolutePtz;
 $('driveSpeedRange').oninput=updateDriveUi;$('brushSpeedRange').oninput=updateBrushUi;$('brushSpeedRange').onchange=refreshBrushSpin;
+$('gpsModal').addEventListener('click',e=>{if(e.target===$('gpsModal'))closeGpsModal();});
 document.addEventListener('fullscreenchange',()=>{updateFullscreenButton();if(cardboardActive&&!document.fullscreenElement)exitCardboard();});document.addEventListener('webkitfullscreenchange',updateFullscreenButton);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&cardboardActive){exitCardboard();return;}if(['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;const k=String(e.key||'').toLowerCase();const driveMap={w:'forward',s:'backward',a:'left',d:'right'};const cameraMap={arrowup:'up',arrowdown:'down',arrowleft:'left',arrowright:'right'};if(k===' '){e.preventDefault();stopDrive();return;}if(driveMap[k]&&!e.repeat){e.preventDefault();startDrive(driveMap[k]);return;}if(cameraMap[k]){e.preventDefault();move(cameraMap[k]);}});
 document.addEventListener('keyup',e=>{const k=String(e.key||'').toLowerCase();if(['w','a','s','d'].includes(k)){e.preventDefault();stopDrive();}});
