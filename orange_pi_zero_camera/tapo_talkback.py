@@ -112,9 +112,10 @@ class TapoTalkback:
         if not password:
             raise TapoTalkbackError("Tapo talkback: не задан пароль Tapo Cloud")
 
-        # Newer Tapo firmwares require admin + UPPERCASE SHA256 of the cloud password.
-        # Derive it locally at runtime so the hash does not need to be stored in config.
-        password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest().upper()
+        # Tapo firmware variants accept different cloud-password auth forms.
+        # This camera rejects the plain-password and SHA256 forms, so use the
+        # documented admin + UPPERCASE MD5 variant.
+        password_hash = hashlib.md5(password.encode("utf-8")).hexdigest().upper()
         source = "tapo://admin:{}@{}".format(password_hash, host)
         content = (
             'api:\n'
