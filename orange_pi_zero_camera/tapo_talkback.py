@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
 import os
@@ -111,8 +112,10 @@ class TapoTalkback:
         if not password:
             raise TapoTalkbackError("Tapo talkback: не задан пароль Tapo Cloud")
 
-        # go2rtc Tapo source supports cloud password without username.
-        source = "tapo://{}@{}".format(urllib.parse.quote(password, safe=""), host)
+        # Newer Tapo firmwares require admin + UPPERCASE SHA256 of the cloud password.
+        # Derive it locally at runtime so the hash does not need to be stored in config.
+        password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest().upper()
+        source = "tapo://admin:{}@{}".format(password_hash, host)
         content = (
             'api:\n'
             '  listen: "127.0.0.1:1984"\n'
