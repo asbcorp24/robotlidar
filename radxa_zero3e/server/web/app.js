@@ -19,6 +19,7 @@ let talkSource=null;
 let talkProcessor=null;
 let talkPending=new Uint8Array(0);
 let talkSending=false;
+let talkGestureToken=0;
 const $=id=>document.getElementById(id);
 
 function authHeaders(extra={}){return token?{...extra,Authorization:`Bearer ${token}`}:{...extra};}
@@ -177,6 +178,7 @@ async function flushTalkPcm(){
 }
 async function startTalkback(){
   if(talkActive||talkStarting||!selected?.online||!selected?.talkback)return;
+  const gesture=++talkGestureToken;
   talkStarting=true;
   talkSetState('Запрашиваю микрофон…',false);
   try{
@@ -184,7 +186,9 @@ async function startTalkback(){
       audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},
       video:false
     });
+    if(gesture!==talkGestureToken){talkStream.getTracks().forEach(t=>t.stop());talkStream=null;return;}
     await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=start`,{method:'POST'});
+    if(gesture!==talkGestureToken){await api(`/api/devices/${encodeURIComponent(selected.id)}/talk?action=stop`,{method:'POST'}).catch(()=>{});return;}
     const AC=window.AudioContext||window.webkitAudioContext;
     talkContext=new AC();
     if(talkContext.state==='suspended')await talkContext.resume();
@@ -211,6 +215,7 @@ async function startTalkback(){
   }
 }
 async function stopTalkback(sendStop=true){
+  ++talkGestureToken;
   const wasActive=talkActive||talkStarting;
   talkActive=false;
   talkStarting=false;
