@@ -68,40 +68,15 @@ class _PCMHandler(http.server.BaseHTTPRequestHandler):
         try:
             self.wfile.write(header)
             self.wfile.flush()
-
-            # Feed FFmpeg at the real PCM clock rate. Browser/network chunks may
-            # arrive in bursts; writing queued chunks immediately would make the
-            # camera play speech too fast and garbled. 1600 bytes = 100 ms of
-            # mono S16LE at 8 kHz.
-            frame_bytes = 1600
-            frame_period = 0.100
-            pending = bytearray()
-            next_tick = time.monotonic()
-
             while manager.active and manager.generation == generation:
-                now = time.monotonic()
-                if now < next_tick:
-                    time.sleep(next_tick - now)
-                next_tick += frame_period
-
-                while len(pending) < frame_bytes:
-                    try:
-                        chunk = manager.audio_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if chunk:
-                        pending.extend(chunk)
-
-                if len(pending) >= frame_bytes:
-                    out = bytes(pending[:frame_bytes])
-                    del pending[:frame_bytes]
-                elif pending:
-                    out = bytes(pending) + (b"\x00" * (frame_bytes - len(pending)))
-                    pending.clear()
-                else:
-                    out = b"\x00" * frame_bytes
-
-                self.wfile.write(out)
+                try:
+                    chunk = manager.audio_queue.get(timeout=0.10)
+                except queue.Empty:
+                    # Keep FFmpeg/go2rtc alive while the network has a short gap.
+                    chunk = b"\x00" * 1600
+                if not chunk:
+                    continue
+                self.wfile.write(chunk)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
