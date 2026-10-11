@@ -131,6 +131,9 @@ class CameraStreamer:
         self.no_camera_backoff_index = 0
         self.no_camera_backoff_delays = (2.0, 5.0, 10.0, 30.0)
         self.talkback = TapoTalkback(lambda: self.cfg, self.log)
+        self.talk_clip_buffer = bytearray()
+        self.talk_clip_total = 0
+        self.talk_clip_mime = "webm"
         self.write_active_camera_state()
 
     def log(self, msg: str) -> None:
@@ -416,6 +419,54 @@ class CameraStreamer:
             self.stop_event.wait(self.cfg.reconnect_delay_sec)
 
     def handle_control_packet(self, data: bytes) -> None:
+        if len(data) >= 12 and data[:4] == b"RLCL":
+            version = data[4]
+            flags = data[5]
+            mime_code = data[6]
+            total = struct.unpack(">I", data[8:12])[0]
+            if version != 1:
+                self.log("TAPO TALKBACK CLIP ignored: bad packet version")
+                return
+            if total <= 0 or total > (4 << 20):
+                self.log("TAPO TALKBACK CLIP ignored: invalid total size")
+                self.talk_clip_buffer = bytearray()
+                self.talk_clip_total = 0
+                return
+            if flags & 0x01:
+                self.talk_clip_buffer = bytearray()
+                self.talk_clip_total = total
+                self.talk_clip_mime = {1: "webm", 2: "ogg", 3: "wav", 4: "m4a"}.get(mime_code, "webm")
+            if self.talk_clip_total != total:
+                self.log("TAPO TALKBACK CLIP ignored: size changed during transfer")
+                self.talk_clip_buffer = bytearray()
+                self.talk_clip_total = 0
+                return
+            self.talk_clip_buffer.extend(data[12:])
+            if len(self.talk_clip_buffer) > self.talk_clip_total:
+                self.log("TAPO TALKBACK CLIP ignored: received too much data")
+                self.talk_clip_buffer = bytearray()
+                self.talk_clip_total = 0
+                return
+            if flags & 0x02:
+                if len(self.talk_clip_buffer) != self.talk_clip_total:
+                    self.log(
+                        "TAPO TALKBACK CLIP ignored: incomplete clip {}/{}".format(
+                            len(self.talk_clip_buffer), self.talk_clip_total
+                        )
+                    )
+                else:
+                    clip = bytes(self.talk_clip_buffer)
+                    mime = self.talk_clip_mime
+                    self.log("TAPO TALKBACK CLIP received: {} bytes ({})".format(len(clip), mime))
+                    threading.Thread(
+                        target=self.talkback.play_clip,
+                        args=(clip, mime),
+                        name="tapo-talkback-clip",
+                        daemon=True,
+                    ).start()
+                self.talk_clip_buffer = bytearray()
+                self.talk_clip_total = 0
+            return
         if len(data) >= 8 and data[:4] == b"RLAU":
             version = data[4]
             flags = data[5]
