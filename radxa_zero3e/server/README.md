@@ -141,6 +141,20 @@ type 3 = brush: spin/lift
 
 Drive и brush используют диапазон `-1000..+1000`.
 
+## Push-to-Talk для Tapo
+
+Камерные узлы Orange Pi могут объявить `talkback=true` при регистрации. Тогда web-панель показывает кнопку **«Удерживайте, чтобы говорить»**.
+
+Браузер захватывает микрофон, ресемплирует mono PCM S16LE до 8 kHz и отправляет короткие блоки на сервер. Сервер не хранит звук и не декодирует его: он пересылает PCM по исходящему control WebSocket соответствующей Orange Pi.
+
+```text
+POST /api/devices/{id}/talk?action=start
+POST /api/devices/{id}/talk?action=data   Content-Type: application/octet-stream
+POST /api/devices/{id}/talk?action=stop
+```
+
+Аудиоданные принимаются только для устройства, привязанного к авторизованному пользователю, и только когда device control WebSocket подключён.
+
 ## Основные API
 
 ```text
