@@ -405,6 +405,9 @@ func (s *server) allocateSRTPortLocked() int {
 }
 
 func (d *device) online() bool {
+	if d.websocketControlConnected() {
+		return true
+	}
 	last := d.LastSeen.Load()
 	return last > 0 && time.Since(time.UnixMilli(last)) <= offlineAfter
 }
