@@ -259,6 +259,8 @@ def validate_network_settings(req: dict[str, Any]) -> dict[str, Any]:
     gateway = str(req.get("gateway") or "").strip()
     dns_raw = str(req.get("dns") or "").replace(",", " ")
     dns_items = [x for x in dns_raw.split() if x]
+    if not dns_items:
+        dns_items = ["8.8.8.8", "1.1.1.1"]
 
     try:
         ipaddress.ip_address(ip_text)
