@@ -27,7 +27,7 @@ constexpr uint8_t ESTOP_OK=32,RC_CHANNEL_1=27,RC_CHANNEL_2=33,RC_ACTUATOR=14,RC_
 constexpr uint8_t OLED_SDA=21,OLED_SCL=22;
 }
 namespace Fixed {
-constexpr const char* FIRMWARE_VERSION="1.9.0";
+constexpr const char* FIRMWARE_VERSION="1.9.1";
 constexpr uint32_t SERIAL_BAUD=115200,CONTROL_PERIOD_MS=20,TELEMETRY_PERIOD_MS=100,OLED_PERIOD_MS=150,COMMAND_WATCHDOG_MS=450;
 constexpr uint16_t RC_ISR_MIN_US=750,RC_ISR_MAX_US=2250,INTERNAL_DAC_FULL_SCALE_MV=3300,MCP4725_FULL_SCALE_MV=5000;
 constexpr uint16_t THROTTLE_DISARMED_MV=0; constexpr bool HOLD_BRAKE_AT_ZERO=true,REVERSE_SUPPORTED=true,BRAKE_ACTIVE_HIGH=true;
@@ -171,12 +171,17 @@ void updateOled(){
   oled.setCursor(0,16);oled.print(F("CMD:L"));oled.print(leftTrack.target);oled.setCursor(66,16);oled.print(F("R:"));oled.print(rightTrack.target);
   oled.setCursor(0,24);oled.print(F("DAC:"));oled.print(leftThrottleMv);oled.setCursor(66,24);oled.print(rightThrottleMv);
   oled.setCursor(0,32);oled.print(F("RV:"));oled.print(leftTrack.appliedSign<0);oled.print('/');oled.print(rightTrack.appliedSign<0);oled.setCursor(66,32);oled.print(F("BK:"));oled.print(leftBrakeActive);oled.print('/');oled.print(rightBrakeActive);
-  oled.setCursor(0,40);oled.print(F("CH3:"));printRc(3,lastRcSnapshot.actuatorUs,lastRcSnapshot.actuatorAgeUs);oled.setCursor(66,40);oled.print(F("CH5:"));printRc(5,lastRcSnapshot.modeUs,lastRcSnapshot.modeAgeUs);
-  oled.setCursor(0,48);oled.print(F("H:"));if(espSettingHallEnabled()){oled.print((long long)leftTicks);oled.print('/');oled.print((long long)rightTicks);}else oled.print(F("OFF"));oled.setCursor(88,48);oled.print(F("A:"));oled.print(actuatorName());
+  oled.setCursor(0,40);oled.print(F("CH3:"));printRc(3,lastRcSnapshot.actuatorUs,lastRcSnapshot.actuatorAgeUs);
+  oled.setCursor(66,40);oled.print(F("CH4:"));if(getBrushRcValid())oled.print(getBrushRcPulseUs());else oled.print(F("----"));
+  oled.setCursor(0,48);oled.print(F("CH5:"));printRc(5,lastRcSnapshot.modeUs,lastRcSnapshot.modeAgeUs);oled.setCursor(88,48);oled.print(F("A:"));oled.print(actuatorName());
   oled.setCursor(0,56);
   const bool piIpFresh=lastRaspberryIpMs && (millis()-lastRaspberryIpMs<=15000UL) && strcmp(raspberryIp,"0.0.0.0")!=0;
-  const bool showPiStatus=((millis()/2000UL)%2UL);
-  if(showPiStatus){
+  const uint8_t footerPage=(millis()/2000UL)%3UL;
+  if(footerPage==0){
+    oled.print(F("H:"));
+    if(espSettingHallEnabled()){oled.print((long long)leftTicks);oled.print('/');oled.print((long long)rightTicks);}
+    else oled.print(F("OFF"));
+  }else if(footerPage==1){
     if(piIpFresh){oled.print(F("IP:"));oled.print(raspberryIp);}
     else{oled.print(F("PI: OFFLINE"));}
   }else{
