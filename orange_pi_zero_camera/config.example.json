@@ -27,7 +27,7 @@
   "go2rtc_bin": "/usr/local/bin/go2rtc",
   "gps_enabled": false,
   "gps_port": "/dev/ttyS1",
-  "gps_baud": 9600,
+  "gps_baud": 115200,
   "gps_report_interval_sec": 60,
   "web_password_sha256": "b68ee8164f4aee61f641f51f5aa3b1b71ca02cc223a5ba91b3ed5b0b95e974db",
   "onvif_auto_discovery": true,
