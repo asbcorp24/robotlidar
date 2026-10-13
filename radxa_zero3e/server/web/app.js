@@ -58,7 +58,9 @@ function updateDeviceCapabilities(d=selected){
   const cameraOnly=isCameraOnlyDevice(d);
   document.querySelectorAll('.tractor-panel,.brush-panel').forEach(el=>el.classList.toggle('hidden',cameraOnly));
   $('talkbackPanel')?.classList.toggle('hidden',!d?.talkback);
-  $('gpsBtn')?.classList.toggle('hidden',!d?.gps?.valid);
+  const gpsEnabled=!!d?.gps?.enabled;
+  $('gpsBtn')?.classList.toggle('hidden',!gpsEnabled);
+  if($('gpsBtn')){$('gpsBtn').disabled=!d?.gps?.valid;$('gpsBtn').textContent=d?.gps?.valid?'📍 Местоположение':'📡 GPS: поиск сигнала';}
   if($('talkBtn'))$('talkBtn').disabled=!d?.online||!d?.talkback;
   if(cameraOnly){
     driveActive=false;
@@ -68,7 +70,7 @@ function updateDeviceCapabilities(d=selected){
   if(!d?.talkback&&talkActive)stopTalkback();
   if(!d?.gps?.valid&&!$('gpsModal')?.classList.contains('hidden'))closeGpsModal();
 }
-function updateTelemetry(d){$('fpsMetric').textContent=d.fps||'—';$('bitrateMetric').textContent=d.bitrateKbps?`${d.bitrateKbps} kbps`:'—';$('ethernetMetric').textContent=d.ethernet||'—';$('uptimeMetric').textContent=formatUptime(d.uptimeSec||0);}
+function updateTelemetry(d){$('fpsMetric').textContent=d.fps||'—';$('bitrateMetric').textContent=d.bitrateKbps?`${d.bitrateKbps} kbps`:'—';$('ethernetMetric').textContent=d.ethernet||'—';$('uptimeMetric').textContent=formatUptime(d.uptimeSec||0);if($('gpsMetric'))$('gpsMetric').textContent=!d?.gps?.enabled?'Выключен':(d.gps.valid?'Сигнал есть':'Включён · поиск');}
 
 function openGpsModal(){
   const gps=selected?.gps;
