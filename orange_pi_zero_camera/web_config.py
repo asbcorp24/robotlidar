@@ -996,7 +996,7 @@ HTML = r'''<!doctype html>
 </section>
 <section class="card"><h2>GPS · GY-NEO-6M-V2</h2>
 <label><input id="gps_enabled" type="checkbox" style="width:auto"> GPS включён</label>
-<div class="row"><div><label>UART устройство</label><input id="gps_port" placeholder="/dev/ttyS1"></div><div><label>Скорость, baud</label><input id="gps_baud" type="number" value="9600"></div></div>
+<div class="row"><div><label>UART устройство</label><input id="gps_port" placeholder="/dev/ttyS1"></div><div><label>Скорость, baud</label><input id="gps_baud" type="number" value="115200"></div></div>
 <label>Отправлять координаты на сервер, сек</label><input id="gps_report_interval_sec" type="number" min="10" max="3600" value="60">
 <p class="muted">GPS необязателен. Координаты отправляются только при валидном фиксе. Если GPS выключен, отсутствует или нет фикса, кнопка местоположения на центральном сайте не показывается.</p>
 </section>
@@ -1032,7 +1032,7 @@ async function load(){try{
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_talkback_enabled'))cfg.tapo_talkback_enabled=false;
  if(!Object.prototype.hasOwnProperty.call(cfg,'gps_enabled'))cfg.gps_enabled=false;
  if(!Object.prototype.hasOwnProperty.call(cfg,'gps_port'))cfg.gps_port='/dev/ttyS1';
- if(!Object.prototype.hasOwnProperty.call(cfg,'gps_baud'))cfg.gps_baud=9600;
+ if(!Object.prototype.hasOwnProperty.call(cfg,'gps_baud'))cfg.gps_baud=115200;
  if(!Object.prototype.hasOwnProperty.call(cfg,'gps_report_interval_sec'))cfg.gps_report_interval_sec=60;
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_user'))cfg.tapo_user='admin';
  if(!Object.prototype.hasOwnProperty.call(cfg,'tapo_download_window'))cfg.tapo_download_window=50;
