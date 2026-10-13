@@ -38,34 +38,78 @@ network_mode() {
   echo dhcp
 }
 
+cfg_value() {
+  key="$1"
+  [ -r "$CONFIG_FILE" ] || return 0
+  sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG_FILE" | head -n1
+}
+
+cfg_number() {
+  key="$1"
+  [ -r "$CONFIG_FILE" ] || return 0
+  sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CONFIG_FILE" | head -n1
+}
+
 ensure_connection() {
   iface="$1"
   mode="$2"
+  canonical="RobotLiDAR-$iface"
 
   nmcli device set "$iface" managed yes >/dev/null 2>&1 || true
   ip link set "$iface" up >/dev/null 2>&1 || true
 
-  conn="$(nmcli -g GENERAL.CONNECTION device show "$iface" 2>/dev/null | head -n1)"
-  case "$conn" in ""|"--"|"(null)") conn="";; esac
+  active_uuid="$(nmcli -g GENERAL.CON-UUID device show "$iface" 2>/dev/null | head -n1)"
+  case "$active_uuid" in ""|"--"|"(null)") active_uuid="";; esac
 
-  if [ -z "$conn" ]; then
-    conn="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | awk -F: '$2=="802-3-ethernet" || $2=="ethernet"{print $1; exit}')"
+  conn_uuid="$active_uuid"
+  if [ -z "$conn_uuid" ]; then
+    conn_uuid="$(nmcli -t -f NAME,UUID,TYPE connection show 2>/dev/null | awk -F: -v n="$canonical" '$1==n && ($3=="802-3-ethernet" || $3=="ethernet"){print $2; exit}')"
   fi
 
-  if [ -z "$conn" ]; then
-    conn="RobotLiDAR-$iface"
-    log "Creating Ethernet profile $conn for $iface"
-    nmcli connection add type ethernet ifname "$iface" con-name "$conn" >/dev/null 2>&1 || true
+  if [ -z "$conn_uuid" ]; then
+    log "Creating Ethernet profile $canonical for $iface"
+    nmcli connection add type ethernet ifname "$iface" con-name "$canonical" >/dev/null 2>&1 || true
+    conn_uuid="$(nmcli -t -f NAME,UUID,TYPE connection show 2>/dev/null | awk -F: -v n="$canonical" '$1==n && ($3=="802-3-ethernet" || $3=="ethernet"){print $2; exit}')"
   fi
 
-  nmcli connection modify "$conn" connection.autoconnect yes >/dev/null 2>&1 || true
+  [ -n "$conn_uuid" ] || return 0
+
+  # Keep exactly one Ethernet profile eligible for automatic reconnect.
+  # Old duplicate RobotLiDAR/ifupdown profiles otherwise may take over and
+  # unexpectedly switch a statically configured device back to DHCP.
+  nmcli -t -f UUID,TYPE connection show 2>/dev/null | while IFS=: read -r uuid typ; do
+    case "$typ" in
+      802-3-ethernet|ethernet)
+        if [ "$uuid" = "$conn_uuid" ]; then
+          nmcli connection modify uuid "$uuid" connection.autoconnect yes connection.autoconnect-priority 100 >/dev/null 2>&1 || true
+        else
+          nmcli connection modify uuid "$uuid" connection.autoconnect no >/dev/null 2>&1 || true
+        fi
+        ;;
+    esac
+  done
 
   if [ "$mode" = "dhcp" ]; then
-    nmcli connection modify "$conn" ipv4.method auto >/dev/null 2>&1 || true
+    nmcli connection modify uuid "$conn_uuid" ipv4.method auto >/dev/null 2>&1 || true
+  else
+    ipaddr="$(cfg_value ip)"
+    prefix="$(cfg_number prefix)"
+    gateway="$(cfg_value gateway)"
+    dns="$(cfg_value dns)"
+    [ -n "$prefix" ] || prefix=24
+    [ -n "$dns" ] || dns="8.8.8.8 1.1.1.1"
+    if [ -n "$ipaddr" ]; then
+      nmcli connection modify uuid "$conn_uuid" \
+        ipv4.method manual \
+        ipv4.addresses "$ipaddr/$prefix" \
+        ipv4.gateway "$gateway" \
+        ipv4.dns "$dns" \
+        ipv4.ignore-auto-dns yes >/dev/null 2>&1 || true
+    fi
   fi
 
-  log "No IPv4 on $iface (carrier=UP, mode=$mode). Retrying NetworkManager connection '$conn'"
-  nmcli connection up "$conn" ifname "$iface" >/dev/null 2>&1 || \
+  log "No IPv4 on $iface (carrier=UP, mode=$mode). Retrying NetworkManager connection UUID $conn_uuid"
+  nmcli connection up uuid "$conn_uuid" ifname "$iface" >/dev/null 2>&1 || \
     nmcli device connect "$iface" >/dev/null 2>&1 || true
 }
 
