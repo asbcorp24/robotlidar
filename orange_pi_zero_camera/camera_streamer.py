@@ -941,6 +941,7 @@ class CameraStreamer:
             "camera_failover_active": self.failover_active,
             "camera_primary": self.primary_camera,
             "video_watchdog_enabled": bool(self.cfg.video_watchdog_enabled),
+            "gps_enabled": bool(self.cfg.gps_enabled),
             "video_progress_age_ms": (
                 int((time.monotonic() - self.last_video_progress_monotonic) * 1000)
                 if running and self.last_video_progress_monotonic else 0
