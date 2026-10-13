@@ -78,7 +78,7 @@ class Config:
 
     gps_enabled: bool = False
     gps_port: str = "/dev/ttyS1"
-    gps_baud: int = 9600
+    gps_baud: int = 115200
     gps_report_interval_sec: float = 60.0
 
     ptz_enabled: bool = True
