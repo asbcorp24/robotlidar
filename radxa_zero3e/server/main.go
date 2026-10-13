@@ -64,6 +64,7 @@ type device struct {
 	LinkMbps   atomic.Int64
 	ActiveCamera atomic.Int64
 	Talkback    bool
+	GPSEnabled  atomic.Int64
 	GPSValid    atomic.Int64
 	GPSLatE7    atomic.Int64
 	GPSLonE7    atomic.Int64
