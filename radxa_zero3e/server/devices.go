@@ -27,6 +27,7 @@ type telemetryRequest struct {
 	TiltCDeg      *int64 `json:"tilt_cdeg"`
 	LinkMbps      *int64 `json:"link_mbps"`
 	ActiveCamera  *int64   `json:"active_camera"`
+	GPSEnabled    *bool    `json:"gps_enabled"`
 	GPSValid      *bool    `json:"gps_valid"`
 	GPSLatitude   *float64 `json:"gps_latitude"`
 	GPSLongitude  *float64 `json:"gps_longitude"`
@@ -251,6 +252,9 @@ func (s *server) telemetry(w http.ResponseWriter, r *http.Request, id string) {
 	if req.LinkMbps != nil { d.LinkMbps.Store(*req.LinkMbps) }
 	if req.ActiveCamera != nil && (*req.ActiveCamera == 1 || *req.ActiveCamera == 2) { d.ActiveCamera.Store(*req.ActiveCamera) }
 
+	if req.GPSEnabled != nil {
+		if *req.GPSEnabled { d.GPSEnabled.Store(1) } else { d.GPSEnabled.Store(0); d.GPSValid.Store(0) }
+	}
 	if req.GPSValid != nil {
 		if !*req.GPSValid {
 			d.GPSValid.Store(0)
@@ -432,13 +436,14 @@ func (d *device) publicJSON(alias string) map[string]any {
 		"talkback": d.Talkback,
 		"video_packets": d.stream.Packets.Load(), "video_bytes": d.stream.Bytes.Load(), "viewers": d.stream.Viewers.Load(),
 	}
-	if d.GPSValid.Load() != 0 {
-		out["gps"] = map[string]any{
-			"valid": true,
-			"latitude": float64(d.GPSLatE7.Load()) / 1e7,
-			"longitude": float64(d.GPSLonE7.Load()) / 1e7,
-			"updated_ms": d.GPSUpdatedMS.Load(),
+	if d.GPSEnabled.Load() != 0 {
+		gps := map[string]any{"enabled": true, "valid": d.GPSValid.Load() != 0}
+		if d.GPSValid.Load() != 0 {
+			gps["latitude"] = float64(d.GPSLatE7.Load()) / 1e7
+			gps["longitude"] = float64(d.GPSLonE7.Load()) / 1e7
+			gps["updated_ms"] = d.GPSUpdatedMS.Load()
 		}
+		out["gps"] = gps
 	}
 	return out
 }
