@@ -1,0 +1,36 @@
+Ref,Qty,Value/Part,Description,Suggested footprint,Notes
+U1,1,ESP32-WROOM-32E,Wi-Fi/BLE MCU module,RF_Module:ESP32-WROOM-32,Keep antenna edge clear
+U2,1,MCP23017-E/SS,16-bit I2C GPIO expander,Package_SO:SSOP-28_5.3x10.2mm_P0.65mm,I2C address 0x20
+U3,1,DRV8825PWP,"Stepper motor driver, STEP/DIR",Package_SO:HTSSOP-28-1EP_4.4x9.7mm_P0.65mm_EP3.4x5.4mm,Thermal EP; Rsense TBD
+U4,1,MCP4725A0T-E/CH,12-bit DAC for brush,Package_TO_SOT_SMD:SOT-23-6,Address 0x60
+U5,1,74LVC2G14,Dual Schmitt inverter for Hall,Package_SO:TSSOP-8_3x3mm_P0.65mm,3.3V
+U6,1,TLV9002,"Dual RRIO op amp, throttle buffers",Package_SO:TSSOP-8_3x3mm_P0.65mm,5V supply
+U7,1,AP2112K-3.3,3.3V LDO,Package_TO_SOT_SMD:SOT-23-5,600mA class
+U8-U11,4,TLP240A,PhotoMOS isolation Reverse/Brake,Package_SO:SOP-4_4.4x2.6mm_P1.27mm,Check exact purchased package
+U12,1,INA228AIDGST,High precision current/voltage monitor,Package_SO:VSSOP-10_3x3mm_P0.5mm,External Kelvin shunt
+U13,1,CH340C,USB-UART,Package_SO:SSOP-20_5.3x7.2mm_P0.65mm,USB Serial/programming
+U14,1,USBLC6-2SC6,USB ESD protection,Package_TO_SOT_SMD:SOT-23-6,Protect D+/D-
+Q1-Q2,2,MMBT3904,ESP32 auto-reset/program transistors,Package_TO_SOT_SMD:SOT-23,EN/IO0
+D1-D2,2,SS34,5V source OR-ing / protection,Diode_SMD:D_SMA,USB/external 5V isolation
+J1,1,USB-C USB2.0,USB power + UART,Connector_USB:USB_C_Receptacle_USB2.0_16P,CC1/CC2 5.1k
+J2,1,2-pin 5V IN,Logic power input,TerminalBlock:TerminalBlock_bornier-2_P5.08mm,5V regulated input
+J3,1,2-pin STEPPER VMOT,Stepper supply,TerminalBlock:TerminalBlock_bornier-2_P5.08mm,8.2..45V DRV8825; choose motor supply
+J4,1,4-pin STEPPER,A1 A2 B1 B2,TerminalBlock:TerminalBlock_bornier-4_P5.08mm,Motor coils
+J5,1,8-pin RC,"5V,GND,CH1..CH6",Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical,Receiver
+J6-J7,2,3-pin HALL,"5V,GND,SIGNAL",Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,LEFT/RIGHT
+J8,1,4-pin OLED,"3V3,GND,SDA,SCL",Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical,0x3C/0x3D
+J9,1,4-pin RCWL,"3V3,GND,TRIG,ECHO",Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical,"TRIG GPIO2, ECHO GPIO39"
+J10-J11,2,6-pin BLDC IF,"THROTTLE,GND,REV_A,REV_B,BRAKE_A,BRAKE_B",TerminalBlock:TerminalBlock_bornier-6_P5.08mm,LEFT/RIGHT
+J12,1,4-pin ACTUATOR,"GND,RPWM,LPWM,5V",Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical,External power driver
+J13,1,4-pin BRUSH,"THROTTLE,GND,BRAKE,5V",Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical,External brush controller
+J14,1,2-pin E-STOP,GPIO32/GND,TerminalBlock:TerminalBlock_bornier-2_P5.08mm,NC loop
+J15,1,4-pin INA SHUNT,"VIN+,VIN-,SHUNT+,SHUNT-",TerminalBlock:TerminalBlock_bornier-4_P5.08mm,Kelvin external shunt
+"R_HL1,R_HR1",2,10k,Hall upper divider,Resistor_SMD:R_0603_1608Metric,5V -> divider
+"R_HL2,R_HR2",2,20k,Hall lower divider,Resistor_SMD:R_0603_1608Metric,~3.33V at 5V input
+"R_CC1,R_CC2",2,5.1k,USB-C CC pull-down,Resistor_SMD:R_0603_1608Metric,Device mode
+"R_USB1,R_USB2",2,22R,USB D+/D- series,Resistor_SMD:R_0603_1608Metric,Near CH340C
+C_BULK1,1,470uF,Stepper VMOT bulk capacitor,Capacitor_THT:CP_Radial_D10.0mm_P5.00mm,Voltage rating per VMOT
+C5V,1,100uF,5V bulk,Capacitor_THT:CP_Radial_D8.0mm_P3.50mm,Logic input
+C3V3,1,47uF,3V3 bulk,Capacitor_SMD:C_1210_3225Metric,
+C_DEC,12,100nF,Local decoupling,Capacitor_SMD:C_0603_1608Metric,One per IC supply
+"R_SENSE_A,R_SENSE_B",2,TBD,DRV8825 current sense,Resistor_SMD:R_2512_6332Metric,Calculate after motor current confirmed
