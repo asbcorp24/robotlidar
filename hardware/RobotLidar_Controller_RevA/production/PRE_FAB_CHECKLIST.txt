@@ -1,0 +1,22 @@
+ROBOTLIDAR CONTROLLER REV.A — PRE-FAB CHECKLIST
+
+[ ] Open RobotLidar_Controller.sch in KiCad and convert legacy schematic to current .kicad_sch.
+[ ] Assign/verify exact footprints against purchased manufacturer part numbers.
+[ ] Confirm ESP32-WROOM-32E antenna keep-out and place module at board edge.
+[ ] Confirm DRV8825 VMOT and motor current.
+[ ] Calculate R_SENSE_A/B from chosen motor current and TI DRV8825 datasheet.
+[ ] Add thermal copper/vias beneath DRV8825 exposed pad.
+[ ] Confirm stepper connector pin ordering against motor coils.
+[ ] Confirm Hall high level = 5V and common GND arrangement.
+[ ] Confirm BLDC throttle required voltage range; set TLV9002 gain/offset.
+[ ] Confirm TLP240A contact voltage/current is within ratings.
+[ ] Confirm INA228 external shunt resistance/power/current.
+[ ] Verify E-STOP hardware safety remains independent of firmware.
+[ ] Run ERC.
+[ ] Complete PCB placement/routing.
+[ ] Use solid GND plane on B.Cu.
+[ ] Keep USB differential pair short and matched.
+[ ] Keep Hall/RC traces away from VMOT and stepper outputs.
+[ ] Run DRC.
+[ ] Generate Gerber + drill and inspect in Gerber viewer.
+[ ] Only then upload fabrication package to PCB manufacturer.
