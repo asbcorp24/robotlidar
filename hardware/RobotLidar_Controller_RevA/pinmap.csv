@@ -1,0 +1,27 @@
+Function,ESP32 GPIO / Expander,Destination,Notes
+RC CH1,GPIO27,RC receiver CH1,Left track
+RC CH2,GPIO33,RC receiver CH2,Right track
+RC CH3,GPIO14,RC receiver CH3,Actuator
+RC CH4,GPIO5,RC receiver CH4,Brush
+RC CH5,GPIO13,RC receiver CH5,RC/SAFE/ROS
+RC CH6,GPIO36,RC receiver CH6,M4 absolute target 0..360
+Hall LEFT,GPIO34,74LVC2G14 output,5V input via 10k/20k divider
+Hall RIGHT,GPIO35,74LVC2G14 output,5V input via 10k/20k divider
+E-STOP,GPIO32,NC loop to GND,LOW=OK
+Ultrasonic TRIG,GPIO2,RCWL TRIG,
+Ultrasonic ECHO,GPIO39,RCWL ECHO,input-only
+I2C SDA,GPIO21,MCP23017/MCP4725/INA228/OLED,
+I2C SCL,GPIO22,MCP23017/MCP4725/INA228/OLED,
+Left throttle DAC,GPIO25,TLV9002 -> BLDC LEFT throttle,
+Right throttle DAC,GPIO26,TLV9002 -> BLDC RIGHT throttle,
+Left Reverse,GPIO16,TLP240A,
+Right Reverse,GPIO17,TLP240A,
+Left Brake,GPIO18,TLP240A,
+Right Brake,GPIO19,TLP240A,
+Actuator RPWM,GPIO4,Actuator interface,
+Actuator LPWM,GPIO23,Actuator interface,
+Brush brake,GPIO15,Brush interface,
+M4 STEP,MCP23017 GPA3,DRV8825 STEP,
+M4 DIR,MCP23017 GPA4,DRV8825 DIR,
+M4 ENABLE,MCP23017 GPA5,DRV8825 nENBL,
+M4 HOME reserve,MCP23017 GPA6,Future HOME sensor,
