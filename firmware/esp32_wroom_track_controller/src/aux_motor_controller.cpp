@@ -134,17 +134,17 @@ static int32_t pulseToStep(uint16_t pulse){
   const int32_t maxUs=espSettingRcMaxUs(6);
   if(maxUs<=minUs) return 0;
 
-  const int32_t p=constrain<int32_t>(pulse,minUs,maxUs);
+  const int32_t p=constrain((int32_t)pulse,minUs,maxUs);
   return (p-minUs)*Stepper::STEPS_PER_REV/(maxUs-minUs);
 }
 
 static int32_t rosToStep(int16_t value){
-  const int32_t v=constrain<int32_t>(value,-1000,1000);
+  const int32_t v=constrain((int32_t)value,(int32_t)-1000,(int32_t)1000);
   return (v+1000)*Stepper::STEPS_PER_REV/2000;
 }
 
 static uint16_t stepToDegrees(int32_t step){
-  step=constrain<int32_t>(step,0,Stepper::STEPS_PER_REV);
+  step=constrain(step,(int32_t)0,(int32_t)Stepper::STEPS_PER_REV);
   return static_cast<uint16_t>((step*360L+Stepper::STEPS_PER_REV/2)/Stepper::STEPS_PER_REV);
 }
 
@@ -176,7 +176,7 @@ static void stepOnce(int8_t dir){
     phase=(phase+3)&3;
     if(writePhase(phase)) currentStep--;
   }
-  currentStep=constrain<int32_t>(currentStep,0,Stepper::STEPS_PER_REV);
+  currentStep=constrain(currentStep,(int32_t)0,(int32_t)Stepper::STEPS_PER_REV);
   direction=dir;
 }
 
@@ -187,7 +187,7 @@ static void captureRosFromSequence(){
   constexpr uint32_t VMASK=0x7FFUL;
   if(s==lastSequenceSeen || (s&MASK)!=MAGIC) return;
   lastSequenceSeen=s;
-  rosPosition=constrain<int32_t>(int32_t(s&VMASK)-1000,-1000,1000);
+  rosPosition=constrain((int32_t)(s&VMASK)-1000,(int32_t)-1000,(int32_t)1000);
   rosMs=millis();
 }
 
@@ -227,7 +227,7 @@ void initializeAuxMotorController(){
 }
 
 void setAuxMotorRosCommand(int16_t command){
-  rosPosition=constrain<int32_t>(command,-1000,1000);
+  rosPosition=constrain((int32_t)command,(int32_t)-1000,(int32_t)1000);
   rosMs=millis();
 }
 
@@ -255,7 +255,7 @@ void updateAuxMotorController(){
     targetStep=currentStep;
     releaseStepper();
   }else{
-    targetStep=constrain<int32_t>(requestedStep,0,Stepper::STEPS_PER_REV);
+    targetStep=constrain(requestedStep,(int32_t)0,(int32_t)Stepper::STEPS_PER_REV);
 
     if(targetStep==currentStep){
       releaseStepper();
