@@ -1,0 +1,13 @@
+ROBOTLIDAR CONTROLLER REV.A — PRE-FAB CHECKLIST
+
+[ ] Confirm stepper voltage/current
+[ ] Calculate DRV8825 Rsense
+[ ] Confirm BLDC throttle voltage range
+[ ] Confirm INA228 shunt/current range
+[ ] Confirm connector families/pitches
+[ ] Verify ESP32 antenna keepout
+[ ] Verify TLP240A package and ratings
+[ ] Run ERC
+[ ] Complete placement/routing
+[ ] Run DRC
+[ ] Inspect Gerbers before fabrication
