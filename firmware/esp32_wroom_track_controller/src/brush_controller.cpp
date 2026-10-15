@@ -1,15 +1,262 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
-enum class ControlMode:uint8_t{Safe,RcManual,RosAutonomous};extern ControlMode controlMode;extern bool armed;extern bool estopOkay();extern TwoWire OledWire;
-uint16_t espSettingRcMinUs(uint8_t);uint16_t espSettingRcMaxUs(uint8_t);uint16_t espSettingRcTimeoutMs();uint16_t espSettingBrushIdleMv();uint16_t espSettingBrushMaxMv();uint16_t espSettingBrushStopUs();bool espSettingBrushBrakeActiveHigh();uint16_t espSettingRosAuxTimeoutMs();
-namespace BrushPins{constexpr uint8_t RC_CH4=5,BRAKE=15;}namespace BrushConfig{constexpr uint8_t MCP4725_ADDRESS=0x60;constexpr uint16_t MCP4725_FULL_SCALE_MV=5000,THROTTLE_SAFE_MV=0,RC_ISR_MIN_US=750,RC_ISR_MAX_US=2250;constexpr uint32_t UPDATE_PERIOD_MS=20;}
-struct Rc{volatile uint32_t riseUs=0,lastPulseUs=0;volatile uint16_t pulseUs=0;};static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;static Rc rc;static bool initialized=false,mcpReady=false,brake=true,rcValid=false;static uint16_t rcUs=0,throttleMv=0,rosCommand=0;static uint32_t rosMs=0,lastUpdate=0;
-static void IRAM_ATTR onRc(){uint32_t n=micros();portENTER_CRITICAL_ISR(&mux);if(digitalRead(BrushPins::RC_CH4))rc.riseUs=n;else{uint32_t w=n-rc.riseUs;if(w>=BrushConfig::RC_ISR_MIN_US&&w<=BrushConfig::RC_ISR_MAX_US){rc.pulseUs=w;rc.lastPulseUs=n;}}portEXIT_CRITICAL_ISR(&mux);}
-static bool present(){OledWire.beginTransmission(BrushConfig::MCP4725_ADDRESS);return OledWire.endTransmission()==0;}static uint16_t code(uint16_t mv){return (uint32_t)min<uint16_t>(mv,5000)*4095/5000;}static bool writeThrottle(uint16_t mv){if(!mcpReady)return false;uint16_t v=code(mv);OledWire.beginTransmission(BrushConfig::MCP4725_ADDRESS);OledWire.write((v>>8)&0x0F);OledWire.write(v&0xFF);if(OledWire.endTransmission()!=0){mcpReady=false;throttleMv=0;return false;}throttleMv=mv;return true;}
-static void setBrake(bool a){brake=a;bool level=espSettingBrushBrakeActiveHigh()?a:!a;digitalWrite(BrushPins::BRAKE,level?HIGH:LOW);}void stopBrushController(){setBrake(true);if(mcpReady)writeThrottle(0);else throttleMv=0;}
-static bool readRc(uint16_t&p){uint16_t pulse;uint32_t last;uint32_t now=micros();portENTER_CRITICAL(&mux);pulse=rc.pulseUs;last=rc.lastPulseUs;portEXIT_CRITICAL(&mux);bool ok=pulse>=espSettingRcMinUs(4)&&pulse<=espSettingRcMaxUs(4)&&last&&now-last<=uint32_t(espSettingRcTimeoutMs())*1000UL;p=ok?pulse:0;return ok;}
-static uint16_t cmdToMv(uint16_t c){if(!c)return 0;uint32_t lo=espSettingBrushIdleMv(),hi=espSettingBrushMaxMv();return lo+(uint32_t)min<uint16_t>(c,1000)*(hi-lo)/1000;}static uint16_t pulseToCmd(uint16_t p){uint16_t stop=espSettingBrushStopUs(),full=espSettingRcMaxUs(4);if(p<=stop)return 0;if(full<=stop)return 0;uint32_t cl=constrain((uint32_t)p,(uint32_t)stop,(uint32_t)full);return (cl-stop)*1000/(full-stop);}
-void initializeBrushController(){if(initialized)return;pinMode(BrushPins::RC_CH4,INPUT_PULLDOWN);pinMode(BrushPins::BRAKE,OUTPUT);setBrake(true);attachInterrupt(digitalPinToInterrupt(BrushPins::RC_CH4),onRc,CHANGE);mcpReady=present();if(mcpReady){writeThrottle(0);Serial.println("EVT,BRUSH,MCP4725_OK,0x60,RUNTIME_CONFIG");}else Serial.println("ERR,BRUSH_MCP4725_NOT_FOUND,0x60");initialized=true;}
-void setBrushRosCommand(uint16_t c){rosCommand=min<uint16_t>(c,1000);rosMs=millis();}void updateBrushController(){if(!initialized)initializeBrushController();uint32_t now=millis();if(now-lastUpdate<BrushConfig::UPDATE_PERIOD_MS)return;lastUpdate=now;rcValid=readRc(rcUs);if(!estopOkay()||!armed||!mcpReady||controlMode==ControlMode::Safe){stopBrushController();return;}uint16_t cmd=0;bool valid=false;if(controlMode==ControlMode::RcManual){valid=rcValid;if(valid)cmd=pulseToCmd(rcUs);}else{valid=rosMs&&now-rosMs<=espSettingRosAuxTimeoutMs();if(valid)cmd=rosCommand;}if(!valid||!cmd){stopBrushController();return;}if(!writeThrottle(cmdToMv(cmd))){setBrake(true);return;}setBrake(false);}
-uint16_t getBrushRcPulseUs(){return rcUs;}bool getBrushRcValid(){return rcValid;}uint16_t getBrushRosCommand(){return rosCommand;}uint16_t getBrushThrottleMv(){return throttleMv;}bool getBrushBrakeActive(){return brake;}bool getBrushMcpReady(){return mcpReady;}
+
+enum class ControlMode:uint8_t{Safe,RcManual,RosAutonomous};
+extern ControlMode controlMode;
+extern bool armed;
+extern bool estopOkay();
+extern TwoWire OledWire;
+
+uint16_t espSettingRcMinUs(uint8_t);
+uint16_t espSettingRcCenterUs(uint8_t);
+uint16_t espSettingRcMaxUs(uint8_t);
+uint16_t espSettingRcDeadbandUs();
+uint16_t espSettingRcTimeoutMs();
+uint16_t espSettingBrushIdleMv();
+uint16_t espSettingBrushMaxMv();
+bool espSettingBrushBrakeActiveHigh();
+uint16_t espSettingRosAuxTimeoutMs();
+
+namespace BrushPins {
+constexpr uint8_t RC_CH4=5;
+constexpr uint8_t BRAKE=15;
+constexpr uint8_t REVERSE=12; // freed from old AUX DC motor
+}
+
+namespace BrushConfig {
+constexpr uint8_t MCP4725_ADDRESS=0x60;
+constexpr uint16_t MCP4725_FULL_SCALE_MV=5000;
+constexpr uint16_t THROTTLE_SAFE_MV=0;
+constexpr uint16_t RC_ISR_MIN_US=750;
+constexpr uint16_t RC_ISR_MAX_US=2250;
+constexpr uint32_t UPDATE_PERIOD_MS=20;
+constexpr uint16_t DIRECTION_GUARD_MS=150;
+constexpr bool REVERSE_ACTIVE_HIGH=true;
+}
+
+struct Rc {
+  volatile uint32_t riseUs=0,lastPulseUs=0;
+  volatile uint16_t pulseUs=0;
+};
+
+static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;
+static Rc rc;
+static bool initialized=false,mcpReady=false,brake=true,rcValid=false;
+static uint16_t rcUs=0,throttleMv=0;
+static int16_t rosCommand=0; // -1000..1000
+static int8_t appliedDirection=0;
+static int8_t pendingDirection=0;
+static uint32_t rosMs=0,lastUpdate=0,directionGuardUntilMs=0;
+
+static void IRAM_ATTR onRc(){
+  uint32_t n=micros();
+  portENTER_CRITICAL_ISR(&mux);
+  if(digitalRead(BrushPins::RC_CH4)) rc.riseUs=n;
+  else {
+    uint32_t w=n-rc.riseUs;
+    if(w>=BrushConfig::RC_ISR_MIN_US&&w<=BrushConfig::RC_ISR_MAX_US){
+      rc.pulseUs=(uint16_t)w;
+      rc.lastPulseUs=n;
+    }
+  }
+  portEXIT_CRITICAL_ISR(&mux);
+}
+
+static bool present(){
+  OledWire.beginTransmission(BrushConfig::MCP4725_ADDRESS);
+  return OledWire.endTransmission()==0;
+}
+
+static uint16_t code(uint16_t mv){
+  return (uint32_t)min<uint16_t>(mv,BrushConfig::MCP4725_FULL_SCALE_MV)*4095/
+         BrushConfig::MCP4725_FULL_SCALE_MV;
+}
+
+static bool writeThrottle(uint16_t mv){
+  if(!mcpReady) return false;
+  mv=min<uint16_t>(mv,BrushConfig::MCP4725_FULL_SCALE_MV);
+  uint16_t v=code(mv);
+  OledWire.beginTransmission(BrushConfig::MCP4725_ADDRESS);
+  OledWire.write((v>>8)&0x0F);
+  OledWire.write(v&0xFF);
+  if(OledWire.endTransmission()!=0){
+    mcpReady=false;
+    throttleMv=0;
+    return false;
+  }
+  throttleMv=mv;
+  return true;
+}
+
+static void setBrake(bool active){
+  brake=active;
+  bool level=espSettingBrushBrakeActiveHigh()?active:!active;
+  digitalWrite(BrushPins::BRAKE,level?HIGH:LOW);
+}
+
+static void setReverse(bool reverse){
+  bool level=BrushConfig::REVERSE_ACTIVE_HIGH?reverse:!reverse;
+  digitalWrite(BrushPins::REVERSE,level?HIGH:LOW);
+}
+
+static void applyDirection(int8_t dir){
+  setReverse(dir<0);
+  appliedDirection=dir;
+}
+
+void stopBrushController(){
+  setBrake(true);
+  if(mcpReady) writeThrottle(BrushConfig::THROTTLE_SAFE_MV);
+  else throttleMv=0;
+  appliedDirection=0;
+  pendingDirection=0;
+}
+
+static bool readRc(uint16_t&p){
+  uint16_t pulse;
+  uint32_t last;
+  uint32_t now=micros();
+  portENTER_CRITICAL(&mux);
+  pulse=rc.pulseUs;
+  last=rc.lastPulseUs;
+  portEXIT_CRITICAL(&mux);
+  bool ok=pulse>=espSettingRcMinUs(4)&&pulse<=espSettingRcMaxUs(4)&&
+          last&&now-last<=uint32_t(espSettingRcTimeoutMs())*1000UL;
+  p=ok?pulse:0;
+  return ok;
+}
+
+static int16_t pulseToSignedCommand(uint16_t p){
+  const int32_t lo=espSettingRcMinUs(4);
+  const int32_t center=espSettingRcCenterUs(4);
+  const int32_t hi=espSettingRcMaxUs(4);
+  const int32_t db=espSettingRcDeadbandUs();
+
+  const int32_t leftEdge=center-db;
+  const int32_t rightEdge=center+db;
+
+  if((int32_t)p>=leftEdge && (int32_t)p<=rightEdge) return 0;
+
+  if((int32_t)p>rightEdge){
+    if(hi<=rightEdge) return 0;
+    const int32_t cl=constrain((int32_t)p,rightEdge,hi);
+    return (int16_t)((cl-rightEdge)*1000/(hi-rightEdge));
+  }
+
+  if(leftEdge<=lo) return 0;
+  const int32_t cl=constrain((int32_t)p,lo,leftEdge);
+  return (int16_t)(-((leftEdge-cl)*1000/(leftEdge-lo)));
+}
+
+static uint16_t magnitudeToMv(uint16_t magnitude){
+  if(!magnitude) return 0;
+  const uint32_t lo=espSettingBrushIdleMv();
+  const uint32_t hi=espSettingBrushMaxMv();
+  if(hi<=lo) return (uint16_t)hi;
+  magnitude=min<uint16_t>(magnitude,1000);
+  return (uint16_t)(lo+(uint32_t)magnitude*(hi-lo)/1000);
+}
+
+void initializeBrushController(){
+  if(initialized) return;
+
+  pinMode(BrushPins::RC_CH4,INPUT_PULLDOWN);
+  pinMode(BrushPins::BRAKE,OUTPUT);
+  pinMode(BrushPins::REVERSE,OUTPUT);
+
+  setReverse(false);
+  setBrake(true);
+
+  attachInterrupt(digitalPinToInterrupt(BrushPins::RC_CH4),onRc,CHANGE);
+
+  mcpReady=present();
+  if(mcpReady){
+    writeThrottle(0);
+    Serial.println("EVT,BRUSH,MCP4725_OK,0x60,BIDIRECTIONAL_GPIO12");
+  } else {
+    Serial.println("ERR,BRUSH_MCP4725_NOT_FOUND,0x60");
+  }
+
+  initialized=true;
+}
+
+// ROS command is now signed:
+// -1000 = full reverse, 0 = stop, +1000 = full forward.
+void setBrushRosCommand(int16_t command){
+  rosCommand=(int16_t)constrain((int32_t)command,(int32_t)-1000,(int32_t)1000);
+  rosMs=millis();
+}
+
+void updateBrushController(){
+  if(!initialized) initializeBrushController();
+
+  uint32_t now=millis();
+  if(now-lastUpdate<BrushConfig::UPDATE_PERIOD_MS) return;
+  lastUpdate=now;
+
+  rcValid=readRc(rcUs);
+
+  if(!estopOkay()||!armed||!mcpReady||controlMode==ControlMode::Safe){
+    stopBrushController();
+    return;
+  }
+
+  int16_t cmd=0;
+  bool valid=false;
+
+  if(controlMode==ControlMode::RcManual){
+    valid=rcValid;
+    if(valid) cmd=pulseToSignedCommand(rcUs);
+  } else {
+    valid=rosMs&&now-rosMs<=espSettingRosAuxTimeoutMs();
+    if(valid) cmd=rosCommand;
+  }
+
+  if(!valid||cmd==0){
+    stopBrushController();
+    return;
+  }
+
+  const int8_t requestedDirection=cmd>0?1:-1;
+  const uint16_t magnitude=(uint16_t)abs((int)cmd);
+
+  // Direction change: remove throttle, brake, switch direction,
+  // wait briefly, then apply power in the new direction.
+  if(appliedDirection!=0 && requestedDirection!=appliedDirection){
+    writeThrottle(0);
+    setBrake(true);
+    pendingDirection=requestedDirection;
+    appliedDirection=0;
+    directionGuardUntilMs=now+BrushConfig::DIRECTION_GUARD_MS;
+    return;
+  }
+
+  if(pendingDirection!=0){
+    if(requestedDirection!=pendingDirection){
+      pendingDirection=requestedDirection;
+      directionGuardUntilMs=now+BrushConfig::DIRECTION_GUARD_MS;
+      return;
+    }
+    if((int32_t)(now-directionGuardUntilMs)<0) return;
+    applyDirection(pendingDirection);
+    pendingDirection=0;
+  } else if(appliedDirection==0){
+    applyDirection(requestedDirection);
+  }
+
+  if(!writeThrottle(magnitudeToMv(magnitude))){
+    setBrake(true);
+    return;
+  }
+
+  setBrake(false);
+}
+
+uint16_t getBrushRcPulseUs(){return rcUs;}
+bool getBrushRcValid(){return rcValid;}
+int16_t getBrushRosCommand(){return rosCommand;}
+uint16_t getBrushThrottleMv(){return throttleMv;}
+bool getBrushBrakeActive(){return brake;}
+bool getBrushMcpReady(){return mcpReady;}
+int8_t getBrushDirection(){return appliedDirection;}
