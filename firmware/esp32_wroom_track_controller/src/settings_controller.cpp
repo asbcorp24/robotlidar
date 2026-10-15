@@ -55,10 +55,10 @@ struct PersistentSettings {
   uint16_t hallPulsesPerRev=180, wheelCircumferenceMm=400, trackWidthMm=600;
   uint16_t rcDeadbandUs=45, rcTimeoutMs=160;
   RcCalibration rc[6];
-  uint16_t throttleIdleMv=1000, throttleMaxMv=2850, reverseBrakeMs=700, reverseSettleMs=300, rampStep=12;
+  uint16_t throttleIdleMv=1000, throttleMaxMv=5000, reverseBrakeMs=700, reverseSettleMs=300, rampStep=12;
   uint16_t actuatorTimeoutMs=30000, actuatorGuardMs=150;
   bool actuatorReversed=false;
-  uint16_t brushIdleMv=1000, brushMaxMv=2850, brushStopUs=1050;
+  uint16_t brushIdleMv=1000, brushMaxMv=5000, brushStopUs=1050;
   bool brushBrakeActiveHigh=true;
   uint16_t auxIdleMv=1000, auxMaxMv=2850, auxReverseGuardMs=350, auxRampStep=25;
   bool auxReverseActiveHigh=true;
@@ -126,7 +126,13 @@ static void loadSettings(){
   } else {
     saveSettings();
   }
+  // Migration from the previous firmware defaults.
+  // If NVS still contains the old default 2850 mV limits, expand them
+  // to the full external DAC range requested for v1.9.3.
+  if(settings.brushMaxMv==2850) settings.brushMaxMv=5000;
+  if(settings.throttleMaxMv==2850) settings.throttleMaxMv=5000;
   normalizeSettings();
+  saveSettings();
 }
 
 static void IRAM_ATTR onSettingsHallLeft(){
