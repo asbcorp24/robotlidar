@@ -2,7 +2,7 @@
 
 Прошивка PlatformIO/Arduino связывает:
 
-- пульт **Microzone MC7** и приёмник **MC8RE-V2**;
+- пульт **Microzone C7-MINI** и приёмник **MC8RE-V2**;
 - Raspberry Pi 4 с ROS 2/Nav2;
 - два BLDC-контроллера левой и правой гусеницы;
 - Hall-сигналы двигателей;
@@ -15,7 +15,7 @@
 ## 1. Окончательная архитектура
 
 ```text
-Microzone MC7
+Microzone C7-MINI
       |
     2,4 ГГц
       |
@@ -258,7 +258,7 @@ GPIO13 ---- 47–100 кОм ---- GND
 GPIO14 ---- 47–100 кОм ---- GND
 ```
 
-## 6. Настройка Microzone MC7
+## 6. Настройка Microzone C7-MINI
 
 ```text
 тип модели: BOAT
