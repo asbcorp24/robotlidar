@@ -13,7 +13,7 @@
 - TLV9002 для буферизации/масштабирования аналоговых выходов LEFT/RIGHT
 - AP2112K-3.3 для 3.3 V
 - INA228 с Kelvin-разъёмом под внешний шунт
-- разъёмы RC CH1..CH6, OLED, RCWL-1655, E-STOP, BLDC LEFT/RIGHT, actuator, brush, stepper
+- разъёмы RC CH1..CH5, SBUS 8/B, OLED, RCWL-1655, E-STOP, BLDC LEFT/RIGHT, actuator, brush, stepper
 
 ## Hall
 LEFT Hall: 5V signal -> 10k series -> node -> 20k to GND -> 74LVC2G14 -> GPIO34  
@@ -22,8 +22,16 @@ RIGHT Hall: 5V signal -> 10k series -> node -> 20k to GND -> 74LVC2G14 -> GPIO35
 GND контроллеров BLDC и логической платы должен иметь общий reference для Hall/Throttle,
 кроме изолированных TLP240A контактов Reverse/Brake.
 
-## M4
-RC CH6 -> GPIO36 -> target 0..360 degrees.
+## SBUS CH8 / M4
+MC8RE-V2 порт 8/B SBUS -> К155ЛА3 -> GPIO36 ESP32/UART2 RX -> CH8 -> target 0..360 degrees.
+
+К155ЛА3 используется как инвертор:
+- pin 1 + pin 2 -> SBUS 8/B
+- pin 3 -> 1k -> GPIO36
+- pin 14 -> +5V
+- pin 7 -> GND
+
+Обычный PWM CH6 к GPIO36 в этой версии не подключается.
 
 На интегрированной плате вместо HW-095/L298N используется DRV8825:
 - MCP23017 GPA3 -> STEP
@@ -48,3 +56,10 @@ RC CH6 -> GPIO36 -> target 0..360 degrees.
 4. реальный диапазон аналогового входа газа BLDC;
 5. точные серии и шаг разъёмов;
 6. выполнить ERC/DRC и проверить Gerber.
+
+
+## Brush
+- RC CH4 -> GPIO5
+- GPIO12 -> BRUSH REVERSE
+- MCP4725 0x60 -> аналоговая скорость
+- GPIO15 свободен; BRUSH BRAKE не используется
