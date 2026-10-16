@@ -19,8 +19,10 @@ bool isMcp23017Ready();
 bool mcp23017PinMode(uint8_t pin, bool output, bool pullup=false);
 bool mcp23017DigitalWrite(uint8_t pin, bool high);
 
-// MC8RE-V2 port 8/B SBUS -> external hardware inverter -> GPIO36.
-// GPIO36 is input-only and is used only as UART RX here.
+// MC8RE-V2 port 8/B SBUS -> K155LA3 NAND used as inverter -> GPIO36.
+// K155LA3: pins 1+2 tied together = SBUS input, pin 3 = inverted output.
+// pin 14 = +5V, pin 7 = GND. Pin 3 -> 1k -> GPIO36.
+// GPIO36 is input-only and is used only as UART2 RX here.
 namespace Pins {
 constexpr uint8_t SBUS_RX = 36;
 }
@@ -240,9 +242,10 @@ void initializeAuxMotorController(){
   if(initialized) return;
 
   // IMPORTANT:
-  // MC8RE-V2 requires hardware inversion according to its manual.
-  // Therefore Serial2 is configured as normal polarity here.
-  // Connection: MC8RE 8/B SBUS -> hardware inverter -> GPIO36.
+  // SBUS is inverted externally by K155LA3.
+  // K155LA3 pins 1+2 = SBUS, pin 3 -> 1k -> GPIO36,
+  // pin 14 = +5V, pin 7 = GND.
+  // Therefore Serial2 uses normal polarity here.
   SbusSerial.begin(
       Sbus::BAUD,
       SERIAL_8E2,
