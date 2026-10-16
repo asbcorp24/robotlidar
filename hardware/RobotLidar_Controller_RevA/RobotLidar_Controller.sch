@@ -21,7 +21,7 @@ POWER
 Text Notes 700 2500 0 90 ~ 18
 MCU / USB
 Text Notes 700 5300 0 60 ~ 12
-GPIO map: CH1=27 CH2=33 CH3=14 CH4=5 CH5=13 CH6=36; Hall L=34 R=35; ESTOP=32; I2C=21/22.
+GPIO map: CH1=27 CH2=33 CH3=14 CH4=5 CH5=13; SBUS CH8 via K155LA3 -> GPIO36; Hall L=34 R=35; ESTOP=32; I2C=21/22.
 Text Notes 5200 1250 0 90 ~ 18
 I2C / EXPANDER
 Text Notes 5650 3550 0 60 ~ 12
@@ -45,5 +45,5 @@ MCP4725 brush DAC; INA228 external Kelvin shunt; OLED on shared I2C bus.
 Text Notes 9200 7600 0 90 ~ 18
 EXTERNAL CONNECTORS
 Text Notes 9400 8000 0 60 ~ 12
-RC, Hall L/R, OLED, RCWL, BLDC L/R, Actuator, Brush, Stepper and E-STOP connectors.
+RC CH1..CH5, SBUS 8/B via K155LA3, Hall L/R, OLED, RCWL, BLDC L/R, Actuator, Brush, Stepper and E-STOP.
 $EndSCHEMATC
