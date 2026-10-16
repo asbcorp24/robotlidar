@@ -20,7 +20,7 @@ Microzone MC7
     2,4 ГГц
       |
 MC8RE-V2
- CH1 CH2 CH5 CH6
+ CH1 CH2 CH3 CH4 CH5 + 8/B SBUS
       |
       v
 ESP32-WROOM-32 30 pin <---- USB Serial 115200 ----> Raspberry Pi 4
@@ -87,7 +87,7 @@ Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
 | 27 | IN | MC8RE CH1, левая гусеница |
 | 33 | IN | MC8RE CH2, правая гусеница |
 | 13 | IN | MC8RE CH5, RC/SAFE/ROS |
-| 14 | IN | MC8RE CH6, ARM |
+| 14 | IN | MC8RE CH3, актуатор |
 | 32 | IN/PULLUP | NC аварийная петля |
 | 34 | IN ONLY | Hall/Speed LEFT |
 | 35 | IN ONLY | Hall/Speed RIGHT |
@@ -96,7 +96,7 @@ Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
 | 22 | I/O | I²C SCL: OLED / INA228 / MCP4725 |
 | 4 | OUT/PWM | BTS7960 актуатора RPWM |
 | 23 | OUT/PWM | BTS7960 актуатора LPWM |
-| 36 | IN ONLY | Свободный вход |
+| 36 | IN ONLY / UART RX | SBUS CH8 после К155ЛА3; управление M4 0–360° |
 | 39 | IN ONLY | Свободный вход |
 
 Не использовать `GPIO6–GPIO11`: они заняты Flash-памятью. `GPIO1` и `GPIO3` используются USB-UART. `GPIO0`, `GPIO2`, `GPIO5`, `GPIO12`, `GPIO15` являются загрузочными выводами и требуют осторожности.
@@ -232,9 +232,21 @@ PWM-подключение:
 ```text
 MC8RE CH1 S ---- 1 кОм ---- GPIO27
 MC8RE CH2 S ---- 1 кОм ---- GPIO33
+MC8RE CH3 S ---- 1 кОм ---- GPIO14
+MC8RE CH4 S ---- 1 кОм ---- GPIO5
 MC8RE CH5 S ---- 1 кОм ---- GPIO13
-MC8RE CH6 S ---- 1 кОм ---- GPIO14
 MC8RE GND ----------------- GND ESP32
+
+SBUS для CH8:
+MC8RE порт 8/B SBUS -> К155ЛА3 (инвертор) -> GPIO36 ESP32
+
+К155ЛА3:
+pin 14 -> +5V
+pin 7  -> GND
+pin 1 и pin 2 соединить вместе и подать SBUS
+pin 3 -> через 1 кОм -> GPIO36
+
+Важно: обычный PWM CH6 к GPIO36 в версии v1.9.4 НЕ подключается.
 ```
 
 Рекомендуемые внешние подтяжки:
@@ -278,8 +290,6 @@ CH5 ~1000 мкс -> RC
 CH5 ~1500 мкс -> SAFE
 CH5 ~2000 мкс -> ROS
 
-CH6 ~1000 мкс -> ARM OFF
-CH6 ~2000 мкс -> ARM ON
 ```
 
 После включения питания требуется последовательность `ARM OFF -> ARM ON`.
@@ -290,7 +300,6 @@ Failsafe при потере радиосвязи:
 CH1 -> 1500 мкс
 CH2 -> 1500 мкс
 CH5 -> 1500 мкс, SAFE
-CH6 -> 1000 мкс, ARM OFF
 ```
 
 ## 7. Аналоговый газ
@@ -328,6 +337,41 @@ Signal GND --------------+
 При 5 В получается около 3,2 В. Для рабочего изделия предпочтителен буфер с триггером Шмитта.
 
 GPIO34 и GPIO35 не имеют внутренних подтяжек.
+
+## 8.1. SBUS CH8 для дополнительного шагового двигателя
+
+В версии v1.9.4 M4 управляется каналом CH8, который читается из SBUS порта 8/B приёмника MC8RE-V2.
+
+```text
+MC8RE-V2 8/B SBUS
+        |
+        +--> pin 1 + pin 2 К155ЛА3
+                   pin 3
+                     |
+                    1 кОм
+                     |
+                     +--> GPIO36 ESP32 / UART2 RX
+```
+
+Питание К155ЛА3:
+
+```text
+pin 14 -> +5V
+pin 7  -> GND
+```
+
+У ESP32, MC8RE-V2 и К155ЛА3 должна быть общая земля.
+
+UART SBUS:
+
+```text
+100000 бод
+8E2
+25 байт
+CH8 -> положение M4 0..360°
+```
+
+К155ЛА3 выполняет аппаратную инверсию, поэтому UART ESP32 работает с обычной полярностью.
 
 ## 9. Аварийная цепь
 
@@ -424,7 +468,7 @@ BOOT,ESP32_WROOM_TRACK_CONTROLLER,4,TLP240A_GPIO21_22_FREE*HH
 | ESP32 GPIO27 | PWM IN | MC8RE CH1 |
 | ESP32 GPIO33 | PWM IN | MC8RE CH2 |
 | ESP32 GPIO13 | PWM IN | MC8RE CH5 RC/SAFE/ROS |
-| ESP32 GPIO14 | PWM IN | MC8RE CH6 ARM |
+| ESP32 GPIO14 | PWM IN | MC8RE CH3, актуатор |
 | ESP32 GPIO32 | digital IN | NC аварийная петля |
 | ESP32 GPIO34 | Hall IN | скорость LEFT |
 | ESP32 GPIO35 | Hall IN | скорость RIGHT |
