@@ -24,7 +24,7 @@ Brush reverse,GPIO12,Brush controller reverse,GPIO15 is free
 MCP GPA0,MCP23017 GPA0,LEFT activity relay/output,existing firmware
 MCP GPA1,MCP23017 GPA1,RIGHT activity relay/output,existing firmware
 MCP GPA2,MCP23017 GPA2,BRUSH activity relay/output,existing firmware
-M4 STEP,MCP23017 GPA3,DRV8825 STEP,Integrated PCB architecture
-M4 DIR,MCP23017 GPA4,DRV8825 DIR,
-M4 ENABLE,MCP23017 GPA5,DRV8825 nENBL,
-M4 HOME reserve,MCP23017 GPA6,Future HOME sensor,recommended
+MCP GPA3,MCP23017 GPA3,Free,M4 moved to I2C TB6612FNG
+MCP GPA4,MCP23017 GPA4,Free,M4 moved to I2C TB6612FNG
+MCP GPA5,MCP23017 GPA5,Free,M4 moved to I2C TB6612FNG
+M4 HOME reserve,MCP23017 GPA6,Future HOME sensor,recommendedM4 I2C driver,GPIO21/GPIO22,D1 mini TB6612FNG,SDA/SCL shared bus; address 0x2D..0x30
