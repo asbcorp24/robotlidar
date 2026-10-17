@@ -1,7 +1,6 @@
 Ref,Qty,Value/Part,Description,Suggested footprint,Notes
 U1,1,ESP32-WROOM-32E,Wi-Fi/BLE MCU module,RF_Module:ESP32-WROOM-32,Keep antenna edge clear
 U2,1,MCP23017-E/SS,16-bit I2C GPIO expander,Package_SO:SSOP-28_5.3x10.2mm_P0.65mm,I2C address 0x20
-U3,1,DRV8825PWP,"Stepper motor driver, STEP/DIR",Package_SO:HTSSOP-28-1EP_4.4x9.7mm_P0.65mm_EP3.4x5.4mm,Thermal EP; Rsense TBD
 U4,1,MCP4725A0T-E/CH,12-bit DAC for brush,Package_TO_SOT_SMD:SOT-23-6,Address 0x60
 U5,1,74LVC2G14,Dual Schmitt inverter for Hall,Package_SO:TSSOP-8_3x3mm_P0.65mm,3.3V
 U6,1,TLV9002,"Dual RRIO op amp, throttle buffers",Package_SO:TSSOP-8_3x3mm_P0.65mm,5V supply
@@ -36,3 +35,4 @@ C_DEC,12,100nF,Local decoupling,Capacitor_SMD:C_0603_1608Metric,One per IC suppl
 "R_SENSE_A,R_SENSE_B",2,TBD,DRV8825 current sense,Resistor_SMD:R_2512_6332Metric,Calculate after motor current confirmed
 U15,1,K155LA3,Quad 2-input NAND used as SBUS inverter,DIP-14 or exact package used,"pins 1+2 tied to SBUS; pin3 -> 1k -> GPIO36; pin14=5V; pin7=GND"
 R_SBUS,1,1k,Series resistor K155LA3 output to ESP32,Resistor_SMD:R_0603_1608Metric,GPIO36 protection
+M4_DRV,1,D1 mini TB6612FNG I2C motor driver,M4 stepper driver module,I2C address 0x2D..0x30,"VM separate; A1/A2 coil A; B1/B2 coil B"
