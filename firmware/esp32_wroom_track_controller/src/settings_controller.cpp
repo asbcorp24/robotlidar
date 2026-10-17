@@ -55,7 +55,7 @@ struct PersistentSettings {
   uint16_t hallPulsesPerRev=180, wheelCircumferenceMm=400, trackWidthMm=600;
   uint16_t rcDeadbandUs=45, rcTimeoutMs=160;
   RcCalibration rc[6];
-  uint16_t throttleIdleMv=1000, throttleMaxMv=5000, reverseBrakeMs=700, reverseSettleMs=300, rampStep=12;
+  uint16_t throttleIdleMv=1000, throttleMaxMv=5000, reverseBrakeMs=700, reverseSettleMs=300, rampStep=25;
   uint16_t actuatorTimeoutMs=30000, actuatorGuardMs=150;
   bool actuatorReversed=false;
   uint16_t brushIdleMv=1000, brushMaxMv=5000, brushStopUs=1050;
@@ -131,6 +131,7 @@ static void loadSettings(){
   // to the full external DAC range requested for v1.9.3.
   if(settings.brushMaxMv==2850) settings.brushMaxMv=5000;
   if(settings.throttleMaxMv==2850) settings.throttleMaxMv=5000;
+  if(settings.rampStep==12) settings.rampStep=25;
   normalizeSettings();
   saveSettings();
 }
