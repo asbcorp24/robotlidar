@@ -27,7 +27,7 @@ constexpr uint8_t ESTOP_OK=32,RC_CHANNEL_1=27,RC_CHANNEL_2=33,RC_ACTUATOR=14,RC_
 constexpr uint8_t OLED_SDA=21,OLED_SCL=22;
 }
 namespace Fixed {
-constexpr const char* FIRMWARE_VERSION="1.9.4";
+constexpr const char* FIRMWARE_VERSION="1.9.5";
 constexpr uint32_t SERIAL_BAUD=115200,CONTROL_PERIOD_MS=20,TELEMETRY_PERIOD_MS=100,OLED_PERIOD_MS=150,COMMAND_WATCHDOG_MS=450;
 constexpr uint16_t RC_ISR_MIN_US=750,RC_ISR_MAX_US=2250,INTERNAL_DAC_FULL_SCALE_MV=3300,MCP4725_FULL_SCALE_MV=5000;
 constexpr uint16_t THROTTLE_DISARMED_MV=0; constexpr bool HOLD_BRAKE_AT_ZERO=true,REVERSE_SUPPORTED=true,BRAKE_ACTIVE_HIGH=true;
@@ -149,7 +149,69 @@ void updateActuator(const RcSnapshot&rc,uint32_t now){if(!estopOkay()||controlMo
 int8_t signOf(int16_t v){return v>0?1:(v<0?-1:0);}int16_t clampCommand(long v){return constrain(v,-1000L,1000L);}int16_t moveToward(int16_t c,int16_t t,int16_t s){if(c<t)return min<int16_t>(c+s,t);if(c>t)return max<int16_t>(c-s,t);return c;}uint16_t commandToThrottleMv(int16_t cmd){int m=abs(cmd);uint16_t lo=espSettingThrottleIdleMv(),hi=espSettingThrottleMaxMv();if(!m)return lo;return lo+(uint32_t)(hi-lo)*constrain(m,0,1000)/1000;}void applyTrackSafe(Track&t){t.target=t.actual=0;t.phase=Track::Phase::Normal;setBrake(t,true);writeThrottle(t,0);}
 void disarmSystem(const char*reason){static char last[32]="";bool was=armed;armed=false;applyTrackSafe(leftTrack);applyTrackSafe(rightTrack);stopActuatorOutput();stopBrushController();const char*r=reason?reason:"requested";bool changed=reason&&strncmp(last,r,sizeof(last));if(was||changed){Serial.print("EVT,DISARM,");Serial.println(r);}if(!reason)last[0]=0;else{strncpy(last,r,sizeof(last)-1);last[sizeof(last)-1]=0;}}
 bool armSystem(const char*src){if(!estopOkay()){Serial.println("ERR,ESTOP_OPEN");return false;}if(!throttleBackendReady){Serial.println("ERR,THROTTLE_DAC_NOT_READY");return false;}if(leftTrack.target||rightTrack.target){Serial.println("ERR,NONZERO_TARGET");return false;}setBrake(leftTrack,true);setBrake(rightTrack,true);if(!writeThrottle(leftTrack,espSettingThrottleIdleMv())||!writeThrottle(rightTrack,espSettingThrottleIdleMv()))return false;setReverse(leftTrack,false);setReverse(rightTrack,false);delay(50);armed=true;watchdogTripped=false;lastDriveFrameMs=millis();Serial.print("EVT,ARMED,");Serial.println(src?src:"UNKNOWN");return true;}
-void updateTrack(Track&t,uint32_t now){if(!armed){applyTrackSafe(t);return;}if(!Fixed::REVERSE_SUPPORTED&&t.target<0)t.target=0;int8_t ds=signOf(t.target);if(t.phase==Track::Phase::BrakeBeforeReverse){setBrake(t,true);writeThrottle(t,espSettingThrottleIdleMv());t.actual=0;if((int32_t)(now-t.deadlineMs)>=0){if(!ds)t.phase=Track::Phase::Normal;else{setReverse(t,ds<0);t.phase=Track::Phase::ReverseSettle;t.deadlineMs=now+espSettingReverseSettleMs();}}return;}if(t.phase==Track::Phase::ReverseSettle){setBrake(t,true);writeThrottle(t,espSettingThrottleIdleMv());t.actual=0;if((int32_t)(now-t.deadlineMs)>=0)t.phase=Track::Phase::Normal;return;}if(ds&&ds!=t.appliedSign){t.actual=0;setBrake(t,true);writeThrottle(t,espSettingThrottleIdleMv());t.phase=Track::Phase::BrakeBeforeReverse;t.deadlineMs=now+espSettingReverseBrakeMs();return;}t.actual=moveToward(t.actual,t.target,espSettingRampStep());if(!t.actual){setBrake(t,Fixed::HOLD_BRAKE_AT_ZERO);writeThrottle(t,espSettingThrottleIdleMv());return;}if(!writeThrottle(t,commandToThrottleMv(t.actual))){t.actual=0;setBrake(t,true);return;}setBrake(t,false);}
+void updateTrack(Track&t,uint32_t now){
+  if(!armed){applyTrackSafe(t);return;}
+  if(!Fixed::REVERSE_SUPPORTED&&t.target<0)t.target=0;
+
+  const int8_t ds=signOf(t.target);
+
+  // IMPORTANT for scooter BLDC controllers:
+  // direction must be changed only while the throttle input is truly at 0 V.
+  // Keeping the old 1.0 V idle level during Reverse can trigger throttle/fault
+  // protection and the controller may refuse to move backwards.
+  if(t.phase==Track::Phase::BrakeBeforeReverse){
+    setBrake(t,true);
+    writeThrottle(t,0);
+    t.actual=0;
+
+    if((int32_t)(now-t.deadlineMs)>=0){
+      if(!ds){
+        t.phase=Track::Phase::Normal;
+      }else{
+        setReverse(t,ds<0);
+        t.phase=Track::Phase::ReverseSettle;
+        t.deadlineMs=now+espSettingReverseSettleMs();
+      }
+    }
+    return;
+  }
+
+  if(t.phase==Track::Phase::ReverseSettle){
+    setBrake(t,true);
+    writeThrottle(t,0);
+    t.actual=0;
+
+    if((int32_t)(now-t.deadlineMs)>=0){
+      t.phase=Track::Phase::Normal;
+    }
+    return;
+  }
+
+  if(ds&&ds!=t.appliedSign){
+    t.actual=0;
+    setBrake(t,true);
+    writeThrottle(t,0);
+    t.phase=Track::Phase::BrakeBeforeReverse;
+    t.deadlineMs=now+espSettingReverseBrakeMs();
+    return;
+  }
+
+  t.actual=moveToward(t.actual,t.target,espSettingRampStep());
+
+  if(!t.actual){
+    setBrake(t,Fixed::HOLD_BRAKE_AT_ZERO);
+    writeThrottle(t,espSettingThrottleIdleMv());
+    return;
+  }
+
+  if(!writeThrottle(t,commandToThrottleMv(t.actual))){
+    t.actual=0;
+    setBrake(t,true);
+    return;
+  }
+
+  setBrake(t,false);
+}
 
 bool pulseValid(uint8_t ch,uint16_t p,uint32_t age){return p>=espSettingRcMinUs(ch)&&p<=espSettingRcMaxUs(ch)&&age<=uint32_t(espSettingRcTimeoutMs())*1000UL;}RcSnapshot readRcSnapshot(){RcSnapshot r;uint32_t a1,a2,a3,a5,n=micros();portENTER_CRITICAL(&rcMux);r.channel1Us=rcChannel1.pulseUs;r.channel2Us=rcChannel2.pulseUs;r.actuatorUs=rcActuator.pulseUs;r.modeUs=rcMode.pulseUs;a1=rcChannel1.lastPulseUs;a2=rcChannel2.lastPulseUs;a3=rcActuator.lastPulseUs;a5=rcMode.lastPulseUs;portEXIT_CRITICAL(&rcMux);r.channel1AgeUs=a1?n-a1:UINT32_MAX;r.channel2AgeUs=a2?n-a2:UINT32_MAX;r.actuatorAgeUs=a3?n-a3:UINT32_MAX;r.modeAgeUs=a5?n-a5:UINT32_MAX;r.modeValid=pulseValid(5,r.modeUs,r.modeAgeUs);r.actuatorValid=pulseValid(3,r.actuatorUs,r.actuatorAgeUs);r.valid=pulseValid(1,r.channel1Us,r.channel1AgeUs)&&pulseValid(2,r.channel2Us,r.channel2AgeUs)&&r.modeValid;return r;}
 ControlMode modeFromPulse(uint16_t p){uint16_t mn=espSettingRcMinUs(5),c=espSettingRcCenterUs(5),mx=espSettingRcMaxUs(5);uint16_t low=(mn+c)/2,high=(c+mx)/2;if(p<=low)return ControlMode::RcManual;if(p>=high)return ControlMode::RosAutonomous;return ControlMode::Safe;}const char*modeName(ControlMode m){return m==ControlMode::RcManual?"RC":(m==ControlMode::RosAutonomous?"ROS":"SAFE");}const char*actuatorName(){return actuatorTimeoutLatched?"TMO":(actuatorAppliedDirection>0?"UP":(actuatorAppliedDirection<0?"DN":"STP"));}
