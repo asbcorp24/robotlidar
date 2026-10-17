@@ -25,8 +25,6 @@ DAC_R,U1 GPIO26,U6B input
 THROTTLE_R,U6B output,J11 throttle
 REV_L_LED,U1 GPIO16,U8 input through resistor
 REV_R_LED,U1 GPIO17,U9 input through resistor
-BRAKE_L_LED,U1 GPIO18,U10 input through resistor
-BRAKE_R_LED,U1 GPIO19,U11 input through resistor
 ACT_RPWM,U1 GPIO4,J12 RPWM
 ACT_LPWM,U1 GPIO23,J12 LPWM
 BRUSH_DAC,U4 VOUT,J13 throttle
