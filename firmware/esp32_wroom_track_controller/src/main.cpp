@@ -302,7 +302,7 @@ void showFirmwareSplash(){
 }
 #endif
 
-void setup(){Serial.begin(Fixed::SERIAL_BAUD);delay(200);initializeEsp32SettingsController();pinMode(Pins::LEFT_REVERSE,OUTPUT);pinMode(Pins::RIGHT_REVERSE,OUTPUT);pinMode(Pins::ESTOP_OK,INPUT_PULLUP);pinMode(Pins::RC_CHANNEL_1,INPUT_PULLDOWN);pinMode(Pins::RC_CHANNEL_2,INPUT_PULLDOWN);pinMode(Pins::RC_ACTUATOR,INPUT_PULLDOWN);pinMode(Pins::RC_MODE,INPUT_PULLDOWN);digitalWrite(Pins::LEFT_BRAKE,HIGH);digitalWrite(Pins::RIGHT_BRAKE,HIGH);setReverse(leftTrack,false);setReverse(rightTrack,false);initializeActuator();stopActuatorOutput();initializeThrottleBackend();applyTrackSafe(leftTrack);applyTrackSafe(rightTrack);OledWire.begin(Pins::OLED_SDA,Pins::OLED_SCL);OledWire.setClock(Fixed::OLED_I2C_HZ);
+void setup(){Serial.begin(Fixed::SERIAL_BAUD);delay(200);initializeEsp32SettingsController();pinMode(Pins::LEFT_REVERSE,OUTPUT);pinMode(Pins::RIGHT_REVERSE,OUTPUT);pinMode(Pins::ESTOP_OK,INPUT_PULLUP);pinMode(Pins::RC_CHANNEL_1,INPUT_PULLDOWN);pinMode(Pins::RC_CHANNEL_2,INPUT_PULLDOWN);pinMode(Pins::RC_ACTUATOR,INPUT_PULLDOWN);pinMode(Pins::RC_MODE,INPUT_PULLDOWN);setReverse(leftTrack,false);setReverse(rightTrack,false);initializeActuator();stopActuatorOutput();initializeThrottleBackend();applyTrackSafe(leftTrack);applyTrackSafe(rightTrack);OledWire.begin(Pins::OLED_SDA,Pins::OLED_SCL);OledWire.setClock(Fixed::OLED_I2C_HZ);
 #if ROBOTLIDAR_ENABLE_OLED
 initializeOled();
 #endif
