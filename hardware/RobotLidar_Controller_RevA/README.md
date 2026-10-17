@@ -7,7 +7,7 @@
 - USB-C + CH340C для прошивки и USB Serial к Raspberry Pi
 - MCP23017 (I2C GPIO expander)
 - MCP4725 (щётка, аналоговый выход)
-- DRV8825 (шаговый двигатель M4, STEP/DIR, токовая регулировка)
+- D1 mini TB6612FNG I2C motor driver для M4
 - 74LVC2G14 (формирование Hall LEFT/RIGHT после делителя 5V -> 3.3V)
 - 2 x TLP240A для Reverse LEFT/RIGHT; Brake не используется
 - TLV9002 для буферизации/масштабирования аналоговых выходов LEFT/RIGHT
@@ -33,11 +33,14 @@ MC8RE-V2 порт 8/B SBUS -> К155ЛА3 -> GPIO36 ESP32/UART2 RX -> CH8 -> targ
 
 Обычный PWM CH6 к GPIO36 в этой версии не подключается.
 
-На интегрированной плате вместо HW-095/L298N используется DRV8825:
-- MCP23017 GPA3 -> STEP
-- MCP23017 GPA4 -> DIR
-- MCP23017 GPA5 -> ENABLE
-- MCP23017 GPA6 -> резерв HOME
+M4 подключается через D1 mini TB6612FNG I2C:
+- SDA -> GPIO21
+- SCL -> GPIO22
+- адрес автоматически определяется 0x2D..0x30
+- A1/A2 -> обмотка A
+- B1/B2 -> обмотка B
+- отдельное питание VM двигателя
+- MCP23017 GPA3..GPA6 свободны
 
 ## Файлы
 - `RobotLidar_Controller.kicad_pro` — проект KiCad
