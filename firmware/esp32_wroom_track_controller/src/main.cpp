@@ -27,7 +27,7 @@ constexpr uint8_t ESTOP_OK=32,RC_CHANNEL_1=27,RC_CHANNEL_2=33,RC_ACTUATOR=14,RC_
 constexpr uint8_t OLED_SDA=21,OLED_SCL=22;
 }
 namespace Fixed {
-constexpr const char* FIRMWARE_VERSION="1.9.7";
+constexpr const char* FIRMWARE_VERSION="1.9.8";
 constexpr uint32_t SERIAL_BAUD=115200,CONTROL_PERIOD_MS=20,TELEMETRY_PERIOD_MS=100,OLED_PERIOD_MS=150,COMMAND_WATCHDOG_MS=450;
 constexpr uint16_t RC_ISR_MIN_US=750,RC_ISR_MAX_US=2250,INTERNAL_DAC_FULL_SCALE_MV=3300,MCP4725_FULL_SCALE_MV=5000;
 constexpr uint16_t THROTTLE_DISARMED_MV=0; constexpr bool HOLD_BRAKE_AT_ZERO=true,REVERSE_SUPPORTED=true,BRAKE_ACTIVE_HIGH=true;
@@ -48,7 +48,7 @@ uint16_t espSettingActuatorTimeoutMs(); uint16_t espSettingActuatorGuardMs(); bo
 void initializeBrushController(); void updateBrushController(); void stopBrushController(); void setBrushRosCommand(int16_t);
 uint16_t getBrushRcPulseUs(); bool getBrushRcValid(); int16_t getBrushRosCommand(); uint16_t getBrushThrottleMv(); bool getBrushBrakeActive(); bool getBrushMcpReady(); int8_t getBrushDirection();
 
-// Auxiliary stepper (SBUS CH8 -> 0..360 deg)
+// Auxiliary stepper (SBUS CH8 -> D1 mini TB6612FNG I2C -> 0..360 deg)
 uint16_t getAuxMotorRcPulseUs(); bool getAuxMotorRcValid(); int16_t getAuxMotorTarget(); int16_t getAuxMotorActual(); int8_t getAuxMotorDirection(); bool getAuxMotorMcpReady();
 
 // Front RCWL-1655 ultrasonic API
