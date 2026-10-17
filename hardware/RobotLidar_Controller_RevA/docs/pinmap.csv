@@ -16,8 +16,8 @@ Left throttle DAC,GPIO25,TLV9002 -> BLDC LEFT throttle,
 Right throttle DAC,GPIO26,TLV9002 -> BLDC RIGHT throttle,
 Left Reverse,GPIO16,TLP240A U8 LED input,isolated contact output
 Right Reverse,GPIO17,TLP240A U9 LED input,isolated contact output
-Left Brake,GPIO18,TLP240A U10 LED input,isolated contact output
-Right Brake,GPIO19,TLP240A U11 LED input,isolated contact output
+GPIO18 free,GPIO18,Free,Track brake removed in v1.9.6
+GPIO19 free,GPIO19,Free,Track brake removed in v1.9.6
 Actuator RPWM,GPIO4,Actuator interface,
 Actuator LPWM,GPIO23,Actuator interface,
 Brush reverse,GPIO12,Brush controller reverse,GPIO15 is free
