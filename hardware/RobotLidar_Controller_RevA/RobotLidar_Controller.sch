@@ -9,7 +9,7 @@ Title "RobotLidar Controller Rev.A"
 Date "2026-10-14"
 Rev "A"
 Comp "RobotLidar"
-Comment1 "ESP32 + RC + Hall + isolated BLDC interface + DRV8825"
+Comment1 "ESP32 + RC + Hall + isolated BLDC interface + D1 mini TB6612FNG I2C"
 Comment2 "Engineering starter - run ERC/DRC before fabrication"
 $EndDescr
 Text Notes 700 650 0 140 ~ 28
@@ -25,7 +25,7 @@ GPIO map: CH1=27 CH2=33 CH3=14 CH4=5 CH5=13; SBUS CH8 via K155LA3 -> GPIO36; Hal
 Text Notes 5200 1250 0 90 ~ 18
 I2C / EXPANDER
 Text Notes 5650 3550 0 60 ~ 12
-MCP23017: GPA0 LEFT activity; GPA1 RIGHT; GPA2 BRUSH; GPA3 STEP; GPA4 DIR; GPA5 ENABLE; GPA6 HOME reserve.
+MCP23017: GPA0 LEFT activity; GPA1 RIGHT; GPA2 BRUSH; GPA3..GPA6 free after M4 moved to I2C TB6612FNG.
 Text Notes 5200 4300 0 90 ~ 18
 HALL INPUTS 5V -> 3.3V
 Text Notes 5650 5450 0 60 ~ 12
@@ -33,7 +33,7 @@ Each input: Hall OUT --10k-- node --20k-- GND; node -> 74LVC2G14; outputs -> GPI
 Text Notes 9200 1250 0 90 ~ 18
 STEPPER M4
 Text Notes 9400 3800 0 60 ~ 12
-DRV8825 STEP/DIR/ENABLE from MCP23017. VMOT separate. Rsense TBD after motor current is confirmed.
+M4 via D1 mini TB6612FNG I2C on SDA/SCL GPIO21/22. Address 0x2D..0x30. A1/A2 coil A; B1/B2 coil B.
 Text Notes 9200 4550 0 90 ~ 18
 BLDC INTERFACE / ISOLATION
 Text Notes 9400 5050 0 60 ~ 12
