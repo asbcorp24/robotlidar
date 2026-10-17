@@ -29,9 +29,7 @@ ESP32-WROOM-32 30 pin <---- USB Serial 115200 ----> Raspberry Pi 4
       +-- GPIO26 DAC ----------------------------> газ RIGHT
       +-- GPIO16 -> TLP240A №1 ------------------> Reverse LEFT
       +-- GPIO17 -> TLP240A №2 ------------------> Reverse RIGHT
-      +-- GPIO18 -> TLP240A №3 ------------------> Low brake LEFT
-      +-- GPIO19 -> TLP240A №4 ------------------> Low brake RIGHT
-      +-- GPIO34 <--- Hall/Speed LEFT через 5->3,3 В
+                  +-- GPIO34 <--- Hall/Speed LEFT через 5->3,3 В
       +-- GPIO35 <--- Hall/Speed RIGHT через 5->3,3 В
       +-- GPIO32 <--- NC аварийная петля
 ```
@@ -67,7 +65,6 @@ Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
 
 - газ LEFT/RIGHT;
 - Reverse LEFT/RIGHT;
-- Low Brake LEFT/RIGHT;
 - Hall/Speed LEFT/RIGHT;
 - RC-приёмник MC8RE-V2;
 - аварийную петлю ESP32.
@@ -82,8 +79,8 @@ Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
 | 26 | OUT/DAC | Аналоговый газ правой гусеницы |
 | 16 | OUT | Вход TLP240A №1, Reverse LEFT |
 | 17 | OUT | Вход TLP240A №2, Reverse RIGHT |
-| 18 | OUT | Вход TLP240A №3, Low brake LEFT |
-| 19 | OUT | Вход TLP240A №4, Low brake RIGHT |
+| 18 | — | Свободен |
+| 19 | — | Свободен |
 | 27 | IN | MC8RE CH1, левая гусеница |
 | 33 | IN | MC8RE CH2, правая гусеница |
 | 13 | IN | MC8RE CH5, RC/SAFE/ROS |
@@ -103,14 +100,12 @@ Raspberry Pi USB <---- USB cable ----> ESP32 USB-UART
 
 ## 3. Четыре отдельных TLP240A
 
-Используются **четыре отдельные одноканальные TLP240A**:
+Для реверса используются **два отдельных одноканальных TLP240A**:
 
 | Номер | GPIO ESP32 | Функция |
 |---:|---:|---|
 | 1 | 16 | Reverse LEFT |
 | 2 | 17 | Reverse RIGHT |
-| 3 | 18 | Low brake LEFT |
-| 4 | 19 | Low brake RIGHT |
 
 ### 3.1. Вход каждого TLP240A
 
@@ -158,39 +153,13 @@ ESP32 GND ------------> TLP240A №2 pin 2
               TLP240A №2
 ```
 
-### 3.4. Low brake LEFT
-
-```text
-ESP32 GPIO18 -> 330 Ом -> TLP240A №3 pin 1
-ESP32 GND ------------> TLP240A №3 pin 2
-
-два контакта Low brake LEFT
-        |                     |
-        +---- pin 3     pin 4-+
-              TLP240A №3
-```
-
-### 3.5. Low brake RIGHT
-
-```text
-ESP32 GPIO19 -> 330 Ом -> TLP240A №4 pin 1
-ESP32 GND ------------> TLP240A №4 pin 2
-
-два контакта Low brake RIGHT
-        |                     |
-        +---- pin 3     pin 4-+
-              TLP240A №4
-```
-
-### 3.6. Что обязательно измерить
+### 3.4. Что обязательно измерить
 
 До подключения TLP240A измерить напряжение между двумя проводами каждого разъёма:
 
 ```text
 Reverse LEFT
 Reverse RIGHT
-Low brake LEFT
-Low brake RIGHT
 ```
 
 TLP240A нельзя использовать, если на разомкнутых контактах присутствует напряжение выше его допустимого выходного напряжения. Обычно `Low brake` и `Reverse` являются низковольтными управляющими входами, но это необходимо подтвердить мультиметром.
@@ -463,8 +432,6 @@ BOOT,ESP32_WROOM_TRACK_CONTROLLER,4,TLP240A_GPIO21_22_FREE*HH
 | ESP32 GPIO26 | DAC | газ RIGHT |
 | ESP32 GPIO16 | TLP240A №1 | Reverse LEFT |
 | ESP32 GPIO17 | TLP240A №2 | Reverse RIGHT |
-| ESP32 GPIO18 | TLP240A №3 | Low brake LEFT |
-| ESP32 GPIO19 | TLP240A №4 | Low brake RIGHT |
 | ESP32 GPIO27 | PWM IN | MC8RE CH1 |
 | ESP32 GPIO33 | PWM IN | MC8RE CH2 |
 | ESP32 GPIO13 | PWM IN | MC8RE CH5 RC/SAFE/ROS |
@@ -556,3 +523,19 @@ constexpr bool MCP_RELAY_ACTIVE_HIGH=false;
 ```
 
 Важно: MCP23017 не должен напрямую питать катушку обычного реле. Используйте готовый релейный модуль с логическим входом или транзисторный ключ с защитным диодом.
+
+
+## Изменение v1.9.6 — тормоза гусениц удалены
+
+GPIO18 и GPIO19 больше не используются для Low Brake и свободны.
+
+При смене направления:
+```text
+Throttle = 0 V
+-> пауза reverse_brake_ms
+-> переключение Reverse
+-> пауза reverse_settle_ms
+-> плавный набор газа
+```
+
+Отдельный сигнал Brake не используется.
