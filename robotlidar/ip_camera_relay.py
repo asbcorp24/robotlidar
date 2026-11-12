@@ -39,6 +39,14 @@ class IpCameraRelayManager:
         self._restart_count = 0
         self._started_at = time.monotonic()
         self._video_requested = False
+        self._progress_at = 0.0
+        self._progress_value = -1
+        self._process_started_at = 0.0
+        self._camera_failures = 0
+        self._next_camera_probe_at = 0.0
+        self._retry_at = 0.0
+        self._retry_step = 0
+        self._last_video_ok_at = 0.0
         self._log_callback = log_callback
 
     def start(self, settings: dict[str, Any]) -> None:
@@ -57,6 +65,10 @@ class IpCameraRelayManager:
             changed = cfg != self._config
             self._config = cfg
             if changed:
+                self._camera_failures = 0
+                self._retry_at = 0.0
+                self._retry_step = 0
+                self._next_camera_probe_at = 0.0
                 self._registered = False
                 self._video_port = None
                 self._srt_port = None
@@ -94,6 +106,9 @@ class IpCameraRelayManager:
                 'ffmpeg_running': running,
                 'ffmpeg_pid': process.pid if running else None,
                 'restart_count': self._restart_count,
+                'video_progress_age_sec': round(time.monotonic() - self._progress_at, 1) if self._progress_at else None,
+                'camera_failures': self._camera_failures,
+                'retry_in_sec': round(max(0.0, self._retry_at - time.monotonic()), 1),
                 'last_error': self._last_error,
                 'last_register_age_sec': round(time.time() - self._last_register_at, 1)
                 if self._last_register_at else None,
@@ -125,6 +140,14 @@ class IpCameraRelayManager:
             'reported_bitrate_bps': int(settings.get('camera_reported_bitrate_bps') or 2_000_000),
             'srt_latency_ms': max(80, min(2000, int(settings.get('camera_srt_latency_ms') or 200))),
             'tapo_talkback_enabled': bool(settings.get('camera_tapo_talkback_enabled', False)),
+            'auto_failover_enabled': bool(settings.get('camera_auto_failover_enabled', False)),
+            'primary_camera': 2 if int(settings.get('camera_primary_camera') or 1) == 2 else 1,
+            'failover_after_failures': max(1, int(settings.get('camera_failover_after_failures') or 3)),
+            'failover_probe_interval_sec': max(2.0, float(settings.get('camera_failover_probe_interval_sec') or 10.0)),
+            'return_to_primary': bool(settings.get('camera_return_to_primary', True)),
+            'video_watchdog_enabled': bool(settings.get('camera_video_watchdog_enabled', True)),
+            'video_watchdog_timeout_sec': max(3.0, float(settings.get('camera_video_watchdog_timeout_sec') or 8.0)),
+            'video_watchdog_startup_grace_sec': max(3.0, float(settings.get('camera_video_watchdog_startup_grace_sec') or 12.0)),
         }
 
     def _run(self) -> None:
@@ -150,7 +173,7 @@ class IpCameraRelayManager:
                 if not self._registered or self._video_port is None:
                     self._register(cfg)
                 if cfg.get('enabled') and self._video_requested:
-                    self._ensure_ffmpeg(cfg)
+                    self._maintain_video(cfg)
                 else:
                     self._stop_ffmpeg()
                 if time.time() - self._last_telemetry_at >= 1.0:
@@ -246,6 +269,7 @@ class IpCameraRelayManager:
             '-i', self._active_rtsp_url(cfg),
             '-map', '0:v:0', '-an',
             '-c:v', 'copy',
+            '-progress', 'pipe:1', '-nostats',
             '-bsf:v', 'dump_extra=freq=keyframe',
         ]
 
@@ -276,20 +300,115 @@ class IpCameraRelayManager:
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
         )
         with self._lock:
             self._process = process
+            self._process_started_at = time.monotonic()
+            self._progress_at = 0.0
+            self._progress_value = -1
             self._restart_count += 1
+        threading.Thread(target=self._read_ffmpeg_progress, args=(process,), daemon=True).start()
         threading.Thread(
             target=self._read_ffmpeg_stderr,
             args=(process,),
             name='robotlidar-camera-ffmpeg-log',
             daemon=True,
         ).start()
+
+    def _read_ffmpeg_progress(self, process: subprocess.Popen) -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            line = line.strip()
+            if not line.startswith(('out_time_us=', 'out_time_ms=')):
+                continue
+            try:
+                value = int(line.partition('=')[2])
+            except ValueError:
+                continue
+            with self._lock:
+                if self._process is process and value > self._progress_value:
+                    self._progress_value = value
+                    self._progress_at = time.monotonic()
+
+    def _maintain_video(self, cfg: dict[str, Any]) -> None:
+        now = time.monotonic()
+        with self._lock:
+            process = self._process
+            started = self._process_started_at
+            progress_at = self._progress_at
+            retry_at = self._retry_at
+        if process is not None and process.poll() is None:
+            grace = cfg['video_watchdog_startup_grace_sec']
+            timeout = cfg['video_watchdog_timeout_sec']
+            if (cfg['video_watchdog_enabled'] and now - started > grace
+                    and now - (progress_at or started) > timeout):
+                self._log('CAMERA: FFmpeg video progress stalled; restarting')
+                self._stop_ffmpeg()
+                self._record_camera_failure(cfg)
+                return
+            if progress_at and now - progress_at < timeout and now - started > grace:
+                with self._lock:
+                    self._camera_failures = 0
+                    self._retry_step = 0
+                    self._retry_at = 0.0
+                    self._last_video_ok_at = now
+                self._probe_primary(cfg, now)
+            return
+        if process is not None:
+            self._log(f'CAMERA: FFmpeg exited with code {process.returncode}')
+            self._stop_ffmpeg()
+            self._record_camera_failure(cfg)
+            return
+        if now < retry_at:
+            return
+        self._ensure_ffmpeg(self._snapshot_config())
+
+    def _record_camera_failure(self, cfg: dict[str, Any]) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._camera_failures += 1
+            failures = self._camera_failures
+            active = int(self._config.get('active_camera') or 1)
+        if cfg['auto_failover_enabled'] and failures >= cfg['failover_after_failures']:
+            other = 1 if active == 2 else 2
+            url = self._camera_rtsp_url(cfg, other)
+            if url and self._rtsp_available(cfg, url, timeout_sec=2.0):
+                self._switch_camera_runtime(other, 'FAILOVER')
+                return
+        delays = (2.0, 5.0, 10.0, 30.0)
+        with self._lock:
+            delay = delays[min(self._retry_step, len(delays) - 1)]
+            self._retry_step = min(self._retry_step + 1, len(delays) - 1)
+            self._retry_at = now + delay
+        self._log(f'CAMERA: restart backoff {delay:.0f}s')
+
+    def _switch_camera_runtime(self, camera: int, reason: str) -> None:
+        with self._lock:
+            self._config['active_camera'] = camera
+            self._camera_failures = 0
+            self._retry_step = 0
+            self._retry_at = 0.0
+            self._next_camera_probe_at = time.monotonic() + self._config['failover_probe_interval_sec']
+        self._log(f'CAMERA: {reason} -> Camera {camera}')
+        self._stop_ffmpeg()
+        self._wake.set()
+
+    def _probe_primary(self, cfg: dict[str, Any], now: float) -> None:
+        if not (cfg['auto_failover_enabled'] and cfg['return_to_primary']):
+            return
+        primary = cfg['primary_camera']
+        with self._lock:
+            if int(self._config.get('active_camera') or 1) == primary or now < self._next_camera_probe_at:
+                return
+            self._next_camera_probe_at = now + cfg['failover_probe_interval_sec']
+        url = self._camera_rtsp_url(cfg, primary)
+        if url and self._rtsp_available(cfg, url, timeout_sec=2.0):
+            self._switch_camera_runtime(primary, 'FAILBACK')
 
     def set_video_requested(self, enabled: bool) -> tuple[bool, str]:
         enabled = bool(enabled)
@@ -361,6 +480,9 @@ class IpCameraRelayManager:
 
         with self._lock:
             self._config['active_camera'] = camera
+            self._camera_failures = 0
+            self._retry_at = 0.0
+            self._retry_step = 0
         self._log(f'CAMERA: switch request -> Camera {camera}')
         self._stop_ffmpeg()
         self._wake.set()
