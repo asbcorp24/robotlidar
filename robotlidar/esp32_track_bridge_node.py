@@ -90,6 +90,7 @@ class Esp32TrackBridgeNode(Node):
         self._arm_ack_event = threading.Event()
         self._pending_arm_sequence: Optional[int] = None
         self._pending_arm_result: Optional[str] = None
+        self._pending_arm_desired = False
         self._last_telemetry: dict = {}
         self._connected = False
         self._last_ip_sequence: Optional[int] = None
@@ -206,7 +207,7 @@ class Esp32TrackBridgeNode(Node):
             self._connected = False
             self._armed_requested = False
             self._arm_confirmed = False
-            self._arm_ack_event.set()
+            self._cancel_pending_arm('DISCONNECTED')
         if connection is not None:
             try:
                 connection.close()
@@ -222,7 +223,7 @@ class Esp32TrackBridgeNode(Node):
             self._connected = False
             self._armed_requested = False
             self._arm_confirmed = False
-            self._arm_ack_event.set()
+            self._cancel_pending_arm('DISCONNECTED')
             connection = self._serial
             self._serial = None
         if connection is not None:
@@ -417,6 +418,12 @@ class Esp32TrackBridgeNode(Node):
             if not telemetry['armed']:
                 self._arm_confirmed = False
                 self._armed_requested = False
+                # A disarm reported after the ARM ACK supersedes that ACK.
+                # Telemetry preceding the ACK may still describe the old state.
+                if (self._pending_arm_sequence is not None
+                        and self._pending_arm_desired
+                        and self._pending_arm_result == 'OK'):
+                    self._cancel_pending_arm('DISARMED')
 
         ticks = Int64MultiArray(); ticks.data = [telemetry['ticks_left'], telemetry['ticks_right']]; self.tick_publisher.publish(ticks)
         pps = Float32MultiArray(); pps.data = [telemetry['pps_left'], telemetry['pps_right']]; self.pulse_rate_publisher.publish(pps)
@@ -567,9 +574,19 @@ class Esp32TrackBridgeNode(Node):
     def _send_arm(self, value: bool) -> bool:
         return self._write_body(f'ARM,{self._next_sequence()},{1 if value else 0}')
 
+    def _cancel_pending_arm(self, reason: str) -> None:
+        """Invalidate the in-flight request while holding self._lock."""
+        self._pending_arm_sequence = None
+        self._pending_arm_result = reason
+        self._arm_ack_event.set()
+
     def _arm_service(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         desired = bool(request.data)
         with self._lock:
+            if self._pending_arm_sequence is not None:
+                response.success = False
+                response.message = 'ESP32 ARM request already in progress'
+                return response
             self._requested_left = self._requested_right = 0
             self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
             now = time.monotonic()
@@ -579,6 +596,7 @@ class Esp32TrackBridgeNode(Node):
             sequence = self._next_sequence()
             self._pending_arm_sequence = sequence
             self._pending_arm_result = None
+            self._pending_arm_desired = desired
             self._arm_ack_event.clear()
         try:
             if self.dry_run:
@@ -597,7 +615,8 @@ class Esp32TrackBridgeNode(Node):
             with self._lock:
                 ack = self._pending_arm_result
                 connected = self._connected and self._serial is not None
-                if connected and ack == 'OK':
+                if (connected and ack == 'OK'
+                        and self._pending_arm_sequence == sequence):
                     self._arm_confirmed = desired
                     self._armed_requested = desired
                     response.success = True
@@ -615,6 +634,7 @@ class Esp32TrackBridgeNode(Node):
         with self._lock:
             self._armed_requested = False
             self._arm_confirmed = False
+            self._cancel_pending_arm('CANCELED_BY_STOP')
             self._requested_left = self._requested_right = 0
             self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
         sent = self._write_body(f'STOP,{self._next_sequence()}')
