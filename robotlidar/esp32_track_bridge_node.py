@@ -86,6 +86,10 @@ class Esp32TrackBridgeNode(Node):
         self._last_brush_cmd_time = 0.0
         self._last_aux_motor_cmd_time = 0.0
         self._armed_requested = False
+        self._arm_confirmed = False
+        self._arm_ack_event = threading.Event()
+        self._pending_arm_sequence: Optional[int] = None
+        self._pending_arm_result: Optional[str] = None
         self._last_telemetry: dict = {}
         self._connected = False
         self._last_ip_sequence: Optional[int] = None
@@ -116,8 +120,7 @@ class Esp32TrackBridgeNode(Node):
         self._open_serial()
         if self.auto_arm:
             self.get_logger().warning('auto_arm is enabled; verify lifted tracks and emergency stop')
-            self._armed_requested = True
-            self._send_arm(True)
+            self.get_logger().warning('auto_arm requires confirmed ARM; use /drive/arm service')
 
         self.get_logger().info(
             'ESP32 bridge started in %s mode; port=%s, baud=%d; '
@@ -201,6 +204,9 @@ class Esp32TrackBridgeNode(Node):
             connection = self._serial
             self._serial = None
             self._connected = False
+            self._armed_requested = False
+            self._arm_confirmed = False
+            self._arm_ack_event.set()
         if connection is not None:
             try:
                 connection.close()
@@ -214,6 +220,9 @@ class Esp32TrackBridgeNode(Node):
     def _mark_disconnected(self) -> None:
         with self._lock:
             self._connected = False
+            self._armed_requested = False
+            self._arm_confirmed = False
+            self._arm_ack_event.set()
             connection = self._serial
             self._serial = None
         if connection is not None:
@@ -280,6 +289,9 @@ class Esp32TrackBridgeNode(Node):
                     ack_sequence = int(fields[1])
                 except (ValueError, IndexError):
                     ack_sequence = -1
+                if ack_sequence == self._pending_arm_sequence:
+                    self._pending_arm_result = fields[2] if len(fields) > 2 else 'MALFORMED'
+                    self._arm_ack_event.set()
                 if self._last_ip_sequence is not None and ack_sequence == self._last_ip_sequence:
                     self._last_telemetry['ip_ack'] = fields[1:]
                     self._last_telemetry['ip_ack_time'] = time.time()
@@ -402,6 +414,9 @@ class Esp32TrackBridgeNode(Node):
             self._last_telemetry = telemetry
             self._last_telemetry.update(preserved)
             self._connected = True
+            if not telemetry['armed']:
+                self._arm_confirmed = False
+                self._armed_requested = False
 
         ticks = Int64MultiArray(); ticks.data = [telemetry['ticks_left'], telemetry['ticks_right']]; self.tick_publisher.publish(ticks)
         pps = Float32MultiArray(); pps.data = [telemetry['pps_left'], telemetry['pps_right']]; self.pulse_rate_publisher.publish(pps)
@@ -472,7 +487,7 @@ class Esp32TrackBridgeNode(Node):
             actuator = 0 if actuator_timed_out else self._requested_actuator
             brush = 0 if brush_timed_out else self._requested_brush
             aux_motor = 0 if aux_motor_timed_out else self._requested_aux_motor
-            arm_requested = self._armed_requested
+            arm_requested = self._arm_confirmed
         if not arm_requested:
             left = right = actuator = brush = aux_motor = 0
         self._write_body(f'DRV,{self._next_sequence()},{left},{right}')
@@ -553,20 +568,53 @@ class Esp32TrackBridgeNode(Node):
         return self._write_body(f'ARM,{self._next_sequence()},{1 if value else 0}')
 
     def _arm_service(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
+        desired = bool(request.data)
         with self._lock:
             self._requested_left = self._requested_right = 0
             self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
             now = time.monotonic()
             self._last_cmd_time = self._last_actuator_cmd_time = self._last_brush_cmd_time = self._last_aux_motor_cmd_time = now
-            self._armed_requested = bool(request.data)
-        sent = self._send_arm(bool(request.data))
-        response.success = sent
-        response.message = ('ESP32 arm command sent' if request.data else 'ESP32 disarm command sent') if sent else 'ESP32 is not connected'
-        return response
+            self._armed_requested = False
+            self._arm_confirmed = False
+            sequence = self._next_sequence()
+            self._pending_arm_sequence = sequence
+            self._pending_arm_result = None
+            self._arm_ack_event.clear()
+        try:
+            if self.dry_run:
+                response.success = False
+                response.message = 'ARM cannot be confirmed in dry-run mode'
+                return response
+            if not self._write_body(f'ARM,{sequence},{int(desired)}'):
+                response.success = False
+                response.message = 'ESP32 is not connected'
+                return response
+            # Reader thread signals this event after receiving a matching ACK.
+            if not self._arm_ack_event.wait(timeout=1.5):
+                response.success = False
+                response.message = 'ESP32 ARM acknowledgement timeout'
+                return response
+            with self._lock:
+                ack = self._pending_arm_result
+                connected = self._connected and self._serial is not None
+                if connected and ack == 'OK':
+                    self._arm_confirmed = desired
+                    self._armed_requested = desired
+                    response.success = True
+                    response.message = 'ESP32 confirmed ARM' if desired else 'ESP32 confirmed DISARM'
+                else:
+                    response.success = False
+                    response.message = f'ESP32 rejected ARM: {ack}' if ack else 'ESP32 disconnected during ARM'
+            return response
+        finally:
+            with self._lock:
+                if self._pending_arm_sequence == sequence:
+                    self._pending_arm_sequence = None
 
     def _estop_service(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         with self._lock:
             self._armed_requested = False
+            self._arm_confirmed = False
             self._requested_left = self._requested_right = 0
             self._requested_actuator = self._requested_brush = self._requested_aux_motor = 0
         sent = self._write_body(f'STOP,{self._next_sequence()}')
@@ -585,6 +633,7 @@ class Esp32TrackBridgeNode(Node):
             payload = {
                 'connected': self._connected, 'dry_run': self.dry_run, 'serial_port': self.serial_port,
                 'board': 'ESP32_WROOM_40PIN', 'arm_requested': self._armed_requested,
+                'arm_confirmed': self._arm_confirmed,
                 'requested_left': self._requested_left, 'requested_right': self._requested_right,
                 'requested_actuator': self._requested_actuator, 'requested_brush': self._requested_brush,
                 'requested_aux_motor': self._requested_aux_motor, 'telemetry': dict(self._last_telemetry),
