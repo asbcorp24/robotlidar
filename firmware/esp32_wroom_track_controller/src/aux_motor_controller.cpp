@@ -323,14 +323,6 @@ void initializeAuxMotorController(){
   initialized=true;
 }
 
-void setAuxMotorRosCommand(int16_t command){
-  rosPosition=constrain(
-      (int32_t)command,
-      (int32_t)-1000,
-      (int32_t)1000);
-  rosMs=millis();
-}
-
 void updateAuxMotorController(){
   if(!initialized) initializeAuxMotorController();
 
