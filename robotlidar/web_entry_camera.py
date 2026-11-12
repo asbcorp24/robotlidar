@@ -30,6 +30,14 @@ class CameraSettingsRequest(BaseModel):
     camera2_name: str = Field(default='Camera 2', max_length=64)
     camera2_rtsp_url: str = Field(default='', max_length=2048)
     active_camera: int = Field(default=1, ge=1, le=2)
+    auto_failover_enabled: bool = False
+    primary_camera: int = Field(default=1, ge=1, le=2)
+    failover_after_failures: int = Field(default=3, ge=1, le=20)
+    failover_probe_interval_sec: float = Field(default=10.0, ge=2.0, le=3600.0)
+    return_to_primary: bool = True
+    video_watchdog_enabled: bool = True
+    video_watchdog_timeout_sec: float = Field(default=8.0, ge=3.0, le=120.0)
+    video_watchdog_startup_grace_sec: float = Field(default=12.0, ge=3.0, le=120.0)
     server_url: str = Field(default='', max_length=512)
     control_port: int = Field(default=6000, ge=1, le=65535)
     onvif_url: str = Field(default='', max_length=1024)
@@ -129,6 +137,14 @@ def api_camera_settings(request: CameraSettingsRequest) -> dict:
         camera1_name=request.camera1_name.strip() or 'Camera 1',
         camera2_name=request.camera2_name.strip() or 'Camera 2',
         camera_active_camera=int(request.active_camera),
+        camera_auto_failover_enabled=bool(request.auto_failover_enabled),
+        camera_primary_camera=int(request.primary_camera),
+        camera_failover_after_failures=int(request.failover_after_failures),
+        camera_failover_probe_interval_sec=float(request.failover_probe_interval_sec),
+        camera_return_to_primary=bool(request.return_to_primary),
+        camera_video_watchdog_enabled=bool(request.video_watchdog_enabled),
+        camera_video_watchdog_timeout_sec=float(request.video_watchdog_timeout_sec),
+        camera_video_watchdog_startup_grace_sec=float(request.video_watchdog_startup_grace_sec),
         camera_server_url=server_url,
         camera_control_port=int(request.control_port),
         camera_onvif_url=onvif_url,
