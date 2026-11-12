@@ -197,15 +197,27 @@ void initializeEsp32SettingsController(){
   prefs.begin("robotlidar",false); loadSettings(); configureHallInputs(); settingsInitialized=true; configDirty=true;
   Serial.println("EVT,ESP32_CONFIG,NVS_READY,V2");
 }
+// Called synchronously by the serial frame parser, before another frame can
+// overwrite its sequence. Returns a status suitable for the matching ACK.
+const char* applyEsp32SettingsSequence(uint32_t s){
+  if(!settingsInitialized) initializeEsp32SettingsController();
+  if((s&SettingsProtocol::MAGIC_MASK)!=SettingsProtocol::MAGIC) return "CFG_BAD_MAGIC";
+  const uint32_t op=s&SettingsProtocol::OP_MASK;
+  if(op==SettingsProtocol::OP_GET){ configDirty=true; return "CFG_OK"; }
+  if(op==SettingsProtocol::OP_SET){
+    const uint8_t k=(s&SettingsProtocol::KEY_MASK)>>SettingsProtocol::KEY_SHIFT;
+    const uint16_t v=s&SettingsProtocol::VALUE_MASK;
+    return setSetting(k,v)?"CFG_OK":"CFG_UNKNOWN_KEY";
+  }
+  if(op==SettingsProtocol::OP_RESET){
+    loadDefaults(); saveSettings(); configureHallInputs(); configDirty=true;
+    Serial.println("EVT,ESP32_CONFIG,DEFAULTS_RESTORED");
+    return "CFG_OK";
+  }
+  return "CFG_BAD_OP";
+}
 void updateEsp32SettingsController(){
   if(!settingsInitialized) initializeEsp32SettingsController();
-  const uint32_t s=lastSequence;
-  if(s!=lastHandledSequence && (s&SettingsProtocol::MAGIC_MASK)==SettingsProtocol::MAGIC){
-    lastHandledSequence=s; const uint32_t op=s&SettingsProtocol::OP_MASK;
-    if(op==SettingsProtocol::OP_GET) configDirty=true;
-    else if(op==SettingsProtocol::OP_SET){ const uint8_t k=(s&SettingsProtocol::KEY_MASK)>>SettingsProtocol::KEY_SHIFT; const uint16_t v=s&SettingsProtocol::VALUE_MASK; if(!setSetting(k,v)){Serial.print("ERR,ESP32_CONFIG_UNKNOWN_KEY,");Serial.println(k);} }
-    else if(op==SettingsProtocol::OP_RESET){ loadDefaults(); saveSettings(); configureHallInputs(); configDirty=true; Serial.println("EVT,ESP32_CONFIG,DEFAULTS_RESTORED"); }
-  }
   if(configDirty || millis()-lastConfigTelemetryMs>=5000) sendSettingsFrame();
 }
 
