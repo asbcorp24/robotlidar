@@ -323,30 +323,39 @@ class Esp32TrackBridgeNode(Node):
         self.ultrasonic_status_publisher.publish(status)
 
     def _handle_aux_motor_telemetry(self, fields: list[str]) -> None:
-        if len(fields) < 10:
-            raise ValueError(f'AUXTEL expected 10 fields, got {len(fields)}')
+        # ESP32 v1.9.8: millis, sbus_raw, sbus_us, sbus_valid,
+        # target_deg, actual_deg, current_step, target_step,
+        # direction, driver_ready, driver_address_hex.
+        if len(fields) != 12:
+            raise ValueError(f'AUXTEL expected 12 fields, got {len(fields)}')
+        target_deg = int(fields[5])
+        actual_deg = int(fields[6])
         telemetry = {
             'aux_motor_millis': int(fields[1]),
-            'aux_motor_rc_us': int(fields[2]),
-            'aux_motor_rc_valid': bool(int(fields[3])),
-            'aux_motor_ros_command': int(fields[4]),
-            'aux_motor_target': int(fields[5]),
-            'aux_motor_actual': int(fields[6]),
-            'aux_motor_direction': int(fields[7]),
-            'aux_motor_throttle_mv': int(fields[8]),
-            'aux_motor_mcp_ready': bool(int(fields[9])),
+            'aux_motor_sbus_raw': int(fields[2]),
+            'aux_motor_rc_us': int(fields[3]),
+            'aux_motor_rc_valid': bool(int(fields[4])),
+            'aux_motor_target': target_deg,
+            'aux_motor_actual': actual_deg,
+            'aux_motor_current_step': int(fields[7]),
+            'aux_motor_target_step': int(fields[8]),
+            'aux_motor_direction': int(fields[9]),
+            'aux_motor_mcp_ready': bool(int(fields[10])),
+            'aux_motor_driver_address': int(fields[11], 16),
             'aux_motor_received_at': time.time(),
         }
         with self._lock:
             self._last_telemetry.update(telemetry)
             self._connected = True
         state = Float32MultiArray()
+        # Preserve the eight-element state topic shape. Position values are
+        # normalized to the 0..1 range from the firmware's 0..360 degrees.
         state.data = [
-            float(telemetry['aux_motor_ros_command']) / 1000.0,
-            float(telemetry['aux_motor_target']) / 1000.0,
-            float(telemetry['aux_motor_actual']) / 1000.0,
+            0.0,  # No ROS command is present in the v1.9.8 AUXTEL frame.
+            float(target_deg) / 360.0,
+            float(actual_deg) / 360.0,
             float(telemetry['aux_motor_direction']),
-            float(telemetry['aux_motor_throttle_mv']) / 1000.0,
+            0.0,  # Stepper driver does not report throttle voltage.
             1.0 if telemetry['aux_motor_mcp_ready'] else 0.0,
             float(telemetry['aux_motor_rc_us']),
             1.0 if telemetry['aux_motor_rc_valid'] else 0.0,
