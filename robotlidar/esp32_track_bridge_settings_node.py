@@ -12,12 +12,24 @@ CFG_KEYS={'us_enabled':1,'us_warn_mm':2,'us_stop_mm':3,'us_emergency_mm':4,'us_c
 BOOL_KEYS={'us_enabled','hall_enabled','hall_left_inverted','hall_right_inverted','actuator_reversed','brush_brake_active_high','aux_reverse_active_high','track_reverse_active_high'}
 class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
  def __init__(self):
-  self._config_state={};self._config_publisher=None;self._config_queue=deque();self._config_pause_until=0.0;super().__init__();self._config_publisher=self.create_publisher(String,'/esp32/config/state',10);self._battery_publisher=self.create_publisher(String,'/battery/status',20);self.create_subscription(String,'/esp32/config/request',self._config_request_callback,10);self.create_timer(0.12,self._config_tick);self._queue_config_sequence(CFG_GET);self.get_logger().info('ESP32 persistent settings transport V2 + battery telemetry enabled')
+  self._config_state={};self._config_publisher=None;self._config_queue=deque();self._config_pause_until=0.0;self._config_pending=None;self._config_sent_at=0.0;self._config_attempts=0;super().__init__();self._config_publisher=self.create_publisher(String,'/esp32/config/state',10);self._battery_publisher=self.create_publisher(String,'/battery/status',20);self.create_subscription(String,'/esp32/config/request',self._config_request_callback,10);self.create_timer(0.12,self._config_tick);self._queue_config_sequence(CFG_GET);self.get_logger().info('ESP32 persistent settings transport V2 + battery telemetry enabled')
  def _process_line(self,line):
   if line and '*' in line:
    body,cs=line.rsplit('*',1)
    try:valid=len(cs)==2 and int(cs,16)==self._checksum(body)
    except ValueError:valid=False
+   if valid and body.startswith('ACK,'):
+    parts=body.split(',')
+    if len(parts)>=3:
+     try:seq=int(parts[1])
+     except ValueError:seq=-1
+     with self._lock:
+      if self._config_pending==seq:
+       if parts[2]=='CFG_OK':
+        self._config_pending=None
+       else:
+        self.get_logger().error(f'ESP32 rejected config {seq}: {parts[2]}')
+        self._config_pending=None
    if valid and body.startswith('CFG,'):self._handle_config_frame(body.split(','));return
    if valid and body.startswith('BAT,'):self._handle_battery_frame(body.split(','));return
   super()._process_line(line)
@@ -46,11 +58,24 @@ class Esp32TrackBridgeSettingsNode(Esp32TrackBridgeNode):
  def _normalize_config_value(key,value):return 1 if key in BOOL_KEYS and bool(value) else (0 if key in BOOL_KEYS else max(0,min(65535,int(value))))
  def _queue_config_sequence(self,sequence):self._config_queue.append(int(sequence)&0xFFFFFFFF)
  def _config_tick(self):
-  if not self._config_queue:return
-  sequence=self._config_queue.popleft();self._config_pause_until=time.monotonic()+0.05
-  if not self._write_body(f'PING,{sequence}'):self.get_logger().warning('ESP32 config packet was not sent')
+  with self._lock:
+   now=time.monotonic()
+   if self._config_pending is None:
+    if not self._config_queue:return
+    self._config_pending=self._config_queue.popleft()
+    self._config_attempts=0
+   elif now-self._config_sent_at<0.6:return
+   if self._config_attempts>=4:
+    self.get_logger().error(f'ESP32 config ACK timeout: {self._config_pending}')
+    self._config_pending=None
+    return
+   sequence=self._config_pending
+   self._config_attempts+=1
+   self._config_sent_at=now
+   # Do not suppress drive heartbeats while settings are in flight.
+  if not self._write_body(f'PING,{sequence}'):
+   self.get_logger().warning(f'ESP32 config send failed; retry {self._config_attempts}/4')
  def _send_tick(self):
-  if time.monotonic()<self._config_pause_until:return
   super()._send_tick()
  def _encoded_set_sequence(self,key,value):
   kid=CFG_KEYS.get(key)

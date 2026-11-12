@@ -272,20 +272,9 @@ static void stepOnce(int8_t dir){
   }
 }
 
-static void captureRosFromSequence(){
-  const uint32_t s=lastSequence;
-  constexpr uint32_t MAGIC=0xA5000000UL;
-  constexpr uint32_t MASK =0xFFF00000UL;
-  constexpr uint32_t VMASK=0x7FFUL;
-
-  if(s==lastSequenceSeen||(s&MASK)!=MAGIC) return;
-
-  lastSequenceSeen=s;
-  rosPosition=constrain(
-      (int32_t)(s&VMASK)-1000,
-      (int32_t)-1000,
-      (int32_t)1000);
-  rosMs=millis();
+void setAuxMotorRosCommand(int16_t command){
+  rosPosition=constrain((int32_t)command,(int32_t)-1000,(int32_t)1000);
+  rosMs=millis(); // Repeated position commands renew the watchdog.
 }
 
 void stopAuxMotorController(){
@@ -334,19 +323,10 @@ void initializeAuxMotorController(){
   initialized=true;
 }
 
-void setAuxMotorRosCommand(int16_t command){
-  rosPosition=constrain(
-      (int32_t)command,
-      (int32_t)-1000,
-      (int32_t)1000);
-  rosMs=millis();
-}
-
 void updateAuxMotorController(){
   if(!initialized) initializeAuxMotorController();
 
   updateSbus();
-  captureRosFromSequence();
 
   const uint32_t now=millis();
 
