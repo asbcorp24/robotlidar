@@ -346,7 +346,6 @@ void updateAuxMotorController(){
   if(!initialized) initializeAuxMotorController();
 
   updateSbus();
-  captureRosFromSequence();
 
   const uint32_t now=millis();
 
