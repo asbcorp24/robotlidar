@@ -1,5 +1,7 @@
 # RobotLidar
 
+> [Архитектура системы и актуальные ограничения](ARCHITECTURE.md) — контуры ROS/ESP32, центральный Go-сервер, безопасность и расхождения старых схем.
+
 Полностью офлайн-система автономного управления гусеничным трактором на базе Raspberry Pi 4, ROS 2 и отдельного ESP32-WROOM-32 для низкоуровневого управления приводами.
 
 ## Аппаратная конфигурация
@@ -48,7 +50,7 @@ ESP32 выполняет:
 
 - аналоговый газ левой и правой гусеницы;
 - Reverse LEFT/RIGHT;
-- Low Brake LEFT/RIGHT;
+- управление сменой направления без отдельного Low Brake (с v1.9.6);
 - чтение Hall/Speed LEFT/RIGHT;
 - чтение MC8RE-V2 CH1/CH2/CH5/CH6;
 - аппаратно-программный ESTOP;
@@ -72,7 +74,7 @@ ESP32 выполняет:
 
 - газ LEFT/RIGHT;
 - Reverse LEFT/RIGHT;
-- Low Brake LEFT/RIGHT;
+- управление сменой направления без отдельного Low Brake (с v1.9.6);
 - Hall/Speed LEFT/RIGHT;
 - MC8RE-V2;
 - аварийную петлю ESP32.
@@ -96,7 +98,7 @@ ROS 2 / Nav2 / Web UI
           |
           +--> gas LEFT / RIGHT
           +--> Reverse LEFT / RIGHT
-          +--> Low Brake LEFT / RIGHT
+          +--> переключение направления без отдельного Brake
 
 MPU6050 ──I2C────────────> Raspberry Pi ─> /imu/data_raw
 GPS NEO-6M ─UART─────────> Raspberry Pi ─> /gps/fix
@@ -307,14 +309,13 @@ GPIO25 DAC -> gas LEFT
 GPIO26 DAC -> gas RIGHT
 GPIO16 -> TLP240A -> Reverse LEFT
 GPIO17 -> TLP240A -> Reverse RIGHT
-GPIO18 -> TLP240A -> Low Brake LEFT
-GPIO19 -> TLP240A -> Low Brake RIGHT
+GPIO18/19 -> свободны с прошивки v1.9.6 (отдельный Low Brake удалён)
 GPIO34 <- Hall/Speed LEFT
 GPIO35 <- Hall/Speed RIGHT
 GPIO27 <- MC8RE CH1
 GPIO33 <- MC8RE CH2
 GPIO13 <- MC8RE CH5 RC/SAFE/ROS
-GPIO14 <- MC8RE CH6 ARM
+GPIO14 <- MC8RE CH3 актуатор (в новых версиях); CH8 SBUS -> GPIO36 для M4
 GPIO32 <- NC ESTOP loop
 ```
 
