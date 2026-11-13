@@ -28,6 +28,7 @@ class IpCameraRelayManager:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._config: dict[str, Any] = {}
+        self._configured_active_camera: Optional[int] = None
         self._video_port: Optional[int] = None
         self._srt_port: Optional[int] = None
         self._transport = 'rtp'
@@ -62,6 +63,17 @@ class IpCameraRelayManager:
     def configure(self, settings: dict[str, Any]) -> None:
         cfg = self._normalize(settings)
         with self._lock:
+            requested_camera = cfg['active_camera']
+            # Settings retain the startup choice; failover changes the runtime
+            # camera. Unrelated settings must not switch back to a failed source.
+            sources_unchanged = all(
+                cfg[key] == self._config.get(key)
+                for key in ('rtsp_url', 'camera1_url', 'camera2_url')
+            )
+            if (requested_camera == self._configured_active_camera
+                    and sources_unchanged):
+                cfg['active_camera'] = self._config['active_camera']
+            self._configured_active_camera = requested_camera
             changed = cfg != self._config
             self._config = cfg
             if changed:
@@ -369,7 +381,6 @@ class IpCameraRelayManager:
         self._ensure_ffmpeg(self._snapshot_config())
 
     def _record_camera_failure(self, cfg: dict[str, Any]) -> None:
-        now = time.monotonic()
         with self._lock:
             self._camera_failures += 1
             failures = self._camera_failures
@@ -384,7 +395,8 @@ class IpCameraRelayManager:
         with self._lock:
             delay = delays[min(self._retry_step, len(delays) - 1)]
             self._retry_step = min(self._retry_step + 1, len(delays) - 1)
-            self._retry_at = now + delay
+            # Probing a reserve can block; start the full delay after it returns.
+            self._retry_at = time.monotonic() + delay
         self._log(f'CAMERA: restart backoff {delay:.0f}s')
 
     def _switch_camera_runtime(self, camera: int, reason: str) -> None:
@@ -434,7 +446,7 @@ class IpCameraRelayManager:
             str(cfg.get('ffmpeg') or 'ffmpeg'),
             '-hide_banner', '-loglevel', 'error',
             '-rtsp_transport', 'tcp',
-            '-rw_timeout', str(int(timeout_sec * 1_000_000)),
+            '-timeout', str(int(timeout_sec * 1_000_000)),
             '-i', url,
             '-map', '0:v:0',
             '-t', '0.15',
