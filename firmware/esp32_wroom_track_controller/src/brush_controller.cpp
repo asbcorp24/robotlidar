@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
+#include "drive_relays.h"
 
 enum class ControlMode:uint8_t{Safe,RcManual,RosAutonomous};
 extern ControlMode controlMode;
@@ -16,6 +17,7 @@ uint16_t espSettingRcTimeoutMs();
 uint16_t espSettingBrushIdleMv();
 uint16_t espSettingBrushMaxMv();
 uint16_t espSettingRosAuxTimeoutMs();
+bool espSettingBrushBrakeActiveHigh();
 
 namespace BrushPins {
 constexpr uint8_t RC_CH4=5;
@@ -40,7 +42,7 @@ struct Rc {
 
 static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;
 static Rc rc;
-static bool initialized=false,mcpReady=false,rcValid=false;
+static bool initialized=false,mcpReady=false,rcValid=false,brake=true;
 static uint16_t rcUs=0,throttleMv=0;
 static int16_t rosCommand=0;
 static int8_t appliedDirection=0;
@@ -90,6 +92,11 @@ static bool writeThrottle(uint16_t mv){
   return true;
 }
 
+static bool setBrake(bool applied){
+  const bool ncApplied=espSettingBrushBrakeActiveHigh()?applied:!applied;
+  if(!setDriveBrakeRelay(RelayDrive::Brush,ncApplied))return false;
+  brake=applied;return true;
+}
 static void setReverse(bool reverse){
   const bool level=BrushConfig::REVERSE_ACTIVE_HIGH?reverse:!reverse;
   digitalWrite(BrushPins::REVERSE,level?HIGH:LOW);
@@ -103,6 +110,7 @@ static void applyDirection(int8_t dir){
 void stopBrushController(){
   if(mcpReady) writeThrottle(BrushConfig::THROTTLE_SAFE_MV);
   else throttleMv=0;
+  setBrake(true);
   appliedDirection=0;
   pendingDirection=0;
 }
@@ -166,15 +174,15 @@ void initializeBrushController(){
 
   pinMode(BrushPins::RC_CH4,INPUT_PULLDOWN);
   pinMode(BrushPins::REVERSE,OUTPUT);
-
   setReverse(false);
+  setBrake(true);
 
   attachInterrupt(digitalPinToInterrupt(BrushPins::RC_CH4),onRc,CHANGE);
 
   mcpReady=present();
   if(mcpReady){
     writeThrottle(0);
-    Serial.println("EVT,BRUSH,MCP4725_OK,0x60,BIDIRECTIONAL_GPIO12_NO_BRAKE");
+    Serial.println("EVT,BRUSH,MCP4725_OK,0x60,BIDIRECTIONAL_GPIO12_GPB5_BRAKE");
   } else {
     Serial.println("ERR,BRUSH_MCP4725_NOT_FOUND,0x60");
   }
@@ -196,7 +204,7 @@ void updateBrushController(){
 
   rcValid=readRc(rcUs);
 
-  if(!estopOkay()||!armed||!mcpReady||controlMode==ControlMode::Safe){
+  if(!estopOkay()||!armed||!mcpReady||!driveRelaysReady()||controlMode==ControlMode::Safe){
     stopBrushController();
     return;
   }
@@ -224,6 +232,7 @@ void updateBrushController(){
   // переключаем Reverse и выдерживаем небольшую паузу.
   if(appliedDirection!=0 && requestedDirection!=appliedDirection){
     writeThrottle(0);
+    if(!setBrake(true)){stopBrushController();return;}
     pendingDirection=requestedDirection;
     appliedDirection=0;
     directionGuardUntilMs=now+BrushConfig::DIRECTION_GUARD_MS;
@@ -245,13 +254,13 @@ void updateBrushController(){
     applyDirection(requestedDirection);
   }
 
-  writeThrottle(magnitudeToMv(magnitude));
+  if(!writeThrottle(magnitudeToMv(magnitude))||!setBrake(false))stopBrushController();
 }
 
 uint16_t getBrushRcPulseUs(){return rcUs;}
 bool getBrushRcValid(){return rcValid;}
 int16_t getBrushRosCommand(){return rosCommand;}
 uint16_t getBrushThrottleMv(){return throttleMv;}
-bool getBrushBrakeActive(){return false;}
+bool getBrushBrakeActive(){return brake;}
 bool getBrushMcpReady(){return mcpReady;}
 int8_t getBrushDirection(){return appliedDirection;}
